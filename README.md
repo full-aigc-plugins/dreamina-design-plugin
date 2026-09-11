@@ -1,12 +1,14 @@
 # Codex Dreamina Design Plugin
 
-> Design-stage image and video generation workflows for the Dreamina CLI.
+<img src="assets/logo.png" alt="Dreamina Design logo" width="128">
+
+> Compatibility foundation for Dreamina CLI image and video workflows.
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 ## Status and purpose
 
-`codex-dreamina-design` is not implemented yet. It will package the renamed `dreamina-*` prompt and CLI Skills for image generation, image editing, text/image/frame/multimodal video generation, sessions, history, asynchronous query, and download.
+`codex-dreamina-design` now has a validated compatibility manifest, marketplace metadata, brand assets, legal documents, tests, and implementation directories. The generation Skills and CLI runtime adapter remain implementation work.
 
 ```text
 Creative intent -> prompt contract -> live CLI capability discovery
@@ -31,4 +33,8 @@ Creative intent -> prompt contract -> live CLI capability discovery
 
 ## Upstream skill migration
 
-The current source repository is `full-aigc-skills/jimeng-skills` with 13 Skills. A prerequisite change will rename it to `dreamina-skills`, migrate every `jimeng-*` identity and reference to `dreamina-*`, preserve behavior through a mapping ledger, and synchronize the current Dreamina CLI contract before packaging.
+The source repository migration is complete at `full-aigc-skills/dreamina-skills`. Plugin packaging must pin a verified upstream commit rather than copying and independently editing those Skills.
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE).

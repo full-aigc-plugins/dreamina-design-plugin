@@ -16,6 +16,10 @@
 - Runtime CLI contract is authoritative; no paid CI calls.
 - Approval is request-bound; async uncertainty never causes resubmission.
 
+## Foundation baseline completed 2026-09-12
+
+The `jimeng-skills` to `dreamina-skills` migration is published, and this repository now contains the validated `codex-dreamina-design` compatibility manifest, URL marketplace entry, Apache-2.0/legal files, transparent brand assets, implementation directories, distribution validator, and RED/GREEN foundation tests. Executors must preserve these files and begin remaining work with runtime contracts and the thin orchestration Skill; they must not repeat the migration or create the previously rejected overlapping 14-Skill design.
+
 ### Task 1: Migrate dreamina-skills
 - [ ] Write a failing inventory test covering all 13 old directories, frontmatter names, links, README and install commands.
 - [ ] Rename the GitHub/local repository and each `jimeng-*` directory through an explicit mapping ledger.

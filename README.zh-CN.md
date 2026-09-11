@@ -1,12 +1,14 @@
 # Codex Dreamina Design 插件
 
-> 面向 Dreamina CLI 的图片与视频生成工作流，目前处于设计阶段。
+<img src="assets/logo.png" alt="Dreamina Design Logo" width="128">
+
+> 面向 Dreamina CLI 图片与视频工作流的 Codex 兼容基础。
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 ## 状态与定位
 
-`codex-dreamina-design` 尚未实现。它将打包更名后的 `dreamina-*` Prompt 和 CLI Skills，覆盖图片生成、图片编辑、文生/图生/首尾帧/多模态视频、Session、历史、异步查询和下载。
+`codex-dreamina-design` 现已具备经过验证的兼容 manifest、Marketplace 元数据、品牌资产、Legal 文档、测试和实施目录。生成 Skills 与 CLI 运行适配器仍属于后续实现。
 
 ```text
 创作意图 -> Prompt 契约 -> 实时发现 CLI 能力
@@ -31,4 +33,8 @@
 
 ## 上游技能迁移
 
-当前事实源是含 13 个 Skills 的 `full-aigc-skills/jimeng-skills`。前置变更会把它更名为 `dreamina-skills`，用映射台账将所有 `jimeng-*` 身份和引用迁移为 `dreamina-*`，保持行为，并在打包前同步当前 Dreamina CLI 契约。
+事实源迁移已完成，当前仓库为 `full-aigc-skills/dreamina-skills`。插件打包必须固定经过验证的上游提交，不能复制后再独立修改 Skill 正文。
+
+## 许可证
+
+Apache-2.0，见 [LICENSE](LICENSE)。
