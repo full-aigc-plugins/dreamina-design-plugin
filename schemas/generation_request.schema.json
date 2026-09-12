@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/generation_request.schema.json",
+  "title": "Dreamina Generation Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["mode", "prompt", "model", "count"],
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": ["text2image", "image2image", "text2video", "image2video", "frames2video", "multimodal2video"]
+    },
+    "prompt": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+    },
+    "negative_prompt": {
+      "type": "string",
+      "maxLength": 4000
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Model token exactly as advertised by the CLI capability snapshot."
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10
+    },
+    "resolution": {
+      "type": "string",
+      "description": "Resolution token from the snapshot's `resolutions.image` or `resolutions.video`."
+    },
+    "ratio": {
+      "type": "string",
+      "description": "Aspect-ratio token from the snapshot's `ratios` array."
+    },
+    "duration_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60
+    },
+    "width": {
+      "type": "integer",
+      "minimum": 64,
+      "maximum": 8192
+    },
+    "height": {
+      "type": "integer",
+      "minimum": 64,
+      "maximum": 8192
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "role"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "role": {
+            "type": "string",
+            "enum": ["style", "subject", "frame", "audio", "reference"]
+          },
+          "mime_type": {"type": "string"},
+          "size_bytes": {"type": "integer", "minimum": 1}
+        }
+      },
+      "maxItems": 8
+    },
+    "extra_args": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Explicit, snapshot-validated argv additions. No credentials."
+    }
+  },
+  "allOf": [
+    {
+      "description": "Width/height must be paired; ratio is mutually exclusive with both.",
+      "if": {
+        "anyOf": [
+          {"required": ["width"]},
+          {"required": ["height"]}
+        ]
+      },
+      "then": {
+        "required": ["width", "height"]
+      }
+    },
+    {
+      "description": "If ratio is set, width and height must not be set.",
+      "if": {"required": ["ratio"]},
+      "then": {
+        "not": {"anyOf": [{"required": ["width"]}, {"required": ["height"]}]}
+      }
+    }
+  ]
+}

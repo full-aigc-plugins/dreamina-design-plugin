@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/operation_receipt.schema.json",
+  "title": "Dreamina Operation Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["session_id", "submit_id", "state", "submitted_at"],
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Local session identifier (UUID v4 or equivalent)."
+    },
+    "submit_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Server-side submission identifier returned by the dreamina CLI."
+    },
+    "state": {
+      "type": "string",
+      "enum": ["queued", "running", "succeeded", "failed", "cancelled", "unknown"]
+    },
+    "submitted_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "required_action": {
+      "type": "string",
+      "enum": ["wait", "download", "retry_query", "report_failure", "manual_review"]
+    },
+    "last_error_code": {
+      "type": "string"
+    },
+    "history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state", "at"],
+        "properties": {
+          "state": {"type": "string"},
+          "at": {"type": "string", "format": "date-time"},
+          "note": {"type": "string"}
+        }
+      }
+    }
+  }
+}

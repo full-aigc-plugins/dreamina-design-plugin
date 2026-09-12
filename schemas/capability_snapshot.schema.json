@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/capability_snapshot.schema.json",
+  "title": "Dreamina Capability Snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["cli_version", "captured_at", "modes"],
+  "properties": {
+    "cli_version": {
+      "type": "string",
+      "description": "dreamina CLI version string as reported by `dreamina --version`.",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([+-][A-Za-z0-9.-]+)?$"
+    },
+    "cli_commit": {
+      "type": "string",
+      "description": "Optional CLI build commit SHA, when reported."
+    },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 timestamp when the snapshot was taken."
+    },
+    "modes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["text2image", "image2image", "text2video", "image2video", "frames2video", "multimodal2video"]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "modes"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "modes": {
+            "type": "array",
+            "items": {"type": "string"},
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "resolutions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "array",
+          "items": {"type": "string"},
+          "uniqueItems": true
+        },
+        "video": {
+          "type": "array",
+          "items": {"type": "string"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "ratios": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "durations": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_seconds": {"type": "integer", "minimum": 1},
+        "max_seconds": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

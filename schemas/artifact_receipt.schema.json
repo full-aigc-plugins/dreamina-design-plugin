@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/artifact_receipt.schema.json",
+  "title": "Dreamina Artifact Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["submit_id", "local_path", "checksum", "verified_at"],
+  "properties": {
+    "submit_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Submit ID this artifact was produced from."
+    },
+    "local_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "checksum": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "digest"],
+      "properties": {
+        "algorithm": {"type": "string", "enum": ["sha256", "blake2b"]},
+        "digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "media_metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mime_type": {"type": "string"},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "duration_seconds": {"type": "number", "minimum": 0},
+        "size_bytes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "verified_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}
