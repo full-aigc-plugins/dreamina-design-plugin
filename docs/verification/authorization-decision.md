@@ -52,6 +52,20 @@ $ python3 scripts/record_gate_decision.py accept-blocked \
       --reason "<why the live-runtime evidence is deferred>"
 ```
 
+Then verify with **`--plan-gate`**, which evaluates the plan's 13 lines as
+written (disjunctions included) and prints a per-line verdict:
+
+```text
+$ python3 scripts/validate_distribution_v7.py --plan-gate
+plan_gate (the plan's 13-line completion gate, as written):
+  [x] dreamina_skill_directories = 13  <- skill_count = 13
+  ...
+  [x] read_only_runtime_contract = observed or explicitly blocked
+      <- read_only_runtime_contract = blocked (the 'explicitly blocked' disjunct; ...)
+  [x] paid_canary = separately approved or NOT_RUN  <- paid_canary = NOT_RUN
+plan_gate = SATISFIED                              # exit 0
+```
+
 It writes `docs/verification/gate-decision-accepted.md`, naming you as
 approver, and rewrites the two §8 audit rows to read
 *`✅ owner-accepted`* with the disjunct relied on spelled out. It
@@ -60,8 +74,19 @@ assistant cannot generate its own acceptance record), it refuses a second
 recording, and it never writes wording claiming the gates were `observed`
 or `APPROVED`.
 
-**Path (b)** — run `§0 A` and `§0 B` below in your own authorized shell.
-The verifier then flips both gates automatically, with no code change.
+**Path (b)** — run `§0 A` and `§0 B` below in your own authorized shell,
+then verify with **`--require-runtime-gates`**, which demands the *first*
+disjunct:
+
+```text
+$ python3 scripts/validate_distribution_v7.py --require-runtime-gates
+# exit 0 only once read_only_runtime_contract = observed and paid_canary = APPROVED
+```
+
+⚠️ The two paths need **different** verification commands. Running
+`--require-runtime-gates` after path (a) exits non-zero **by design** —
+path (a) does not claim the gates were observed, so a command that demands
+`observed` must fail. `--plan-gate` is the command that matches path (a).
 
 Either answer closes the work. Neither will be written into this file by
 the assistant on your behalf.

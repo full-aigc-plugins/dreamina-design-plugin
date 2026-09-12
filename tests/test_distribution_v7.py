@@ -484,5 +484,57 @@ class GateContentValidationTests(unittest.TestCase):
         self.assertEqual(report.paid_canary, "APPROVED")
 
 
+class PlanGateModeTests(unittest.TestCase):
+    """``--plan-gate`` implements the plan's 13-line gate *as written*.
+
+    The last two lines are disjunctions:
+
+        read_only_runtime_contract = observed or explicitly blocked
+        paid_canary = separately approved or NOT_RUN
+
+    So ``blocked`` and ``NOT_RUN`` are accepted end states, and this mode
+    must exit 0 on a repository whose gates are in those states. It is a
+    different claim from ``--require-runtime-gates``, which demands the
+    first disjunct (``observed`` / ``APPROVED``) and is expected to fail
+    when the live evidence has not been gathered.
+    """
+
+    def _run(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(  # noqa: S603
+            [sys.executable, str(ROOT / "scripts" / "validate_distribution_v7.py"), *args],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_plan_gate_exits_zero_with_blocked_and_not_run(self) -> None:
+        result = self._run("--plan-gate")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("plan_gate", result.stdout)
+
+    def test_plan_gate_reports_each_line(self) -> None:
+        result = self._run("--plan-gate")
+        for line in (
+            "dreamina_skill_directories",
+            "skill_snapshot_parity",
+            "read_only_runtime_contract",
+            "paid_canary",
+        ):
+            self.assertIn(line, result.stdout)
+
+    def test_plan_gate_fails_on_snapshot_sha_mismatch(self) -> None:
+        result = self._run("--plan-gate", "--expected-upstream-sha", "0" * 40)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_plan_gate_does_not_claim_observed(self) -> None:
+        result = self._run("--plan-gate")
+        self.assertIn('"read_only_runtime_contract": "blocked"', result.stdout)
+
+    def test_require_runtime_gates_is_stricter_than_plan_gate(self) -> None:
+        plan_gate = self._run("--plan-gate").returncode
+        strict_runtime = self._run("--require-runtime-gates").returncode
+        self.assertEqual(plan_gate, 0)
+        self.assertNotEqual(strict_runtime, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
