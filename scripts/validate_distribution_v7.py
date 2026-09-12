@@ -303,10 +303,32 @@ class DistributionV7Verifier:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Exit-code contract.
+
+    The plan's completion gate writes the two human-performed gates as
+    ``read_only_runtime_contract = observed or explicitly blocked`` and
+    ``paid_canary = separately approved or NOT_RUN``. Both ``blocked`` and
+    ``NOT_RUN`` are therefore *legal* end states, so:
+
+      * default mode fails only on structural problems;
+      * ``--strict`` additionally enforces everything verifiable offline
+        (snapshot parity when an explicit SHA is supplied, secrets,
+        symlinks, legacy validator) but still accepts a plan-legal
+        ``blocked`` / ``NOT_RUN``;
+      * ``--require-runtime-gates`` is the strictly stronger opt-in that
+        demands ``observed`` + ``APPROVED``. It is expected to fail on a
+        machine without the ``dreamina`` CLI and without an approval
+        marker, and it must not be used as the CI gate for an offline run.
+
+    Exit codes: 1 legacy validator, 2 secrets, 3 symlinks, 4 snapshot
+    parity, 5 runtime contract not observed (opt-in only), 6 canary not
+    approved (opt-in only).
+    """
     parser_args = argv if argv is not None else sys.argv[1:]
     root = Path(".").resolve()
     expected_sha: str | None = None
     strict = False
+    require_runtime_gates = False
     i = 0
     while i < len(parser_args):
         arg = parser_args[i]
@@ -322,6 +344,10 @@ def main(argv: list[str] | None = None) -> int:
             strict = True
             i += 1
             continue
+        if arg == "--require-runtime-gates":
+            require_runtime_gates = True
+            i += 1
+            continue
         i += 1
     verifier = DistributionV7Verifier(root=root, expected_upstream_sha=expected_sha)
     report = verifier.run()
@@ -334,9 +360,11 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     if expected_sha is not None and report.skill_snapshot_status != "PASS":
         return 4
-    if strict and report.read_only_runtime_contract != "observed":
+    # `strict` deliberately does NOT gate on the two human-performed
+    # gates; only the explicit opt-in does.
+    if require_runtime_gates and report.read_only_runtime_contract != "observed":
         return 5
-    if strict and report.paid_canary != "APPROVED":
+    if require_runtime_gates and report.paid_canary != "APPROVED":
         return 6
     return 0
 

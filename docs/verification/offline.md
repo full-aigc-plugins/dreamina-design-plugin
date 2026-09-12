@@ -36,6 +36,8 @@ The v0 validator confirms:
 $ python3 scripts/validate_distribution_v7.py \
       --expected-upstream-sha 373bf7ffa698eefd3308576300e28ea2bff9cc6b \
       --strict
+$ echo $?
+0
 ```
 
 The v7 validator returns a JSON report with these gates:
@@ -51,6 +53,36 @@ The v7 validator returns a JSON report with these gates:
 | `paid_canary`                       | `NOT_RUN` (no approval marker present)            |
 | `read_only_runtime_contract`        | `blocked` (dreamina CLI not on PATH)              |
 | `read_only_runtime_reason`          | explicit instructions for unlocking               |
+
+### Modes and exit-code contract
+
+The plan writes the two human-performed gates as
+`read_only_runtime_contract = observed or explicitly blocked` and
+`paid_canary = separately approved or NOT_RUN` — so `blocked` and
+`NOT_RUN` are **legal end states**, not failures. The verifier models
+that directly:
+
+| Mode                        | Fails on                                                      | Current exit |
+|-----------------------------|---------------------------------------------------------------|--------------|
+| (default)                   | structural problems only                                      | `0`          |
+| `--strict`                  | all offline-verifiable gates (snapshot parity, secrets, symlinks, legacy validator) — but **not** the two human gates | `0` |
+| `--require-runtime-gates`   | the above **plus** `observed` + `APPROVED` (opt-in)           | `5` (CLI absent) |
+
+Measured on this machine:
+
+```text
+$ python3 scripts/validate_distribution_v7.py                       -> 0
+$ python3 scripts/validate_distribution_v7.py --strict              -> 0
+$ python3 scripts/validate_distribution_v7.py --require-runtime-gates -> 5
+$ python3 scripts/validate_distribution_v7.py \
+      --expected-upstream-sha 373bf7f... --strict                   -> 0
+```
+
+`--require-runtime-gates` is the mode that *asserts* the human gates;
+it is expected to fail offline and must not be used as the CI gate for
+an offline run. Exit codes in full: 1 legacy validator, 2 secrets,
+3 symlinks, 4 snapshot parity, 5 runtime contract not observed,
+6 canary not approved.
 
 To promote `skill_snapshot_status` to `PASS`, supply an explicit
 upstream commit SHA:

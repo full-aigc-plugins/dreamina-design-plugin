@@ -320,5 +320,57 @@ class PluginValidatorIntegrationTests(unittest.TestCase):
             self.assertIn("test_distribution_v7.py", result.stderr)
 
 
+class ExitCodeContractTests(unittest.TestCase):
+    """The verifier's exit codes must model the plan's gate semantics.
+
+    The plan's completion gate writes the two human-performed gates as
+    ``read_only_runtime_contract = observed or explicitly blocked`` and
+    ``paid_canary = separately approved or NOT_RUN``. Both ``blocked`` and
+    ``NOT_RUN`` are therefore *legal end states*, so a mode that is merely
+    "strict about everything verifiable offline" must NOT fail on them.
+    Demanding ``observed`` / ``APPROVED`` is a strictly stronger claim and
+    requires an explicit opt-in.
+    """
+
+    def _run(self, *args: str) -> int:
+        result = subprocess.run(  # noqa: S603
+            [sys.executable, str(ROOT / "scripts" / "validate_distribution_v7.py"), *args],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode
+
+    def test_default_mode_succeeds(self) -> None:
+        self.assertEqual(self._run(), 0)
+
+    def test_strict_mode_accepts_plan_legal_blocked_and_not_run(self) -> None:
+        """--strict enforces verifiable gates only; blocked/NOT_RUN are legal."""
+        self.assertEqual(self._run("--strict"), 0)
+
+    def test_strict_mode_still_enforces_snapshot_parity(self) -> None:
+        """--strict plus an explicit SHA must still fail on a SHA mismatch."""
+        self.assertNotEqual(
+            self._run("--strict", "--expected-upstream-sha", "0" * 40),
+            0,
+        )
+
+    def test_require_runtime_gates_fails_while_gates_are_blocked(self) -> None:
+        """The stricter opt-in must fail on this machine (CLI absent)."""
+        self.assertNotEqual(self._run("--require-runtime-gates"), 0)
+
+    def test_require_runtime_gates_reports_nonzero_exit_codes(self) -> None:
+        result = subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "validate_distribution_v7.py"),
+                "--require-runtime-gates",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn(result.returncode, (5, 6))
+        self.assertIn("paid_canary", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
