@@ -5,6 +5,51 @@
 > and `paid_canary` — cannot be flipped to PASS without a real
 > human authorization outside the model's reach.
 
+## 0. Everything that remains, in one place
+
+Three user-performed actions are left. Nothing else is outstanding; no
+code change is required for any of them.
+
+**A. Unlock `read_only_runtime_contract`** — install and authorize the
+`dreamina` CLI, then:
+
+```text
+$ python3 scripts/unlock_runtime_gates.py probe
+#   -> writes cli-version.txt / cli-help.txt / cli-schema.json
+#   -> writes account-readiness.md marked PENDING
+# then edit account-readiness.md (user, tier, timestamp; no credentials)
+```
+
+**B. Unlock `paid_canary`** — run one low-cost generation interactively,
+then:
+
+```text
+$ python3 scripts/unlock_runtime_gates.py record-canary \
+      --submit-id <real-server-issued-id> \
+      --approver <your-name> \
+      --observed "<one paragraph on what you saw>"
+```
+
+**C. (optional) Cover the public-marketplace install variant** — merge
+and push the feature branch:
+
+```text
+$ git checkout main
+$ git merge feat/dreamina-design-runtime
+$ git push origin main
+```
+
+Merge is already dry-run verified conflict-free
+(`git merge-tree --write-tree main feat/dreamina-design-runtime` → exit 0,
+zero conflicts, 11 commits). Pushing publishes to the public GitHub repo,
+so it is left to you.
+
+After A and B, tell me and I will re-run
+`python3 scripts/validate_distribution_v7.py --strict` (the verifier
+flips both gates automatically from the artifacts, with no code change),
+update the `docs/verification/offline.md` §8 audit rows, and add one
+commit.
+
 ## 1. What was requested
 
 In the final session turn, the user directed the assistant to:

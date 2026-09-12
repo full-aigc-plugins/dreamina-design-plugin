@@ -205,6 +205,27 @@ the unpushed `feat/dreamina-design-runtime` branch. Merging and pushing
 is a repository decision the user owns; no code change is required after
 that.
 
+The merge itself has been dry-run verified as conflict-free, so that
+decision is de-risked:
+
+```text
+$ git merge-tree --write-tree main feat/dreamina-design-runtime
+d6cd122f51717364874ca98c06b35c035669d533      # exit 0
+$ git rev-list --count main..feat/dreamina-design-runtime
+11
+```
+
+`git merge-tree` is read-only — it computes the merge without touching
+the working tree. Zero conflicts across all 11 commits. (This run also
+confirms the new `skills/codex-dreamina-design-use/` directory does not
+collide with anything on `main`.)
+
+The repo's own `.agents/plugins/marketplace.json` — the manifest a public
+install would consume — is already validated by
+`scripts/validate_distribution.py`, which asserts
+`source.url == <repository>.git`, `ref == main`, and
+`policy == {installation: AVAILABLE, authentication: ON_USE}`.
+
 ## 8. Plan completion gate audit
 
 The implementation plan at
