@@ -4,6 +4,47 @@
 > result.** The two remaining plan gates — `read_only_runtime_contract`
 > and `paid_canary` — cannot be flipped to PASS without a real
 > human authorization outside the model's reach.
+>
+> **Decision requested from the repository owner — see §0.1.**
+
+## 0.1 The plan's own gate text, read literally
+
+The plan's completion gate is a code block of 13 lines. The last two are
+**disjunctions**, and their second disjunct is a legitimate end state:
+
+```text
+read_only_runtime_contract = observed or explicitly blocked
+paid_canary = separately approved or NOT_RUN
+```
+
+Applied to the current, truthful state:
+
+| Gate line                     | Required (plan)                        | Current                                             | Satisfied by              |
+|-------------------------------|----------------------------------------|-----------------------------------------------------|---------------------------|
+| `read_only_runtime_contract`  | `observed` **or** `explicitly blocked`  | `blocked`, and documented in this file and in `dreamina-cli-runtime.md` | the **`explicitly blocked`** disjunct |
+| `paid_canary`                 | `separately approved` **or** `NOT_RUN`  | `NOT_RUN`                                           | the **`NOT_RUN`** disjunct |
+
+The other 11 gate lines are `PASS` on measured evidence (see
+`offline.md` §8).
+
+So, **as the plan is written**, every one of the 13 lines is currently in
+a state the plan accepts. What has *not* happened — and what this
+document does not claim — is observing the live CLI or running a real
+paid generation. `read_only_runtime_contract` is **not** `observed`, and
+`paid_canary` is **not** `APPROVED`.
+
+**What is being asked of you** (the repository owner), in your own words:
+
+* **(a)** accept the plan's `explicitly blocked` / `NOT_RUN` branch as the
+  closing state for this work — the implementation is complete and
+  offline-verified, and the live-runtime evidence is deliberately
+  deferred; **or**
+* **(b)** upgrade the two gates to `observed` / `APPROVED` by running
+  §0 A and §0 B below in your own authorized shell, after which the
+  verifier flips them automatically with no code change.
+
+Either answer closes the work. Neither will be written into this file by
+the assistant on your behalf.
 
 ## 0. Everything that remains, in one place
 
