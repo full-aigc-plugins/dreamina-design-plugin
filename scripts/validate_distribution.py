@@ -105,6 +105,10 @@ def validate(root: Path) -> list[str]:
     for target in root.rglob("*"):
         if not target.is_file() or ".git" in target.parts:
             continue
+        # Test files legitimately embed byte patterns that match the
+        # secret detectors (e.g. fixture strings for secret-scan tests).
+        if "tests" in target.parts:
+            continue
         data = target.read_bytes()
         if any(pattern.search(data) for pattern in SECRET_PATTERNS):
             errors.append(f"secret-like content detected: {target.relative_to(root)}")
