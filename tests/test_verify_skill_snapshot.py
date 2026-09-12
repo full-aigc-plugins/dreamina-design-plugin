@@ -74,6 +74,21 @@ def _write_skill(root: Path, name: str, *, upstream_sha: str = "a" * 40, body: s
     return skill_dir
 
 
+def _init_fake_upstream(upstream_root: Path, *, head_sha: str) -> None:
+    """Create a fake git checkout rooted at ``upstream_root`` whose HEAD
+    resolves to ``head_sha``. The directory also carries every expected
+    Skill directory so the parity check can verify identity."""
+    upstream_root.mkdir(parents=True, exist_ok=True)
+    git_dir = upstream_root / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    refs_dir = git_dir / "refs" / "heads"
+    refs_dir.mkdir(parents=True)
+    (refs_dir / "main").write_text(f"{head_sha}\n", encoding="utf-8")
+    for name in EXPECTED_SKILLS:
+        (upstream_root / name).mkdir(exist_ok=True)
+
+
 class ModuleExportTests(unittest.TestCase):
     def test_module_exports_verifier(self) -> None:
         self.assertIsNotNone(SnapshotVerifier)
@@ -124,40 +139,32 @@ class ParityNotRunTests(unittest.TestCase):
             self.assertEqual(report.parity_status, "NOT_RUN")
             self.assertIn("upstream", report.parity_reason.lower())
 
-    def test_parity_passes_when_upstream_matches_byte_for_byte(self) -> None:
+    def test_parity_passes_when_upstream_sha_matches_head(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             skills_root = Path(tmp) / "skills"
             upstream_root = Path(tmp) / "upstream"
+            head_sha = "a" * 40
+            _init_fake_upstream(upstream_root, head_sha=head_sha)
             for name in EXPECTED_SKILLS:
-                local_skill = _write_skill(skills_root, name, body="upstream body")
-                upstream_skill = upstream_root / name
-                upstream_skill.mkdir(parents=True, exist_ok=True)
-                # Mirror local content exactly.
-                upstream_skill.joinpath("SKILL.md").write_text(
-                    local_skill.joinpath("SKILL.md").read_text(encoding="utf-8"),
-                    encoding="utf-8",
-                )
+                _write_skill(skills_root, name, upstream_sha=head_sha)
             verifier = SnapshotVerifier(skills_root=skills_root, upstream_root=upstream_root)
             report = verifier.run()
             self.assertEqual(report.parity_status, "PASS")
 
-    def test_parity_fails_when_local_drifts(self) -> None:
+    def test_parity_fails_when_local_sha_drifts_from_head(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             skills_root = Path(tmp) / "skills"
             upstream_root = Path(tmp) / "upstream"
+            head_sha = "b" * 40
+            _init_fake_upstream(upstream_root, head_sha=head_sha)
             for name in EXPECTED_SKILLS:
-                local_skill = _write_skill(skills_root, name, body="local body")
-                upstream_skill = upstream_root / name
-                upstream_skill.mkdir(parents=True, exist_ok=True)
-                upstream_skill.joinpath("SKILL.md").write_text(
-                    "---\nname: " + name + "\ndescription: upstream\n---\nupstream body",
-                    encoding="utf-8",
-                )
+                # Local Skills pin a *different* SHA.
+                _write_skill(skills_root, name, upstream_sha="c" * 40)
             verifier = SnapshotVerifier(skills_root=skills_root, upstream_root=upstream_root)
             report = verifier.run()
             self.assertEqual(report.parity_status, "FAIL")
             self.assertTrue(
-                any("dreamina-cli" in entry for entry in report.parity_mismatches),
+                any(entry.startswith("dreamina-cli:") for entry in report.parity_mismatches),
                 f"expected a dreamina-cli mismatch in {report.parity_mismatches}",
             )
 

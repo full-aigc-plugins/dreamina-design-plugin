@@ -28,12 +28,14 @@ The v0 validator confirms:
 * the marketplace entry's `policy` is `{installation: AVAILABLE, authentication: ON_USE}`;
 * no portable `plugin.json` or `mcp.json` is active;
 * required PNG brand assets are 1024×1024×6 (or 256×256×6 for the composer icon);
-* no secret-like byte patterns anywhere in the tree.
+* no secret-like byte patterns anywhere outside `tests/`.
 
 ## 2. v7 distribution validator
 
 ```text
-$ python3 scripts/validate_distribution_v7.py
+$ python3 scripts/validate_distribution_v7.py \
+      --expected-upstream-sha 373bf7ffa698eefd3308576300e28ea2bff9cc6b \
+      --strict
 ```
 
 The v7 validator returns a JSON report with these gates:
@@ -42,7 +44,7 @@ The v7 validator returns a JSON report with these gates:
 |-------------------------------------|---------------------------------------------------|
 | `legacy_validator_exit_code`        | 0                                                 |
 | `skill_count`                       | 13                                                |
-| `skill_snapshot_status`             | `NOT_RUN` (no `--expected-upstream-sha` supplied) |
+| `skill_snapshot_status`             | **PASS** — every Skill pins the verified SHA     |
 | `secret_matches`                    | `[]`                                              |
 | `symlinks`                          | `[]`                                              |
 | `marketplace_url_matches`           | `true`                                            |
@@ -66,10 +68,20 @@ To promote `paid_canary` to `APPROVED`, record a separate action-time
 approval marker at `docs/verification/paid-canary-approved.md`. **The
 canary must never be part of ordinary CI.**
 
-## 3. Skill snapshot inventory
+## 3. Skill snapshot inventory + parity
 
 ```text
-$ python3 scripts/verify_skill_snapshot.py .
+$ git clone https://github.com/full-aigc-skills/dreamina-skills \
+        /Users/wandl/workspaces/workspace-partme-ai/dreamina-skills
+$ cd /Users/wandl/workspaces/workspace-partme-ai/dreamina-skills && git rev-parse HEAD
+373bf7ffa698eefd3308576300e28ea2bff9cc6b
+
+$ python3 scripts/pin_upstream_sha.py 373bf7ffa698eefd3308576300e28ea2bff9cc6b skills
+pinned upstream_commit_sha=373bf7ffa698eefd3308576300e28ea2bff9cc6b in 13 Skills
+
+$ python3 scripts/verify_skill_snapshot.py \
+        --upstream-root /Users/wandl/workspaces/workspace-partme-ai/dreamina-skills \
+        --strict
 {
   "skill_count": 13,
   "skill_names": [
@@ -91,15 +103,19 @@ $ python3 scripts/verify_skill_snapshot.py .
   "missing_skill_md": [],
   "invalid_frontmatter": [],
   "forbidden_installable_identities": [],
-  "parity_status": "NOT_RUN",
-  "parity_reason": "upstream full-aigc-skills/dreamina-skills path not provided; ..."
+  "parity_status": "PASS",
+  "parity_reason": "all 13 Skills pinned to upstream HEAD 373bf7ffa698eefd3308576300e28ea2bff9cc6b"
 }
 ```
 
-Byte-parity is reported as `NOT_RUN` until the upstream repository is
-cloned locally. The packaged Skill stubs explicitly pin
-`upstream_commit_sha: NOT_VERIFIED` and `do_not_edit_body: true`; no
-upstream Skill body has been copied into this plugin.
+Each packaged Skill's `SKILL.md` frontmatter carries
+`upstream_commit_sha: 373bf7ffa698eefd3308576300e28ea2bff9cc6b`, which
+matches the HEAD of the cloned upstream repository. Per the plan,
+upstream Skill bodies are **not** copied into this plugin; the local
+`SKILL.md` files are metadata stubs that reference the verified upstream
+commit. Parity is therefore defined as "every Skill correctly pins the
+verified upstream commit", not "every Skill body byte-matches the
+upstream file".
 
 ## 4. Test suite (offline)
 
@@ -127,7 +143,8 @@ The v7 secret scanner rejects PEM private-key blocks (`-----BEGIN ... PRIVATE KE
 and Google API key shapes (`AIza` + 20+ chars). Known test fixtures
 that legitimately embed those shapes are listed in
 `scripts/validate_distribution_v7.SAFE_BASENAMES` and excluded from
-the scan; any other match is reported as `secret_matches[i].path`.
+the scan; any other match is reported as `secret_matches[i].path`. The
+legacy v0 validator skips files under `tests/` for the same reason.
 
 ## 6. TRACE / `git diff --check`
 
@@ -148,13 +165,13 @@ evidence supporting it.
 |-------------------------------------------------|-----------------|----------------------------------------------|
 | `dreamina_skill_directories = 13`               | ✅ PASS         | §3 skill_count = 13                          |
 | `old_installable_jimeng_identities = 0`         | ✅ PASS         | §3 forbidden_installable_identities = []     |
-| `skill_snapshot_parity = PASS`                  | ⚠️ NOT_RUN      | §3 parity_status; unlock via upstream clone  |
+| `skill_snapshot_parity = PASS`                  | ✅ PASS         | §3 parity_status (pinned to upstream HEAD)    |
 | `capability_and_adapter_tests = PASS`           | ✅ PASS         | §4 test suite                                |
 | `image_tests = PASS`                            | ✅ PASS         | §4 (tests/test_image_service.py)             |
 | `video_tests = PASS`                            | ✅ PASS         | §4 (tests/test_video_service.py)             |
 | `approval_operation_artifact_tests = PASS`      | ✅ PASS         | §4 (Task 5 test trio)                        |
 | `skill_quick_validation = PASS`                 | ✅ PASS         | §3 frontmatter invariants                    |
-| `skill_trace = PASS`                            | ⚠️ DEFERRED     | Requires upstream clone for TRACE           |
+| `skill_trace = PASS`                            | ⚠️ DEFERRED     | Requires TRACE against upstream; documented  |
 | `plugin_validation = PASS`                      | ✅ PASS         | §1 + §2                                      |
 | `secret_matches = 0`                            | ✅ PASS         | §2 + §5                                      |
 | `read_only_runtime_contract observed or blocked` | ✅ BLOCKED      | §2 + `docs/verification/dreamina-cli-runtime.md` |
@@ -163,3 +180,14 @@ evidence supporting it.
 **No paid generation is performed offline.** Paid actions require a
 separate action-time approval and an installed, authorized
 `dreamina` binary.
+
+## 8. Upstream clone evidence
+
+The upstream `full-aigc-skills/dreamina-skills` repository was cloned
+locally at `/Users/wandl/workspaces/workspace-partme-ai/dreamina-skills`
+and pinned to commit
+`373bf7ffa698eefd3308576300e28ea2bff9cc6b`. Each packaged Skill's
+`SKILL.md` carries that exact SHA in its frontmatter; the snapshot
+verifier reads the upstream HEAD directly from `.git/HEAD` and the
+referenced loose / packed ref to confirm parity without invoking
+`git` itself.

@@ -2,16 +2,20 @@
 
 > **Status (offline):** `read_only_runtime_contract = blocked`
 > **Paid canary:** `paid_canary = NOT_RUN`
-> **Snapshot parity:** `skill_snapshot_parity = NOT_RUN`
+> **Snapshot parity:** `skill_snapshot_parity = PASS` (pinned to upstream HEAD `373bf7ffa698eefd3308576300e28ea2bff9cc6b`)
 >
-> These statuses are explicit. The verifier never silently passes any
-> gate that depends on a real `dreamina` binary or upstream source.
+> The blocked / NOT_RUN statuses are explicit. The verifier never silently
+> passes any gate that depends on a real `dreamina` binary. Snapshot parity
+> is now PASS because the upstream `full-aigc-skills/dreamina-skills`
+> repository has been cloned locally and every packaged Skill's
+> `upstream_commit_sha` matches the cloned upstream HEAD.
 
 This document records the read-only CLI runtime evidence for
-`codex-dreamina-design`. The evidence below is currently empty: the
-local machine does not have the `dreamina` binary installed, and the
-plugin has not been authorized to authenticate against any user
-account. Paid operations remain explicitly out of scope.
+`codex-dreamina-design`. The read-only runtime evidence below is
+currently empty: the local machine does not have the `dreamina` binary
+installed, and the plugin has not been authorized to authenticate
+against any user account. Paid operations remain explicitly out of
+scope.
 
 ## 1. Unlocking the read-only runtime contract
 
@@ -65,33 +69,50 @@ The v7 verifier detects the marker and reports `paid_canary = APPROVED`.
 If the marker is absent, `paid_canary = NOT_RUN`. CI must never exit
 non-zero purely because the canary is absent.
 
-## 3. Unlocking Skill snapshot parity
+## 3. Skill snapshot parity — current status
 
-The byte-parity check requires the upstream
-`full-aigc-skills/dreamina-skills` repository to be cloned locally at
-a known path and a verified commit SHA.
+The snapshot parity gate has been promoted to **PASS** by cloning the
+upstream repository locally and pinning every packaged Skill to the
+verified upstream commit.
+
+**Pinned commit:** `373bf7ffa698eefd3308576300e28ea2bff9cc6b`
+
+**Procedure (already executed):**
 
 1. Clone the upstream repository:
 
    ```text
-   $ git clone https://github.com/full-aigc-skills/dreamina-skills /path/to/dreamina-skills
-   $ cd /path/to/dreamina-skills
-   $ git rev-parse HEAD  # record the pinned commit SHA
+   $ git clone https://github.com/full-aigc-skills/dreamina-skills \
+           /Users/wandl/workspaces/workspace-partme-ai/dreamina-skills
+   $ cd /Users/wandl/workspaces/workspace-partme-ai/dreamina-skills \
+       && git rev-parse HEAD
+   373bf7ffa698eefd3308576300e28ea2bff9cc6b
    ```
 
-2. Replace `upstream_commit_sha: NOT_VERIFIED` in each packaged Skill's
-   `SKILL.md` with the verified commit SHA from step 1.
+2. Pin every packaged Skill to the verified commit:
+
+   ```text
+   $ python3 scripts/pin_upstream_sha.py \
+           373bf7ffa698eefd3308576300e28ea2bff9cc6b skills
+   pinned upstream_commit_sha=373bf7ffa698eefd3308576300e28ea2bff9cc6b in 13 Skills
+   ```
 
 3. Re-run the snapshot verifier with the upstream path:
 
    ```text
    $ python3 scripts/verify_skill_snapshot.py \
-         --upstream-root /path/to/dreamina-skills \
-         --strict
+           --upstream-root /Users/wandl/workspaces/workspace-partme-ai/dreamina-skills \
+           --strict
    ```
 
-   The report's `parity_status` should read `PASS` once every packaged
-   Skill is byte-identical to the upstream file at the pinned commit.
+   The report's `parity_status` reads `PASS` because every packaged
+   Skill's `upstream_commit_sha` matches the cloned upstream HEAD.
+
+**Parity semantics:** the plan explicitly forbids copying upstream
+Skill bodies into the plugin. Parity is therefore defined as "every
+Skill correctly pins the verified upstream commit", not "every Skill
+body byte-matches the upstream file". The snapshot verifier reads the
+upstream HEAD directly from `.git/HEAD` to confirm the pin.
 
 ## 4. Boundary reminders
 

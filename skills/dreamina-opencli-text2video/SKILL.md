@@ -2,7 +2,7 @@
 name: dreamina-opencli-text2video
 description: Stub for the upstream Dreamina Skill 'dreamina-opencli-text2video'. Body is fetched from full-aigc-skills/dreamina-skills on demand and
 must remain byte-identical to the pinned upstream commit.
-upstream_commit_sha: NOT_VERIFIED
+upstream_commit_sha: 373bf7ffa698eefd3308576300e28ea2bff9cc6b
 upstream_repository: https://github.com/full-aigc-skills/dreamina-skills
 do_not_edit_body: true
 ---

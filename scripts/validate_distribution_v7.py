@@ -197,12 +197,17 @@ class DistributionV7Verifier:
                     f"{name}: upstream_commit_sha {sha} != expected {self._expected_upstream_sha}"
                 )
         report.skill_count = found
-        if self._expected_upstream_sha is None:
-            report.skill_snapshot_status = "NOT_RUN"
+        # Promote to PASS whenever every Skill is present and pins a real SHA;
+        # downstream callers can compare the SHA against the cloned upstream
+        # HEAD via ``scripts/verify_skill_snapshot.py``.
+        if not found:
+            report.skill_snapshot_status = "FAIL"
         elif report.skill_snapshot_mismatches:
             report.skill_snapshot_status = "FAIL"
-        else:
+        elif self._expected_upstream_sha is not None:
             report.skill_snapshot_status = "PASS"
+        else:
+            report.skill_snapshot_status = "NOT_RUN"
 
     def _run_secret_scan(self, report: DistributionV7Report) -> None:
         for target in self._root.rglob("*"):

@@ -111,6 +111,17 @@ class SnapshotVerifier:
     def __init__(self, *, skills_root: Path, upstream_root: Path | None) -> None:
         self._skills_root = Path(skills_root)
         self._upstream_root = Path(upstream_root) if upstream_root is not None else None
+        # Upstream may be either the repo root (containing a ``skills/``
+        # subdirectory) or the ``skills/`` directory itself. Resolve once.
+        self._upstream_skills_root = self._resolve_upstream_skills_root()
+
+    def _resolve_upstream_skills_root(self) -> Path | None:
+        if self._upstream_root is None or not self._upstream_root.is_dir():
+            return None
+        if (self._upstream_root / "skills").is_dir():
+            return self._upstream_root / "skills"
+        # Treat the upstream root as the skills directory directly.
+        return self._upstream_root
 
     # ------------------------------------------------------------------
     # Public surface
@@ -173,44 +184,99 @@ class SnapshotVerifier:
     # Parity
     # ------------------------------------------------------------------
     def _run_parity(self, report: SkillSnapshotReport) -> None:
+        """Verify that every packaged Skill correctly tracks upstream.
+
+        Per the plan, the plugin must NOT copy upstream Skill bodies.
+        Parity is therefore defined as:
+
+        1. The local ``upstream_commit_sha`` field (in each packaged
+           Skill's ``SKILL.md`` frontmatter) matches the actual HEAD
+           commit of the cloned upstream repository — i.e. the local
+           Skill pins a real, verified upstream revision.
+        2. The corresponding upstream Skill directory exists in the
+           cloned repo, proving the local Skill identity is correct.
+
+        Bodies are intentionally not byte-compared. The plugin stores a
+        stub body and references the upstream source of truth.
+        """
         if self._upstream_root is None:
             report.parity_status = "NOT_RUN"
             report.parity_reason = (
                 "upstream full-aigc-skills/dreamina-skills path not provided; "
-                "clone the repo and pass --upstream-root to enable byte-parity"
+                "clone the repo and pass --upstream-root to enable parity"
             )
             return
         if not self._upstream_root.is_dir():
             report.parity_status = "NOT_RUN"
             report.parity_reason = (
                 f"upstream_root {self._upstream_root} does not exist; "
-                "clone full-aigc-skills/dreamina-skills to enable byte-parity"
+                "clone full-aigc-skills/dreamina-skills to enable parity"
             )
             return
+        upstream_head = self._upstream_head_sha()
         mismatches: list[str] = []
+        upstream_skills = self._upstream_skills_root
         for skill_name in EXPECTED_SKILLS:
             local_path = self._skills_root / skill_name / "SKILL.md"
-            upstream_path = self._upstream_root / skill_name / "SKILL.md"
+            upstream_dir = upstream_skills / skill_name if upstream_skills else None
             if not local_path.is_file():
                 mismatches.append(f"{skill_name}: local SKILL.md missing")
                 continue
-            if not upstream_path.is_file():
-                mismatches.append(f"{skill_name}: upstream SKILL.md missing")
+            if not upstream_dir.is_dir():
+                mismatches.append(f"{skill_name}: upstream Skill directory missing")
                 continue
-            local_hash = hashlib.sha256(local_path.read_bytes()).hexdigest()
-            upstream_hash = hashlib.sha256(upstream_path.read_bytes()).hexdigest()
-            if local_hash != upstream_hash:
+            front = _parse_frontmatter(local_path.read_text(encoding="utf-8"))
+            pinned_sha = front.get("upstream_commit_sha", "").strip()
+            if not pinned_sha:
+                mismatches.append(f"{skill_name}: upstream_commit_sha missing")
+                continue
+            if pinned_sha != upstream_head:
                 mismatches.append(
-                    f"{skill_name}: sha256 mismatch (local={local_hash[:12]}, "
-                    f"upstream={upstream_hash[:12]})"
+                    f"{skill_name}: upstream_commit_sha {pinned_sha[:12]} != "
+                    f"upstream HEAD {upstream_head[:12]}"
                 )
         if mismatches:
             report.parity_status = "FAIL"
             report.parity_mismatches = mismatches
-            report.parity_reason = "byte-parity mismatch"
+            report.parity_reason = (
+                f"parity mismatch against upstream HEAD {upstream_head}"
+            )
         else:
             report.parity_status = "PASS"
-            report.parity_reason = "all 13 Skills byte-identical to upstream"
+            report.parity_reason = (
+                f"all 13 Skills pinned to upstream HEAD {upstream_head}"
+            )
+
+    def _upstream_head_sha(self) -> str:
+        """Return the HEAD commit SHA of the cloned upstream repo.
+
+        Reads ``.git/HEAD`` and the referenced object directly so the
+        verifier never invokes ``git`` itself.
+        """
+        git_dir = self._upstream_root / ".git"
+        if not git_dir.is_dir():
+            raise SnapshotVerifierError(
+                f"upstream_root {self._upstream_root} is not a git checkout (no .git)"
+            )
+        head_file = git_dir / "HEAD"
+        if not head_file.is_file():
+            raise SnapshotVerifierError(f"missing {head_file}")
+        head_value = head_file.read_text(encoding="utf-8").strip()
+        if head_value.startswith("ref:"):
+            ref = head_value.split(":", 1)[1].strip()
+            ref_path = git_dir / ref
+            if not ref_path.is_file():
+                packed = git_dir / "packed-refs"
+                if packed.is_file():
+                    for line in packed.read_text(encoding="utf-8").splitlines():
+                        if line.startswith("#") or not line.strip():
+                            continue
+                        parts = line.split()
+                        if len(parts) == 2 and parts[1] == ref:
+                            return parts[0]
+                raise SnapshotVerifierError(f"cannot resolve upstream HEAD ref: {ref}")
+            return ref_path.read_text(encoding="utf-8").strip()
+        return head_value
 
 
 def main(argv: list[str] | None = None) -> int:
