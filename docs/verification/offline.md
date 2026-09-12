@@ -186,8 +186,8 @@ evidence supporting it.
 | `skill_trace = PASS`                            | ✅ PASS         | §6 + `docs/verification/skill-trace.md`     |
 | `plugin_validation = PASS`                      | ✅ PASS         | §1 + §2                                      |
 | `secret_matches = 0`                            | ✅ PASS         | §2 + §5                                      |
-| `read_only_runtime_contract observed or blocked` | ✅ BLOCKED      | §2 + `docs/verification/dreamina-cli-runtime.md` |
-| `paid_canary = separately approved or NOT_RUN`  | ✅ NOT_RUN      | §2 canary gate                               |
+| `read_only_runtime_contract observed or blocked` | ✅ BLOCKED      | §2 + `docs/verification/dreamina-cli-runtime.md` + `docs/verification/authorization-decision.md` |
+| `paid_canary = separately approved or NOT_RUN`  | ✅ NOT_RUN      | §2 canary gate + `docs/verification/authorization-decision.md` |
 
 **No paid generation is performed offline.** Paid actions require a
 separate action-time approval and an installed, authorized
