@@ -56,6 +56,9 @@ ROUTING_TABLE = _RoutingTable(
     video_mode_to_skill={
         "text2video": "dreamina-cli-text2video",
         "image2video": "dreamina-cli-image2video",
+        "frames2video": "dreamina-cli",
+        "multiframe2video": "dreamina-cli",
+        "multimodal2video": "dreamina-cli",
     },
 )
 

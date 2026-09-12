@@ -59,8 +59,27 @@ def validate(root: Path) -> list[str]:
         errors.append("foundation version must be 0.1.0")
     if manifest.get("skills") != "./skills/":
         errors.append("manifest skills path must be ./skills/")
-    if "mcpServers" in manifest or (root / ".mcp.json").exists():
-        errors.append("MCP configuration is forbidden until an MCP server exists")
+    mcp_path = root / ".mcp.json"
+    if "mcpServers" in manifest or mcp_path.exists():
+        if manifest.get("mcpServers") != "./.mcp.json" or not mcp_path.is_file():
+            errors.append("manifest and .mcp.json must declare the same MCP companion")
+        else:
+            try:
+                mcp = load_json(mcp_path)["mcpServers"]["dreamina_design"]
+                if mcp.get("default_tools_approval_mode") != "prompt":
+                    errors.append("MCP default approval mode must fail closed with prompt")
+                tools = mcp.get("tools", {})
+                if tools.get("dreamina_capability_snapshot", {}).get("approval_mode") != "approve":
+                    errors.append("read-only capability tool must be explicitly approved")
+                for paid in ("dreamina_submit_image", "dreamina_submit_video"):
+                    if tools.get(paid, {}).get("approval_mode") != "prompt":
+                        errors.append(f"paid MCP tool must require prompt approval: {paid}")
+                if mcp.get("args") != ["-m", "scripts.dreamina_mcp_server"]:
+                    errors.append("MCP server module args mismatch")
+                if not (root / "scripts" / "dreamina_mcp_server.py").is_file():
+                    errors.append("MCP server module missing")
+            except (KeyError, TypeError, json.JSONDecodeError):
+                errors.append("invalid dreamina_design MCP configuration")
     interface = manifest.get("interface", {})
     for field in ("displayName", "shortDescription", "longDescription", "developerName", "category", "brandColor", "composerIcon", "logo", "logoDark"):
         if not interface.get(field):
@@ -128,4 +147,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

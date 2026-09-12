@@ -35,7 +35,11 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(manifest["version"], "0.1.0")
         self.assertEqual(manifest["repository"], REPOSITORY)
         self.assertEqual(manifest["skills"], "./skills/")
-        self.assertNotIn("mcpServers", manifest)
+        self.assertEqual(manifest["mcpServers"], "./.mcp.json")
+        mcp = load_json(".mcp.json")["mcpServers"]["dreamina_design"]
+        self.assertEqual(mcp["default_tools_approval_mode"], "prompt")
+        self.assertEqual(mcp["tools"]["dreamina_submit_image"]["approval_mode"], "prompt")
+        self.assertEqual(mcp["tools"]["dreamina_submit_video"]["approval_mode"], "prompt")
         interface = manifest["interface"]
         self.assertEqual(interface["displayName"], DISPLAY_NAME)
         self.assertEqual(interface["brandColor"], BRAND_COLOR)

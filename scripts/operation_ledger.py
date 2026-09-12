@@ -14,13 +14,18 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
+import fcntl
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 
 TERMINAL_STATES = {"succeeded", "failed", "cancelled"}
+SUBMIT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 class OperationLedgerError(Exception):
@@ -51,11 +56,58 @@ class OperationLedger:
         self._root.mkdir(parents=True, exist_ok=True)
         self._ops_dir = self._root / "operations"
         self._ops_dir.mkdir(parents=True, exist_ok=True)
+        self._intents_dir = self._root / "submission_intents"
+        self._intents_dir.mkdir(parents=True, exist_ok=True)
         self._index_path = self._root / "index.json"
 
     # ------------------------------------------------------------------
     # Recording
     # ------------------------------------------------------------------
+    def begin_submission(self, *, session_id: str, mode: str, request_fingerprint: str) -> dict[str, Any]:
+        if re.fullmatch(r"[a-f0-9]{64}", request_fingerprint) is None:
+            raise ValueError("request_fingerprint must be a SHA-256 hex digest")
+        path = self._intents_dir / f"{request_fingerprint}.json"
+        with self._exclusive_lock():
+            existing = self._load_json(path)
+            if existing and existing.get("state") not in {"aborted"}:
+                raise AmbiguousSubmissionError(
+                    "a submission intent already exists; reconcile it before resubmitting"
+                )
+            intent = {
+                "session_id": session_id,
+                "mode": mode,
+                "request_fingerprint": request_fingerprint,
+                "state": "submitting",
+                "created_at": _now_iso(),
+                "submit_id": None,
+            }
+            self._atomic_write(path, intent)
+            return intent
+
+    def complete_submission_intent(self, *, request_fingerprint: str, submit_id: str | None, error_code: str | None = None) -> dict[str, Any]:
+        path = self._intents_dir / f"{request_fingerprint}.json"
+        with self._exclusive_lock():
+            intent = self._load_json(path)
+            if not intent:
+                raise OperationNotFoundError(request_fingerprint)
+            intent["submit_id"] = submit_id
+            intent["state"] = "accepted" if submit_id else "manual_review"
+            intent["updated_at"] = _now_iso()
+            if error_code:
+                intent["last_error_code"] = error_code
+            self._atomic_write(path, intent)
+            return intent
+
+    def abort_submission_intent(self, *, request_fingerprint: str, reason: str) -> None:
+        path = self._intents_dir / f"{request_fingerprint}.json"
+        with self._exclusive_lock():
+            intent = self._load_json(path)
+            if intent:
+                intent["state"] = "aborted"
+                intent["last_error_code"] = reason
+                intent["updated_at"] = _now_iso()
+                self._atomic_write(path, intent)
+
     def record(
         self,
         *,
@@ -64,26 +116,27 @@ class OperationLedger:
         mode: str,
         request_fingerprint: str,
     ) -> dict[str, Any]:
-        existing = self._read(submit_id)
-        if existing is not None and existing.get("state") in TERMINAL_STATES:
-            raise AmbiguousSubmissionError(
-                f"submit_id {submit_id} already terminated with state {existing['state']}; "
-                f"query it via status before any resubmission"
-            )
-        receipt = {
-            "submit_id": submit_id,
-            "session_id": session_id,
-            "mode": mode,
-            "request_fingerprint": request_fingerprint,
-            "state": "queued",
-            "submitted_at": _now_iso(),
-            "updated_at": _now_iso(),
-            "required_action": "wait",
-            "history": [{"state": "queued", "at": _now_iso()}],
-        }
-        self._atomic_write(self._path_for(submit_id), receipt)
-        self._index_add(submit_id, session_id)
-        return receipt
+        with self._exclusive_lock():
+            existing = self._read(submit_id)
+            if existing is not None:
+                raise AmbiguousSubmissionError(
+                    f"submit_id {submit_id} is already recorded with state {existing['state']}; "
+                    "query it before any new submission"
+                )
+            receipt = {
+                "submit_id": submit_id,
+                "session_id": session_id,
+                "mode": mode,
+                "request_fingerprint": request_fingerprint,
+                "state": "queued",
+                "submitted_at": _now_iso(),
+                "updated_at": _now_iso(),
+                "required_action": "wait",
+                "history": [{"state": "queued", "at": _now_iso()}],
+            }
+            self._atomic_write(self._path_for(submit_id), receipt)
+            self._index_add(submit_id, session_id)
+            return receipt
 
     def update_state(
         self,
@@ -93,18 +146,23 @@ class OperationLedger:
         required_action: str | None = None,
         last_error_code: str | None = None,
     ) -> dict[str, Any]:
-        receipt = self._read(submit_id)
-        if receipt is None:
-            raise OperationNotFoundError(submit_id)
-        receipt["state"] = state
-        receipt["updated_at"] = _now_iso()
-        if required_action is not None:
-            receipt["required_action"] = required_action
-        if last_error_code is not None:
-            receipt["last_error_code"] = last_error_code
-        receipt.setdefault("history", []).append({"state": state, "at": _now_iso()})
-        self._atomic_write(self._path_for(submit_id), receipt)
-        return receipt
+        with self._exclusive_lock():
+            receipt = self._read(submit_id)
+            if receipt is None:
+                raise OperationNotFoundError(submit_id)
+            if receipt.get("state") in TERMINAL_STATES and state != receipt.get("state"):
+                raise AmbiguousSubmissionError(
+                    f"terminal state {receipt['state']} cannot transition to {state}"
+                )
+            receipt["state"] = state
+            receipt["updated_at"] = _now_iso()
+            if required_action is not None:
+                receipt["required_action"] = required_action
+            if last_error_code is not None:
+                receipt["last_error_code"] = last_error_code
+            receipt.setdefault("history", []).append({"state": state, "at": _now_iso()})
+            self._atomic_write(self._path_for(submit_id), receipt)
+            return receipt
 
     def get(self, *, submit_id: str) -> dict[str, Any]:
         receipt = self._read(submit_id)
@@ -116,22 +174,26 @@ class OperationLedger:
     # CLI-driven discovery and querying
     # ------------------------------------------------------------------
     def discover_cancel_support(self, *, adapter: Any) -> bool:
-        """Argv-only probe asking the CLI whether it supports cancellation."""
-        result = adapter.run(["capabilities", "cancel"])
-        payload = result.payload if isinstance(result.payload, Mapping) else {}
-        return bool(payload.get("cancel_supported", False))
+        """Return false because the observed CLI contract has no cancel command."""
+        return False
 
     def query(self, *, submit_id: str, adapter: Any) -> dict[str, Any]:
         if self._read(submit_id) is None:
             raise OperationNotFoundError(submit_id)
-        result = adapter.run(["status", submit_id])
+        result = adapter.run(["query_result", "--submit_id", submit_id])
         payload = result.payload if isinstance(result.payload, Mapping) else {}
-        new_state = str(payload.get("state", "unknown"))
-        new_action = payload.get("required_action")
+        cli_state = str(payload.get("gen_status", "unknown")).lower()
+        state_map = {
+            "querying": ("queued", "wait"),
+            "success": ("succeeded", "download"),
+            "fail": ("failed", "report_failure"),
+            "failed": ("failed", "report_failure"),
+        }
+        new_state, new_action = state_map.get(cli_state, ("unknown", "manual_review"))
         return self.update_state(
             submit_id=submit_id,
             state=new_state,
-            required_action=str(new_action) if new_action is not None else None,
+            required_action=new_action,
         )
 
     def cancel(self, *, submit_id: str, adapter: Any) -> dict[str, Any]:
@@ -150,11 +212,38 @@ class OperationLedger:
             required_action="report_failure",
         )
 
+    def poll_until_terminal(
+        self,
+        *,
+        submit_id: str,
+        adapter: Any,
+        max_attempts: int = 30,
+        interval_seconds: float = 1.0,
+        sleep_fn: Any = time.sleep,
+    ) -> dict[str, Any]:
+        """Bounded query-only polling; it never invokes a generation command."""
+        if max_attempts < 1 or max_attempts > 3600:
+            raise ValueError("max_attempts must be between 1 and 3600")
+        if interval_seconds < 0 or interval_seconds > 300:
+            raise ValueError("interval_seconds must be between 0 and 300")
+        for attempt in range(max_attempts):
+            receipt = self.query(submit_id=submit_id, adapter=adapter)
+            if receipt["state"] in TERMINAL_STATES:
+                return receipt
+            if attempt + 1 < max_attempts:
+                sleep_fn(interval_seconds)
+        return self.update_state(
+            submit_id=submit_id,
+            state="unknown",
+            required_action="retry_query",
+            last_error_code="POLL_LIMIT_REACHED",
+        )
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
     def _path_for(self, submit_id: str) -> Path:
-        if not submit_id or "/" in submit_id or ".." in submit_id:
+        if not SUBMIT_ID_PATTERN.fullmatch(submit_id):
             raise ValueError(f"unsafe submit_id: {submit_id!r}")
         return self._ops_dir / f"{submit_id}.json"
 
@@ -170,11 +259,24 @@ class OperationLedger:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, indent=2, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
             os.replace(tmp_path, path)
         except Exception:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
             raise
+
+    @contextmanager
+    def _exclusive_lock(self):
+        lock_path = self._root / ".operation.lock"
+        with open(lock_path, "a+b") as handle:
+            os.chmod(lock_path, 0o600)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def _index_add(self, submit_id: str, session_id: str) -> None:
         index = self._load_json(self._index_path, default={"submits": {}})

@@ -66,6 +66,15 @@ class SubmitIdPersistenceTests(unittest.TestCase):
         op = ledger_b.get(submit_id="sub-A")
         self.assertEqual(op["session_id"], "s1")
 
+    def test_submission_intent_survives_crash_window_and_blocks_retry(self) -> None:
+        fingerprint = "9" * 64
+        self.ledger.begin_submission(session_id="s", mode="text2image", request_fingerprint=fingerprint)
+        restarted = OperationLedger(root=Path(self.tmp.name) / "ops")
+        with self.assertRaises(AmbiguousSubmissionError):
+            restarted.begin_submission(session_id="s", mode="text2image", request_fingerprint=fingerprint)
+        intent = restarted.complete_submission_intent(request_fingerprint=fingerprint, submit_id=None, error_code="TRANSPORT_UNKNOWN")
+        self.assertEqual(intent["state"], "manual_review")
+
 
 class TerminalAndUnknownStateTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -107,23 +116,9 @@ class CancelSupportDiscoveryTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
-    def test_cancel_supported_when_adapter_reports_it(self) -> None:
+    def test_cancel_is_not_advertised_by_current_cli_contract(self) -> None:
         ledger = OperationLedger(root=Path(self.tmp.name) / "ops")
-
-        class _Adapter:
-            def run(self, args):
-                from scripts.dreamina_adapter import DreaminaResult
-                if args[:2] == ["capabilities", "cancel"]:
-                    return DreaminaResult(
-                        exit_code=0,
-                        payload={"cancel_supported": True},
-                        error_code=None,
-                        submit_id=None,
-                        stderr="",
-                    )
-                raise AssertionError(args)
-
-        self.assertTrue(ledger.discover_cancel_support(adapter=_Adapter()))
+        self.assertFalse(ledger.discover_cancel_support(adapter=None))
 
     def test_cancel_unsupported_raises_on_attempted_cancel(self) -> None:
         ledger = OperationLedger(root=Path(self.tmp.name) / "ops")
@@ -131,16 +126,7 @@ class CancelSupportDiscoveryTests(unittest.TestCase):
 
         class _Adapter:
             def run(self, args):
-                from scripts.dreamina_adapter import DreaminaResult
-                if args[:2] == ["capabilities", "cancel"]:
-                    return DreaminaResult(
-                        exit_code=0,
-                        payload={"cancel_supported": False},
-                        error_code=None,
-                        submit_id=None,
-                        stderr="",
-                    )
-                raise AssertionError(args)
+                raise AssertionError(f"cancel must not call unsupported CLI command: {args}")
 
         with self.assertRaises(CancelNotSupportedError):
             ledger.cancel(submit_id="sub-c", adapter=_Adapter())
@@ -163,20 +149,70 @@ class QueryBySubmitIdTests(unittest.TestCase):
                 from scripts.dreamina_adapter import DreaminaResult
                 return DreaminaResult(
                     exit_code=0,
-                    payload={"state": "running", "required_action": "wait"},
+                    payload={"gen_status": "querying"},
                     error_code=None,
                     submit_id="sub-Q",
                     stderr="",
                 )
 
         self.ledger.query(submit_id="sub-Q", adapter=_Adapter())
-        self.assertEqual(adapter_calls[0][:2], ["status", "sub-Q"])
+        self.assertEqual(adapter_calls[0], ["query_result", "--submit_id", "sub-Q"])
         op = self.ledger.get(submit_id="sub-Q")
-        self.assertEqual(op["state"], "running")
+        self.assertEqual(op["state"], "queued")
+
+    def test_query_maps_success_to_download_and_fail_to_report(self) -> None:
+        self.ledger.record(session_id="s", submit_id="sub-S", mode="text2image", request_fingerprint="f" * 64)
+
+        class _Adapter:
+            def __init__(self, status): self.status = status
+            def run(self, args):
+                from scripts.dreamina_adapter import DreaminaResult
+                return DreaminaResult(exit_code=0, payload={"gen_status": self.status}, error_code=None, submit_id="sub-S", stderr="")
+
+        succeeded = self.ledger.query(submit_id="sub-S", adapter=_Adapter("success"))
+        self.assertEqual((succeeded["state"], succeeded["required_action"]), ("succeeded", "download"))
 
     def test_query_unknown_submit_id_raises(self) -> None:
         with self.assertRaises(OperationNotFoundError):
             self.ledger.query(submit_id="ghost", adapter=None)  # type: ignore[arg-type]
+
+    def test_bounded_poll_queries_only_and_survives_restart(self) -> None:
+        root = Path(self.tmp.name) / "ops"
+        self.ledger.record(session_id="s", submit_id="sub-P", mode="text2image", request_fingerprint="1" * 64)
+        calls = []
+
+        class _Adapter:
+            def run(self, args):
+                calls.append(list(args))
+                from scripts.dreamina_adapter import DreaminaResult
+                status = "success" if len(calls) == 2 else "querying"
+                return DreaminaResult(exit_code=0, payload={"gen_status": status}, error_code=None, submit_id="sub-P", stderr="")
+
+        restarted = OperationLedger(root=root)
+        result = restarted.poll_until_terminal(
+            submit_id="sub-P", adapter=_Adapter(), max_attempts=3,
+            interval_seconds=0, sleep_fn=lambda _: None,
+        )
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(calls, [
+            ["query_result", "--submit_id", "sub-P"],
+            ["query_result", "--submit_id", "sub-P"],
+        ])
+
+    def test_poll_limit_records_unknown_without_resubmission(self) -> None:
+        self.ledger.record(session_id="s", submit_id="sub-U", mode="text2image", request_fingerprint="2" * 64)
+
+        class _Adapter:
+            def run(self, args):
+                from scripts.dreamina_adapter import DreaminaResult
+                return DreaminaResult(exit_code=0, payload={"gen_status": "querying"}, error_code=None, submit_id="sub-U", stderr="")
+
+        result = self.ledger.poll_until_terminal(
+            submit_id="sub-U", adapter=_Adapter(), max_attempts=2,
+            interval_seconds=0, sleep_fn=lambda _: None,
+        )
+        self.assertEqual(result["state"], "unknown")
+        self.assertEqual(result["last_error_code"], "POLL_LIMIT_REACHED")
 
 
 if __name__ == "__main__":

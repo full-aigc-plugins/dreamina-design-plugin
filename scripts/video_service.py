@@ -112,7 +112,7 @@ def build_video_request_fingerprint(payload: Mapping[str, Any]) -> str:
 class VideoService:
     """Build and submit Dreamina video requests against a capability snapshot."""
 
-    def __init__(self, snapshot: Mapping[str, Any], ledger_dir: Path) -> None:
+    def __init__(self, snapshot: Mapping[str, Any], ledger_dir: Path, reference_policy: Any | None = None) -> None:
         if "modes" not in snapshot:
             raise UnsupportedCapabilityError("snapshot missing modes")
         self._snapshot = snapshot
@@ -126,6 +126,9 @@ class VideoService:
         }
         self._ledger_dir = Path(ledger_dir)
         self._ledger_dir.mkdir(parents=True, exist_ok=True)
+        self._reference_policy = reference_policy
+        from scripts.operation_ledger import OperationLedger
+        self._operation_ledger = OperationLedger(root=self._ledger_dir)
         self._web_prerequisite_acknowledged = False
 
     # ------------------------------------------------------------------
@@ -188,6 +191,7 @@ class VideoService:
             mode=mode,
             references=references or [],
             spec=spec,
+            reference_policy=self._reference_policy,
         )
 
         request: dict[str, Any] = {
@@ -209,6 +213,7 @@ class VideoService:
         mode: str,
         references: list[Mapping[str, Any]],
         spec: _VideoModelSpec,
+        reference_policy: Any | None,
     ) -> list[dict[str, Any]]:
         required_roles = MODE_REQUIRED_REFERENCES.get(mode, set())
         if required_roles and not references:
@@ -217,6 +222,8 @@ class VideoService:
             return []
         if len(references) > spec.max_references:
             raise InvalidReferenceError(f"too many references (max {spec.max_references})")
+        if references and reference_policy is None:
+            raise InvalidReferenceError("a ReferencePolicy is required for local uploads")
         normalized: list[dict[str, Any]] = []
         for ref in references:
             if not isinstance(ref, Mapping):
@@ -245,7 +252,10 @@ class VideoService:
                         f"audio reference duration {audio_seconds}s exceeds snapshot cap "
                         f"{spec.audio_reference_max_seconds}s"
                     )
-            normalized.append(entry)
+            try:
+                normalized.append(reference_policy.validate(entry))
+            except (ValueError, OSError) as exc:
+                raise InvalidReferenceError(str(exc)) from exc
         if required_roles and not required_roles.intersection({r["role"] for r in normalized}):
             raise InvalidReferenceError(
                 f"mode {mode} requires references with at least one of {sorted(required_roles)}"
@@ -268,16 +278,13 @@ class VideoService:
         request: Mapping[str, Any],
         *,
         adapter: Any,
-        approval: Mapping[str, Any] | None,
+        approval_guard: Any,
+        session_id: str | None,
+        approval_id: str | None,
         web_prerequisite_cleared: bool,
     ) -> dict[str, Any]:
-        if approval is None:
+        if approval_guard is None or not session_id or not approval_id:
             raise MissingApprovalError("approval receipt is required before submission")
-        expected_fingerprint = build_video_request_fingerprint(dict(request))
-        if approval.get("request_fingerprint") != expected_fingerprint:
-            raise ApprovalMismatchError(
-                f"approval request_fingerprint mismatch: expected {expected_fingerprint}"
-            )
         spec = self._models[request["model"]]
         if spec.web_prerequisite_required and not self._web_prerequisite_acknowledged:
             # The caller can pass web_prerequisite_cleared=True to indicate the
@@ -289,8 +296,52 @@ class VideoService:
                     "prerequisite via record_web_prerequisite_acknowledgement(); "
                     "no silent bypass is permitted"
                 )
+        from scripts.approval_guard import ApprovalGuard, ApprovalGuardError
+        if not isinstance(approval_guard, ApprovalGuard):
+            raise MissingApprovalError("approval_guard must be an ApprovalGuard instance")
+        fingerprint = build_video_request_fingerprint(dict(request))
+        self._operation_ledger.begin_submission(
+            session_id=session_id,
+            mode=str(request["mode"]),
+            request_fingerprint=fingerprint,
+        )
+        try:
+            approval_guard.consume_approval(
+                session_id, request=request, approval_id=approval_id
+            )
+        except ApprovalGuardError as exc:
+            self._operation_ledger.abort_submission_intent(
+                request_fingerprint=fingerprint, reason="APPROVAL_REJECTED"
+            )
+            raise ApprovalMismatchError(str(exc)) from exc
         argv = self._request_to_argv(request)
-        result: DreaminaResult = adapter.run(argv)
+        try:
+            result: DreaminaResult = adapter.run(argv)
+        except Exception as exc:
+            self._operation_ledger.complete_submission_intent(
+                request_fingerprint=fingerprint,
+                submit_id=None,
+                error_code=type(exc).__name__,
+            )
+            raise
+        if not result.submit_id:
+            self._operation_ledger.complete_submission_intent(
+                request_fingerprint=fingerprint,
+                submit_id=None,
+                error_code="MISSING_SUBMIT_ID",
+            )
+            raise VideoServiceError(
+                "Dreamina accepted no recoverable submit_id; manual review required"
+            )
+        self._operation_ledger.complete_submission_intent(
+            request_fingerprint=fingerprint, submit_id=result.submit_id
+        )
+        self._operation_ledger.record(
+            session_id=session_id,
+            submit_id=result.submit_id,
+            mode=str(request["mode"]),
+            request_fingerprint=fingerprint,
+        )
         payload = result.payload or {}
         items = payload.get("items") if isinstance(payload, Mapping) else None
         if items is None and isinstance(payload, Mapping):

@@ -4,8 +4,9 @@
   "title": "Dreamina Approval Receipt",
   "type": "object",
   "additionalProperties": false,
-  "required": ["request_fingerprint", "acknowledged_cost", "acknowledged_scope", "approved_at", "approver"],
+  "required": ["approval_id", "request_fingerprint", "acknowledged_cost", "acknowledged_scope", "approved_at", "approver", "expires_at", "consumed_at"],
   "properties": {
+    "approval_id": {"type": "string", "minLength": 32},
     "request_fingerprint": {
       "type": "string",
       "description": "SHA-256 hex digest of the canonical generation request payload.",
@@ -39,6 +40,11 @@
       "type": "string",
       "format": "date-time",
       "description": "Optional expiry; once passed the receipt must be re-issued."
+    },
+    "consumed_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "Atomic single-use marker set immediately before submission."
     }
   }
 }

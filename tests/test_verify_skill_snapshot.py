@@ -146,7 +146,11 @@ class ParityNotRunTests(unittest.TestCase):
             head_sha = "a" * 40
             _init_fake_upstream(upstream_root, head_sha=head_sha)
             for name in EXPECTED_SKILLS:
-                _write_skill(skills_root, name, upstream_sha=head_sha)
+                local = _write_skill(skills_root, name, upstream_sha=head_sha)
+                (upstream_root / name / "SKILL.md").write_bytes(
+                    (local / "SKILL.md").read_bytes()
+                )
+            (skills_root / ".upstream-commit").write_text(head_sha + "\n", encoding="utf-8")
             verifier = SnapshotVerifier(skills_root=skills_root, upstream_root=upstream_root)
             report = verifier.run()
             self.assertEqual(report.parity_status, "PASS")
@@ -159,13 +163,17 @@ class ParityNotRunTests(unittest.TestCase):
             _init_fake_upstream(upstream_root, head_sha=head_sha)
             for name in EXPECTED_SKILLS:
                 # Local Skills pin a *different* SHA.
-                _write_skill(skills_root, name, upstream_sha="c" * 40)
+                local = _write_skill(skills_root, name, upstream_sha="c" * 40)
+                (upstream_root / name / "SKILL.md").write_bytes(
+                    (local / "SKILL.md").read_bytes()
+                )
+            (skills_root / ".upstream-commit").write_text("c" * 40 + "\n", encoding="utf-8")
             verifier = SnapshotVerifier(skills_root=skills_root, upstream_root=upstream_root)
             report = verifier.run()
             self.assertEqual(report.parity_status, "FAIL")
             self.assertTrue(
-                any(entry.startswith("dreamina-cli:") for entry in report.parity_mismatches),
-                f"expected a dreamina-cli mismatch in {report.parity_mismatches}",
+                any(entry.startswith("snapshot pin ") for entry in report.parity_mismatches),
+                f"expected a snapshot pin mismatch in {report.parity_mismatches}",
             )
 
 

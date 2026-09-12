@@ -89,9 +89,14 @@ class RouterRoutingTests(unittest.TestCase):
         target = self.router.route(intent="video", mode="image2video")
         self.assertEqual(target, "dreamina-cli-image2video")
 
+    def test_advanced_video_modes_route_to_cli_umbrella(self) -> None:
+        for mode in ("frames2video", "multiframe2video", "multimodal2video"):
+            with self.subTest(mode=mode):
+                self.assertEqual(self.router.route(intent="video", mode=mode), "dreamina-cli")
+
     def test_unknown_intent_rejected(self) -> None:
         with self.assertRaises(AmbiguousRoutingError):
-            self.router.route(intent="video", mode="frames2video")
+            self.router.route(intent="video", mode="unknown-video-mode")
 
     def test_unknown_intent_rejected_hardcoded_check(self) -> None:
         # Hard-coded catalog must come from the registry, not the router.

@@ -28,6 +28,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.dreamina_adapter import DreaminaResult  # noqa: E402
+from scripts.approval_guard import ApprovalGuard  # noqa: E402
+
+
+class _TestReferencePolicy:
+    def validate(self, reference):
+        return dict(reference)
 
 try:  # pragma: no cover - exercised by RED phase
     from scripts.video_service import (  # type: ignore  # noqa: E402
@@ -80,6 +86,62 @@ def snapshot_without_audio() -> dict:
     return snap
 
 
+def issue_approval(root: Path, request: dict, scope: dict):
+    scope = {
+        "count": 1,
+        "model": request.get("model"),
+        "resolution": request.get("video_resolution"),
+        "ratio": request.get("ratio"),
+        "duration_seconds": request.get("duration_seconds"),
+        **scope,
+    }
+    scope = {key: value for key, value in scope.items() if value is not None}
+    guard = ApprovalGuard(root=root)
+    session_id = guard.create_session(label="submission")
+    approval_id = guard.record_approval(
+        session_id,
+        request=request,
+        receipt={
+            "request_fingerprint": build_video_request_fingerprint(request),
+            "acknowledged_cost": "credits",
+            "acknowledged_scope": scope,
+            "approved_at": "2026-09-12T00:00:00Z",
+            "approver": "test",
+        },
+    )
+    return guard, session_id, approval_id
+
+
+def issue_receipt(root: Path, request: dict, receipt: dict):
+    receipt = dict(receipt)
+    raw_scope = dict(receipt["acknowledged_scope"])
+    raw_scope.pop("video_resolution", None)
+    normalized_scope = {
+        "count": 1,
+        "model": request.get("model"),
+        "resolution": request.get("video_resolution"),
+        "ratio": request.get("ratio"),
+        "duration_seconds": request.get("duration_seconds"),
+        **raw_scope,
+    }
+    receipt["acknowledged_scope"] = {
+        key: value for key, value in normalized_scope.items() if value is not None
+    }
+    guard = ApprovalGuard(root=root)
+    session_id = guard.create_session(label="submission")
+    approval_id = guard.record_approval(session_id, request=request, receipt=receipt)
+    return guard, session_id, approval_id
+
+
+def approval_args(root: Path, request: dict, receipt: dict) -> dict:
+    guard, session_id, approval_id = issue_receipt(root, request, receipt)
+    return {
+        "approval_guard": guard,
+        "session_id": session_id,
+        "approval_id": approval_id,
+    }
+
+
 class VideoServiceModuleTests(unittest.TestCase):
     def test_module_exports_service(self) -> None:
         self.assertIsNotNone(VideoService)
@@ -101,7 +163,7 @@ class TextToVideoTests(unittest.TestCase):
         self.snapshot = synthetic_video_snapshot()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.service = VideoService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger")
+        self.service = VideoService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger", reference_policy=_TestReferencePolicy())
 
     def test_text2video_default_duration_is_four(self) -> None:
         req = self.service.build_request(
@@ -183,7 +245,7 @@ class ImageToVideoTests(unittest.TestCase):
         self.snapshot = synthetic_video_snapshot()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.service = VideoService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger")
+        self.service = VideoService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger", reference_policy=_TestReferencePolicy())
 
     def test_image2video_requires_subject_reference(self) -> None:
         with self.assertRaises(InvalidReferenceError):
@@ -225,7 +287,7 @@ class FramesToVideoTests(unittest.TestCase):
         self.snapshot = synthetic_video_snapshot()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.service = VideoService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger")
+        self.service = VideoService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger", reference_policy=_TestReferencePolicy())
 
     def test_frames2video_requires_frame_references(self) -> None:
         with self.assertRaises(InvalidReferenceError):
@@ -283,7 +345,7 @@ class MultimodalToVideoTests(unittest.TestCase):
         self.snapshot = synthetic_video_snapshot()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.service = VideoService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger")
+        self.service = VideoService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger", reference_policy=_TestReferencePolicy())
 
     def test_multimodal2video_accepts_subject_and_audio(self) -> None:
         req = self.service.build_request(
@@ -319,6 +381,7 @@ class MultimodalToVideoTests(unittest.TestCase):
         service = VideoService(
             snapshot=snapshot_without_audio(),
             ledger_dir=Path(self.tmp.name) / "ledger_no_audio",
+            reference_policy=_TestReferencePolicy(),
         )
         # Without an audio_reference_max_seconds gate in the snapshot, the
         # service must accept audio references without enforcing the 30s cap.
@@ -342,7 +405,7 @@ class WebPrerequisiteTests(unittest.TestCase):
         self.snapshot = synthetic_video_snapshot()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.service = VideoService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger")
+        self.service = VideoService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger", reference_policy=_TestReferencePolicy())
 
     def test_first_video_submission_raises_web_prerequisite(self) -> None:
         req = self.service.build_request(
@@ -361,7 +424,7 @@ class WebPrerequisiteTests(unittest.TestCase):
             "approver": "test",
         }
         with self.assertRaises(VideoWebPrerequisiteRequired):
-            self.service.submit(req, adapter=None, approval=approval, web_prerequisite_cleared=False)  # type: ignore[arg-type]
+            self.service.submit(req, adapter=None, **approval_args(Path(self.tmp.name) / "approvals", req, approval), web_prerequisite_cleared=False)  # type: ignore[arg-type]
 
     def test_web_prerequisite_does_not_bypass_when_cleared_flag_true(self) -> None:
         # Even if the caller passes cleared=True, the service must NOT silently
@@ -382,7 +445,7 @@ class WebPrerequisiteTests(unittest.TestCase):
             "approver": "test",
         }
         with self.assertRaises(VideoWebPrerequisiteRequired):
-            self.service.submit(req, adapter=None, approval=approval, web_prerequisite_cleared=True)  # type: ignore[arg-type]
+            self.service.submit(req, adapter=None, **approval_args(Path(self.tmp.name) / "approvals", req, approval), web_prerequisite_cleared=True)  # type: ignore[arg-type]
 
     def test_web_prerequisite_recorded_then_submission_proceeds(self) -> None:
         req = self.service.build_request(
@@ -415,7 +478,7 @@ class WebPrerequisiteTests(unittest.TestCase):
         result = self.service.submit(
             req,
             adapter=_StubAdapter(),
-            approval=approval,
+            **approval_args(Path(self.tmp.name) / "approvals", req, approval),
             web_prerequisite_cleared=False,
         )
         self.assertEqual(result["submit_id"], "vsub-1")
@@ -426,7 +489,7 @@ class ApprovalBindingTests(unittest.TestCase):
         self.snapshot = synthetic_video_snapshot()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.service = VideoService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger")
+        self.service = VideoService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger", reference_policy=_TestReferencePolicy())
 
     def test_submit_without_approval_raises(self) -> None:
         req = self.service.build_request(
@@ -437,7 +500,7 @@ class ApprovalBindingTests(unittest.TestCase):
             ratio="16:9",
         )
         with self.assertRaises(MissingApprovalError):
-            self.service.submit(req, adapter=None, approval=None, web_prerequisite_cleared=False)  # type: ignore[arg-type]
+            self.service.submit(req, adapter=None, approval_guard=None, session_id=None, approval_id=None, web_prerequisite_cleared=False)  # type: ignore[arg-type]
 
     def test_submit_with_changed_prompt_invalidates_approval(self) -> None:
         req = self.service.build_request(
@@ -449,8 +512,8 @@ class ApprovalBindingTests(unittest.TestCase):
         )
         # Build a fingerprint for the original request, then mutate the
         # prompt before submitting.
-        original_fingerprint = build_video_request_fingerprint(req)
-        req["prompt"] = "tampered"
+        approved_request = dict(req)
+        original_fingerprint = build_video_request_fingerprint(approved_request)
         approval = {
             "request_fingerprint": original_fingerprint,
             "acknowledged_cost": "credits",
@@ -458,8 +521,11 @@ class ApprovalBindingTests(unittest.TestCase):
             "approved_at": "2026-09-12T00:00:00Z",
             "approver": "test",
         }
+        secured = approval_args(Path(self.tmp.name) / "approvals", approved_request, approval)
+        req["prompt"] = "tampered"
+        self.service.record_web_prerequisite_acknowledgement()
         with self.assertRaises(ApprovalMismatchError):
-            self.service.submit(req, adapter=None, approval=approval, web_prerequisite_cleared=False)  # type: ignore[arg-type]
+            self.service.submit(req, adapter=None, **secured, web_prerequisite_cleared=False)  # type: ignore[arg-type]
 
     def test_submit_with_changed_duration_invalidates_approval(self) -> None:
         req = self.service.build_request(
@@ -470,8 +536,8 @@ class ApprovalBindingTests(unittest.TestCase):
             ratio="16:9",
             duration_seconds=8,
         )
-        original_fingerprint = build_video_request_fingerprint(req)
-        req["duration_seconds"] = 12
+        approved_request = dict(req)
+        original_fingerprint = build_video_request_fingerprint(approved_request)
         approval = {
             "request_fingerprint": original_fingerprint,
             "acknowledged_cost": "credits",
@@ -479,8 +545,11 @@ class ApprovalBindingTests(unittest.TestCase):
             "approved_at": "2026-09-12T00:00:00Z",
             "approver": "test",
         }
+        secured = approval_args(Path(self.tmp.name) / "approvals", approved_request, approval)
+        req["duration_seconds"] = 12
+        self.service.record_web_prerequisite_acknowledgement()
         with self.assertRaises(ApprovalMismatchError):
-            self.service.submit(req, adapter=None, approval=approval, web_prerequisite_cleared=False)  # type: ignore[arg-type]
+            self.service.submit(req, adapter=None, **secured, web_prerequisite_cleared=False)  # type: ignore[arg-type]
 
 
 class SubmitSemanticsTests(unittest.TestCase):
@@ -488,7 +557,7 @@ class SubmitSemanticsTests(unittest.TestCase):
         self.snapshot = synthetic_video_snapshot()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.service = VideoService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger")
+        self.service = VideoService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger", reference_policy=_TestReferencePolicy())
 
     def test_submit_invokes_adapter_once_per_video_request(self) -> None:
         req = self.service.build_request(
@@ -523,7 +592,7 @@ class SubmitSemanticsTests(unittest.TestCase):
                 )
 
         adapter = _StubAdapter()
-        result = self.service.submit(req, adapter=adapter, approval=approval, web_prerequisite_cleared=False)
+        result = self.service.submit(req, adapter=adapter, **approval_args(Path(self.tmp.name) / "approvals", req, approval), web_prerequisite_cleared=False)
         self.assertEqual(len(adapter.calls), 1)
         self.assertEqual(adapter.calls[0][0], "text2video")
         self.assertIn("--video_resolution", adapter.calls[0])

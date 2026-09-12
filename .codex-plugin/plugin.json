@@ -8,6 +8,7 @@
   "license": "Apache-2.0",
   "keywords": ["dreamina", "design", "image-generation", "video-generation", "codex"],
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Dreamina Design",
     "shortDescription": "Create images and videos with Dreamina",

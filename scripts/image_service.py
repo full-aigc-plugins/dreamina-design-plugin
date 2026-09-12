@@ -95,7 +95,7 @@ class _ModelSpec:
 class ImageService:
     """Build and submit Dreamina image requests against a capability snapshot."""
 
-    def __init__(self, snapshot: Mapping[str, Any], ledger_dir: Path) -> None:
+    def __init__(self, snapshot: Mapping[str, Any], ledger_dir: Path, reference_policy: Any | None = None) -> None:
         if "modes" not in snapshot:
             raise UnsupportedCapabilityError("snapshot missing modes")
         self._snapshot = snapshot
@@ -109,6 +109,9 @@ class ImageService:
         }
         self._ledger_dir = Path(ledger_dir)
         self._ledger_dir.mkdir(parents=True, exist_ok=True)
+        self._reference_policy = reference_policy
+        from scripts.operation_ledger import OperationLedger
+        self._operation_ledger = OperationLedger(root=self._ledger_dir)
 
     # ------------------------------------------------------------------
     # Request construction
@@ -151,7 +154,10 @@ class ImageService:
             raise UnsupportedCapabilityError(f"ratio not advertised: {ratio}")
         self._validate_dimensions(width=width, height=height, ratio=ratio)
         normalized_refs = self._validate_references(
-            mode=mode, references=references or [], max_references=spec.max_references
+            mode=mode,
+            references=references or [],
+            max_references=spec.max_references,
+            reference_policy=self._reference_policy,
         )
 
         request: dict[str, Any] = {
@@ -178,13 +184,15 @@ class ImageService:
             raise UnsupportedCapabilityError("width/height are mutually exclusive with ratio")
 
     @staticmethod
-    def _validate_references(*, mode: str, references: list[Mapping[str, Any]], max_references: int) -> list[dict[str, Any]]:
+    def _validate_references(*, mode: str, references: list[Mapping[str, Any]], max_references: int, reference_policy: Any | None) -> list[dict[str, Any]]:
         if not references:
             if mode in SUBJECT_REQUIRED_MODES:
                 raise InvalidReferenceError(f"mode {mode} requires at least one subject reference")
             return []
         if len(references) > max_references:
             raise InvalidReferenceError(f"too many references (max {max_references})")
+        if references and reference_policy is None:
+            raise InvalidReferenceError("a ReferencePolicy is required for local uploads")
         normalized: list[dict[str, Any]] = []
         for ref in references:
             if not isinstance(ref, Mapping):
@@ -202,7 +210,10 @@ class ImageService:
                 entry["mime_type"] = str(mime)
             if size is not None:
                 entry["size_bytes"] = int(size)
-            normalized.append(entry)
+            try:
+                normalized.append(reference_policy.validate(entry))
+            except (ValueError, OSError) as exc:
+                raise InvalidReferenceError(str(exc)) from exc
         if mode in SUBJECT_REQUIRED_MODES and not any(r["role"] == "subject" for r in normalized):
             raise InvalidReferenceError(f"mode {mode} requires at least one subject reference")
         if mode == "text2image":
@@ -217,17 +228,58 @@ class ImageService:
         request: Mapping[str, Any],
         *,
         adapter: DreaminaAdapter | Any,
-        approval: Mapping[str, Any] | None,
+        approval_guard: Any,
+        session_id: str | None,
+        approval_id: str | None,
     ) -> dict[str, Any]:
-        if approval is None:
+        if approval_guard is None or not session_id or not approval_id:
             raise MissingApprovalError("approval receipt is required before submission")
-        expected_fingerprint = build_request_fingerprint(dict(request))
-        if approval.get("request_fingerprint") != expected_fingerprint:
-            raise ApprovalMismatchError(
-                f"approval request_fingerprint mismatch: expected {expected_fingerprint}"
+        from scripts.approval_guard import ApprovalGuard, ApprovalGuardError
+        if not isinstance(approval_guard, ApprovalGuard):
+            raise MissingApprovalError("approval_guard must be an ApprovalGuard instance")
+        fingerprint = build_request_fingerprint(dict(request))
+        self._operation_ledger.begin_submission(
+            session_id=session_id,
+            mode=str(request["mode"]),
+            request_fingerprint=fingerprint,
+        )
+        try:
+            approval_guard.consume_approval(
+                session_id, request=request, approval_id=approval_id
             )
+        except ApprovalGuardError as exc:
+            self._operation_ledger.abort_submission_intent(
+                request_fingerprint=fingerprint, reason="APPROVAL_REJECTED"
+            )
+            raise ApprovalMismatchError(str(exc)) from exc
         argv = self._request_to_argv(request)
-        result: DreaminaResult = adapter.run(argv)
+        try:
+            result: DreaminaResult = adapter.run(argv)
+        except Exception as exc:
+            self._operation_ledger.complete_submission_intent(
+                request_fingerprint=fingerprint,
+                submit_id=None,
+                error_code=type(exc).__name__,
+            )
+            raise
+        if not result.submit_id:
+            self._operation_ledger.complete_submission_intent(
+                request_fingerprint=fingerprint,
+                submit_id=None,
+                error_code="MISSING_SUBMIT_ID",
+            )
+            raise ImageServiceError(
+                "Dreamina accepted no recoverable submit_id; manual review required"
+            )
+        self._operation_ledger.complete_submission_intent(
+            request_fingerprint=fingerprint, submit_id=result.submit_id
+        )
+        self._operation_ledger.record(
+            session_id=session_id,
+            submit_id=result.submit_id,
+            mode=str(request["mode"]),
+            request_fingerprint=fingerprint,
+        )
         payload = result.payload or {}
         items = payload.get("items") if isinstance(payload, Mapping) else None
         if items is None and isinstance(payload, Mapping):

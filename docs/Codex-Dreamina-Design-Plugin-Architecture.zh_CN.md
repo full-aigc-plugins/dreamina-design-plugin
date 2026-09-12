@@ -1,6 +1,6 @@
 # Codex Dreamina Design 插件架构
 
-> 已实现架构。重新验证日期 2026-09-12。
+> 功能架构已实现，生产加固进行中。重新验证日期 2026-09-13。
 
 ## 系统上下文
 
@@ -11,11 +11,14 @@ flowchart LR
     Router --> Capability[CLI 能力快照]
     Prompt --> Request[生成请求]
     Capability --> Request
-    Request --> Approval[积分批准门禁]
-    Approval --> CLI[dreamina CLI]
+    UI[Codex MCP 工具批准弹窗] --> Approval[单次批准门禁]
+    Request --> Approval
+    Approval --> Intent[持久化 SUBMITTING 意图]
+    Intent --> CLI[绝对路径 + SHA-256 可信 CLI]
     CLI --> Ledger[submit_id 台账]
     Ledger --> Query[有界查询]
-    Query --> Artifact[已验证产物]
+    Query --> Download[CLI 下载到批准根目录]
+    Download --> Artifact[已验证产物]
 ```
 
 ## 限界上下文
@@ -35,8 +38,11 @@ CLI 是远程事实权威，插件不实现 Dreamina 私有 API。每个生成�
 
 ## Skill 拓扑
 
-`dreamina-skills` 是可复用 Skill 事实源。本插件打包设计、Prompt、CLI 子集，通过 `codex-dreamina-*` 编排，不复制 Skill 正文。
+`dreamina-skills` 是可复用 Skill 事实源。本插件完整打包各 Skill 目录，
+并通过 `skills/.upstream-commit` 固定提交后逐文件验证字节一致性。
 
 ## 安全
 
-manifest、日志、Prompt、台账和产物中不得出现凭据。本地参考文件需要明确授权范围并校验类型/大小。付费动作必须在动作发生前确认。
+manifest、日志、Prompt、台账和产物中不得出现凭据。本地参考文件必须通过
+批准根目录、普通文件、类型和大小校验。付费动作只通过配置了
+`approval_mode: prompt` 的 MCP 工具暴露；调用方自报身份不能作为授权证据。

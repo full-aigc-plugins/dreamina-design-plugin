@@ -24,6 +24,7 @@ import dataclasses
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -186,18 +187,10 @@ class SnapshotVerifier:
     def _run_parity(self, report: SkillSnapshotReport) -> None:
         """Verify that every packaged Skill correctly tracks upstream.
 
-        Per the plan, the plugin must NOT copy upstream Skill bodies.
-        Parity is therefore defined as:
-
-        1. The local ``upstream_commit_sha`` field (in each packaged
-           Skill's ``SKILL.md`` frontmatter) matches the actual HEAD
-           commit of the cloned upstream repository — i.e. the local
-           Skill pins a real, verified upstream revision.
-        2. The corresponding upstream Skill directory exists in the
-           cloned repo, proving the local Skill identity is correct.
-
-        Bodies are intentionally not byte-compared. The plugin stores a
-        stub body and references the upstream source of truth.
+        The packaged directory for every Skill must be byte-identical to the
+        pinned upstream checkout. The pin lives in ``skills/.upstream-commit``
+        so the upstream SKILL.md files remain unmodified and independently
+        verifiable.
         """
         if self._upstream_root is None:
             report.parity_status = "NOT_RUN"
@@ -213,11 +206,30 @@ class SnapshotVerifier:
                 "clone full-aigc-skills/dreamina-skills to enable parity"
             )
             return
-        upstream_head = self._upstream_head_sha()
         mismatches: list[str] = []
+        pin_path = self._skills_root / ".upstream-commit"
+        pinned_sha = pin_path.read_text(encoding="utf-8").strip() if pin_path.is_file() else ""
+        if re.fullmatch(r"[0-9a-f]{40}", pinned_sha) is None:
+            mismatches.append(f"snapshot pin is not a full commit SHA: {pinned_sha or '<missing>'}")
+        git_objects = self._upstream_root / ".git" / "objects"
+        use_git_objects = git_objects.is_dir() and not mismatches
+        upstream_head = self._upstream_head_sha()
+        if not use_git_objects and pinned_sha != upstream_head:
+            mismatches.append(
+                f"snapshot pin {pinned_sha or '<missing>'} != upstream HEAD {upstream_head}"
+            )
+        if use_git_objects:
+            check = subprocess.run(
+                ["git", "-C", str(self._upstream_root), "cat-file", "-e", f"{pinned_sha}^{{commit}}"],
+                capture_output=True,
+                check=False,
+            )
+            if check.returncode != 0:
+                mismatches.append(f"snapshot pin commit is unavailable: {pinned_sha}")
         upstream_skills = self._upstream_skills_root
         for skill_name in EXPECTED_SKILLS:
-            local_path = self._skills_root / skill_name / "SKILL.md"
+            local_dir = self._skills_root / skill_name
+            local_path = local_dir / "SKILL.md"
             upstream_dir = upstream_skills / skill_name if upstream_skills else None
             if not local_path.is_file():
                 mismatches.append(f"{skill_name}: local SKILL.md missing")
@@ -225,26 +237,53 @@ class SnapshotVerifier:
             if not upstream_dir.is_dir():
                 mismatches.append(f"{skill_name}: upstream Skill directory missing")
                 continue
-            front = _parse_frontmatter(local_path.read_text(encoding="utf-8"))
-            pinned_sha = front.get("upstream_commit_sha", "").strip()
-            if not pinned_sha:
-                mismatches.append(f"{skill_name}: upstream_commit_sha missing")
-                continue
-            if pinned_sha != upstream_head:
-                mismatches.append(
-                    f"{skill_name}: upstream_commit_sha {pinned_sha[:12]} != "
-                    f"upstream HEAD {upstream_head[:12]}"
+            local_files = {
+                path.relative_to(local_dir).as_posix(): path
+                for path in local_dir.rglob("*") if path.is_file()
+            }
+            if use_git_objects:
+                prefix = f"skills/{skill_name}"
+                listed = subprocess.run(
+                    ["git", "-C", str(self._upstream_root), "ls-tree", "-r", "--name-only", pinned_sha, "--", prefix],
+                    capture_output=True,
+                    text=True,
+                    check=False,
                 )
+                upstream_files = {
+                    path.removeprefix(prefix + "/"): path
+                    for path in listed.stdout.splitlines() if path.startswith(prefix + "/")
+                }
+            else:
+                upstream_files = {
+                    path.relative_to(upstream_dir).as_posix(): path
+                    for path in upstream_dir.rglob("*") if path.is_file()
+                }
+            if set(local_files) != set(upstream_files):
+                mismatches.append(
+                    f"{skill_name}: file inventory differs local={sorted(local_files)} upstream={sorted(upstream_files)}"
+                )
+                continue
+            for relative_path in sorted(local_files):
+                if use_git_objects:
+                    blob = subprocess.run(
+                        ["git", "-C", str(self._upstream_root), "show", f"{pinned_sha}:skills/{skill_name}/{relative_path}"],
+                        capture_output=True,
+                        check=False,
+                    ).stdout
+                else:
+                    blob = upstream_files[relative_path].read_bytes()
+                if local_files[relative_path].read_bytes() != blob:
+                    mismatches.append(f"{skill_name}/{relative_path}: byte mismatch")
         if mismatches:
             report.parity_status = "FAIL"
             report.parity_mismatches = mismatches
             report.parity_reason = (
-                f"parity mismatch against upstream HEAD {upstream_head}"
+                f"parity mismatch against pinned upstream commit {pinned_sha or upstream_head}"
             )
         else:
             report.parity_status = "PASS"
             report.parity_reason = (
-                f"all 13 Skills pinned to upstream HEAD {upstream_head}"
+                f"all 13 packaged Skill trees byte-match upstream commit {pinned_sha}"
             )
 
     def _upstream_head_sha(self) -> str:

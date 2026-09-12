@@ -18,10 +18,17 @@ the only sanctioned seam between Codex Skill code and the installed binary.
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
+import atexit
 import os
 import re
+import selectors
+import signal
 import shutil
 import subprocess
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -45,6 +52,10 @@ class DreaminaAdapterError(RuntimeError):
 
 class CLINotFoundError(DreaminaAdapterError):
     """The configured `dreamina` binary could not be located or executed."""
+
+
+class UntrustedCLIError(DreaminaAdapterError):
+    """The CLI path, permissions, ownership, or digest failed trust checks."""
 
 
 class PermissionDeniedError(DreaminaAdapterError):
@@ -88,24 +99,81 @@ class DreaminaAdapter:
         cli_command: str = "dreamina",
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
         max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
-        env: Mapping[str, str] | None = None,
+        trusted_binary_sha256: str | None = None,
     ) -> None:
         self.cli_command = cli_command
         self.timeout_seconds = timeout_seconds
         self.max_output_bytes = max_output_bytes
-        self.env = dict(env) if env is not None else None
+        self.env = self._minimal_environment()
+        self.trusted_binary_sha256 = trusted_binary_sha256
+        self._trusted_binary_dir: Path | None = None
+        self._trusted_binary_path: str | None = None
 
     def _resolve_cli(self) -> str:
-        # Honour explicit absolute / relative paths; otherwise search PATH.
-        if os.path.sep in self.cli_command or self.cli_command.startswith("."):
-            target = Path(self.cli_command)
-            if not target.exists() or not os.access(target, os.X_OK):
-                raise CLINotFoundError(f"dreamina CLI not found at {self.cli_command}")
-            return str(target)
-        resolved = shutil.which(self.cli_command)
-        if resolved is None:
-            raise CLINotFoundError(f"dreamina CLI not on PATH: {self.cli_command}")
-        return resolved
+        if self._trusted_binary_path is not None:
+            return self._trusted_binary_path
+        target = Path(self.cli_command)
+        if not target.is_absolute():
+            raise UntrustedCLIError("dreamina CLI path must be absolute; PATH lookup is disabled")
+        if target.is_symlink() or not target.is_file() or not os.access(target, os.X_OK):
+            raise CLINotFoundError(f"dreamina CLI must be an executable regular non-symlink file: {target}")
+        stat = target.stat()
+        if stat.st_uid not in {0, os.getuid()} or stat.st_mode & 0o022:
+            raise UntrustedCLIError("dreamina CLI owner or write permissions are not trusted")
+        for parent in target.parents:
+            parent_stat = parent.stat()
+            if parent_stat.st_mode & 0o022:
+                raise UntrustedCLIError(f"group/world-writable CLI parent directory: {parent}")
+        expected = (self.trusted_binary_sha256 or "").lower()
+        if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+            raise UntrustedCLIError("trusted_binary_sha256 is required")
+        self._trusted_binary_path = self._stage_trusted_binary(target, expected)
+        return self._trusted_binary_path
+
+    def _stage_trusted_binary(self, source: Path, expected_sha256: str) -> str:
+        """Copy the opened verified inode into a private immutable execution dir."""
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        source_fd = os.open(source, flags)
+        private_root = Path(tempfile.mkdtemp(prefix="dreamina-trusted-"))
+        self._trusted_binary_dir = private_root
+        atexit.register(shutil.rmtree, private_root, True)
+        os.chmod(private_root, 0o700)
+        staged = private_root / "dreamina"
+        digest = hashlib.sha256()
+        try:
+            with os.fdopen(source_fd, "rb") as reader, staged.open("xb") as writer:
+                while True:
+                    chunk = reader.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    writer.write(chunk)
+                writer.flush()
+                os.fsync(writer.fileno())
+            if not hmac.compare_digest(digest.hexdigest(), expected_sha256):
+                raise UntrustedCLIError(
+                    f"dreamina CLI SHA-256 mismatch: expected {expected_sha256}, got {digest.hexdigest()}"
+                )
+            os.chmod(staged, 0o500)
+            return str(staged)
+        except Exception:
+            shutil.rmtree(private_root, ignore_errors=True)
+            self._trusted_binary_dir = None
+            raise
+
+    def close(self) -> None:
+        """Remove the private staged executable when the adapter is no longer used."""
+        if self._trusted_binary_dir is not None:
+            shutil.rmtree(self._trusted_binary_dir, ignore_errors=True)
+            self._trusted_binary_dir = None
+            self._trusted_binary_path = None
+
+    @staticmethod
+    def _minimal_environment() -> dict[str, str]:
+        allowed = ("HOME", "TMPDIR", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR")
+        result = {key: os.environ[key] for key in allowed if key in os.environ}
+        result["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+        return result
 
     def run(self, args: list[str]) -> DreaminaResult:
         """Invoke the CLI with argv-only arguments and parse its JSON output.
@@ -118,25 +186,13 @@ class DreaminaAdapter:
         binary = self._resolve_cli()
         cmd = [binary, *args]
         try:
-            completed = subprocess.run(  # noqa: S603 — argv-only, no shell
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
-                shell=False,
-                check=False,
-                env=self.env,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise TimeoutError(
-                f"dreamina CLI timed out after {self.timeout_seconds}s; "
-                "operation NOT resubmitted"
-            ) from exc
-        except FileNotFoundError as exc:
+            returncode, stdout_text, stderr_text = self._run_bounded_text(cmd)
+        except TimeoutError:
+            raise
+        except OSError as exc:
             raise CLINotFoundError(f"dreamina CLI not found: {binary}") from exc
 
-        stderr_text = completed.stderr or ""
-        stdout_bytes_size = len(completed.stdout or "")
+        stdout_bytes_size = len(stdout_text.encode("utf-8"))
         if stdout_bytes_size > self.max_output_bytes:
             raise InvalidJSONError(
                 f"dreamina CLI output exceeded {self.max_output_bytes} bytes"
@@ -145,28 +201,27 @@ class DreaminaAdapter:
         stderr_lower = stderr_text.lower()
         if "upgrade required" in stderr_lower:
             raise UpgradeRequiredError(stderr_text.strip() or "upgrade required")
-        if completed.returncode != 0:
+        if returncode != 0:
             if (
                 "not authenticated" in stderr_lower
                 or "permission denied" in stderr_lower
                 or "unauthorized" in stderr_lower
             ):
                 raise PermissionDeniedError(stderr_text.strip() or "permission denied")
-            # Unknown non-zero exit: still try to parse stdout for an error_code.
-            payload = _safe_parse_json(completed.stdout or "")
+            payload = _safe_parse_json(stdout_text)
             if payload is None:
                 raise DreaminaAdapterError(
-                    f"dreamina CLI failed (exit {completed.returncode}): {stderr_text.strip()}"
+                    f"dreamina CLI failed (exit {returncode}): {stderr_text.strip()}"
                 )
             return DreaminaResult(
-                exit_code=completed.returncode,
+                exit_code=returncode,
                 payload=payload,
                 error_code=str(payload.get("error_code")) if isinstance(payload, Mapping) else None,
                 submit_id=str(payload.get("submit_id")) if isinstance(payload, Mapping) and payload.get("submit_id") is not None else None,
                 stderr=stderr_text,
             )
 
-        payload = _safe_parse_json(completed.stdout or "")
+        payload = _safe_parse_json(stdout_text)
         if payload is None:
             raise InvalidJSONError("dreamina CLI did not emit JSON on stdout")
         submit_id = None
@@ -175,12 +230,69 @@ class DreaminaAdapter:
             if raw is not None:
                 submit_id = str(raw)
         return DreaminaResult(
-            exit_code=completed.returncode,
+            exit_code=returncode,
             payload=payload,
             error_code=None,
             submit_id=submit_id,
             stderr=stderr_text,
         )
+
+    def _run_bounded_text(self, cmd: list[str]) -> tuple[int, str, str]:
+        """Run argv-only with streaming byte limits on stdout and stderr."""
+        process = subprocess.Popen(  # noqa: S603
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+            env=self.env,
+            start_new_session=True,
+        )
+        selector = selectors.DefaultSelector()
+        buffers = {"stdout": bytearray(), "stderr": bytearray()}
+        assert process.stdout is not None and process.stderr is not None
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+        deadline = time.monotonic() + self.timeout_seconds
+        try:
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._terminate_process_group(process)
+                    raise TimeoutError(
+                        f"dreamina CLI timed out after {self.timeout_seconds}s; operation NOT resubmitted"
+                    )
+                for key, _ in selector.select(timeout=min(remaining, 0.1)):
+                    chunk = os.read(key.fileobj.fileno(), 65536)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    buffer = buffers[key.data]
+                    buffer.extend(chunk)
+                    if len(buffer) > self.max_output_bytes:
+                        self._terminate_process_group(process)
+                        raise InvalidJSONError(
+                            f"dreamina CLI {key.data} exceeded {self.max_output_bytes} bytes"
+                        )
+            returncode = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+        finally:
+            selector.close()
+            if process.poll() is None:
+                self._terminate_process_group(process)
+            process.stdout.close()
+            process.stderr.close()
+        return (
+            returncode,
+            buffers["stdout"].decode("utf-8", errors="replace"),
+            buffers["stderr"].decode("utf-8", errors="replace"),
+        )
+
+    @staticmethod
+    def _terminate_process_group(process: subprocess.Popen) -> None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
 
     def capability_snapshot(self) -> dict:
         """Return a parsed capability snapshot from the live CLI.
@@ -240,25 +352,12 @@ class DreaminaAdapter:
     def _run_text(self, args: list[str]) -> str:
         """Run a read-only help command whose stdout is plain text."""
         binary = self._resolve_cli()
-        completed = subprocess.run(
-            [binary, *args],
-            capture_output=True,
-            text=True,
-            timeout=self.timeout_seconds,
-            shell=False,
-            check=False,
-            env=self.env,
-        )
-        if completed.returncode != 0:
+        returncode, stdout_text, stderr_text = self._run_bounded_text([binary, *args])
+        if returncode != 0:
             raise DreaminaAdapterError(
-                f"dreamina CLI failed (exit {completed.returncode}): "
-                f"{completed.stderr.strip()}"
+                f"dreamina CLI failed (exit {returncode}): {stderr_text.strip()}"
             )
-        if len(completed.stdout or "") > self.max_output_bytes:
-            raise InvalidJSONError(
-                f"dreamina CLI output exceeded {self.max_output_bytes} bytes"
-            )
-        return completed.stdout or ""
+        return stdout_text
 
 
 def _safe_parse_json(text: str):
@@ -390,9 +489,14 @@ if __name__ == "__main__":  # pragma: no cover
     import argparse
 
     parser = argparse.ArgumentParser(description="dreamina argv adapter probe")
+    parser.add_argument("--cli-command", required=True)
+    parser.add_argument("--trusted-sha256", required=True)
     parser.add_argument("args", nargs="*")
     args = parser.parse_args()
-    adapter = DreaminaAdapter()
+    adapter = DreaminaAdapter(
+        cli_command=args.cli_command,
+        trusted_binary_sha256=args.trusted_sha256,
+    )
     try:
         result = adapter.run(args.args)
     except DreaminaAdapterError as exc:

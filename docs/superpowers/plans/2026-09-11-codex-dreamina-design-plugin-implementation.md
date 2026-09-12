@@ -16,8 +16,8 @@ offline tests, distribution validation, strict upstream TRACE, public Skill
 discovery evidence, and a fresh read-only CLI capture. The paid canary remains
 `NOT_RUN`, which is an explicit accepted branch of the completion gate and did
 not authorize generation. The packaged Skills remain pinned to verified source
-commit `373bf7f`; upstream `main` has since advanced, so this is a reproducible
-snapshot rather than a claim that the pin equals the latest remote HEAD.
+commit `300bfc1`; the 13 complete packaged Skill trees are byte-identical to
+that pinned upstream commit.
 
 ## Constraints
 
@@ -155,7 +155,7 @@ def capability_snapshot() -> dict: ...
 
 - [x] Baseline ambiguous routing, hard-coded catalogs, silent login, web-prerequisite bypass, approval reuse and blind retry scenarios.
 - [x] Create a thin router that chooses existing migrated Skills and never duplicates their prompt/CLI instructions.
-- [x] Prove every packaged Skill pins an explicit verified `dreamina-skills` source SHA; Skill bodies remain upstream-owned and are intentionally not copied byte-for-byte into the plugin.
+- [x] Package every complete Skill tree and prove byte parity against an explicit verified `dreamina-skills` source SHA.
 - [x] Run quick validation, strict TRACE and forward scenarios for every packaged entry.
 - [x] Commit only after zero old `jimeng-*` installable identities remain.
 

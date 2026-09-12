@@ -194,12 +194,13 @@ class SkillSnapshotShaTests(unittest.TestCase):
 
     def test_mismatched_upstream_sha_reported(self) -> None:
         skills_root = self.root / "skills"
-        (skills_root / "dreamina-cli").mkdir()
-        (skills_root / "dreamina-cli" / "SKILL.md").write_text(
-            "---\nname: dreamina-cli\ndescription: stub\n"
-            "upstream_commit_sha: NOT_VERIFIED\n---\nbody\n",
-            encoding="utf-8",
-        )
+        for name in EXPECTED_SKILLS:
+            (skills_root / name).mkdir()
+            (skills_root / name / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: stub\n---\nbody\n",
+                encoding="utf-8",
+            )
+        (skills_root / ".upstream-commit").write_text("NOT_VERIFIED\n", encoding="utf-8")
         verifier = DistributionV7Verifier(
             root=self.root,
             expected_upstream_sha="a" * 40,
@@ -207,8 +208,8 @@ class SkillSnapshotShaTests(unittest.TestCase):
         report = verifier.run()
         self.assertEqual(report.skill_snapshot_status, "FAIL")
         self.assertTrue(
-            any(entry.startswith("dreamina-cli:") for entry in report.skill_snapshot_mismatches),
-            f"expected a dreamina-cli mismatch in {report.skill_snapshot_mismatches}",
+            any(".upstream-commit" in entry for entry in report.skill_snapshot_mismatches),
+            f"expected a snapshot pin mismatch in {report.skill_snapshot_mismatches}",
         )
 
     def test_matching_upstream_sha_passes(self) -> None:
@@ -220,6 +221,7 @@ class SkillSnapshotShaTests(unittest.TestCase):
                 f"---\nname: {name}\ndescription: stub\nupstream_commit_sha: {sha}\n---\nbody\n",
                 encoding="utf-8",
             )
+        (skills_root / ".upstream-commit").write_text(sha + "\n", encoding="utf-8")
         verifier = DistributionV7Verifier(root=self.root, expected_upstream_sha=sha)
         report = verifier.run()
         self.assertEqual(report.skill_snapshot_status, "PASS")

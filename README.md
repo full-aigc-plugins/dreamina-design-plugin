@@ -8,7 +8,13 @@
 
 ## Status and purpose
 
-**Implementation complete; read-only runtime observed; paid canary intentionally not run.**
+**Feature baseline complete; production hardening is in progress.**
+
+The offline implementation gate is satisfied, but production acceptance is
+tracked separately in
+[`docs/superpowers/plans/2026-09-12-production-readiness-hardening.md`](docs/superpowers/plans/2026-09-12-production-readiness-hardening.md).
+Paid canary, fresh local/public installation, input-file containment, final
+security review, and remote publication are not yet complete.
 
 ```text
 Creative intent -> prompt contract -> live CLI capability discovery
@@ -16,11 +22,12 @@ Creative intent -> prompt contract -> live CLI capability discovery
                 -> query by submit_id -> validate/download artifacts
 ```
 
-All seven plan tasks are implemented and covered by 203 offline tests
+All seven baseline plan tasks are implemented; the current hardening suite is
+covered by 221 offline tests
 (no network, no `dreamina` binary, no paid calls). Eleven of the plan's
 thirteen completion-gate lines are `PASS` on measured evidence — including
 Skill snapshot parity pinned to upstream
-`full-aigc-skills/dreamina-skills@373bf7f`, strict per-Skill TRACE 13/13,
+`full-aigc-skills/dreamina-skills@300bfc1`, strict per-Skill TRACE 13/13,
 plugin validation, zero secret matches, and a **public-marketplace install
 verified to discover all 14 Skills** via `codex debug prompt-input`.
 

@@ -203,38 +203,15 @@ class DistributionV7Verifier:
             report.skill_snapshot_mismatches.append("skills/ directory missing")
             return
         found = 0
-        pinned_shas: set[str] = set()
         for name in EXPECTED_SKILLS:
             skill_md = skills_root / name / "SKILL.md"
             if not skill_md.is_file():
                 report.skill_snapshot_mismatches.append(f"{name}: SKILL.md missing")
                 continue
             found += 1
-            front = self._parse_frontmatter(skill_md.read_text(encoding="utf-8"))
-            sha = front.get("upstream_commit_sha", "").strip()
-            if not sha:
-                report.skill_snapshot_mismatches.append(f"{name}: upstream_commit_sha missing")
-                continue
-            pinned_shas.add(sha)
-            if self._expected_upstream_sha is None:
-                continue
-            if sha != self._expected_upstream_sha:
-                report.skill_snapshot_mismatches.append(
-                    f"{name}: upstream_commit_sha {sha} != expected {self._expected_upstream_sha}"
-                )
         report.skill_count = found
-        if self._expected_upstream_sha is not None:
-            # Caller supplied the commit to compare against.
-            if report.skill_snapshot_mismatches:
-                report.skill_snapshot_status = "FAIL"
-            elif not found:
-                report.skill_snapshot_status = "FAIL"
-            else:
-                report.skill_snapshot_status = "PASS"
-            return
-        # No explicit SHA: derive parity from the pins themselves. All
-        # packaged Skills agreement on one 40-hex commit IS the pinning
-        # contract; a placeholder or a disagreement is a failure.
+        pin_path = skills_root / ".upstream-commit"
+        pinned_sha = pin_path.read_text(encoding="utf-8").strip() if pin_path.is_file() else ""
         if not found:
             report.skill_snapshot_status = "FAIL"
             report.skill_snapshot_mismatches.append("no packaged Skills found")
@@ -242,18 +219,16 @@ class DistributionV7Verifier:
         if report.skill_snapshot_mismatches:
             report.skill_snapshot_status = "FAIL"
             return
-        if len(pinned_shas) != 1:
+        if re.fullmatch(r"[0-9a-f]{40}", pinned_sha) is None:
             report.skill_snapshot_status = "FAIL"
             report.skill_snapshot_mismatches.append(
-                f"packaged Skills pin {len(pinned_shas)} different commits: "
-                f"{sorted(pinned_shas)}"
+                f"skills/.upstream-commit is not a 40-hex commit: {pinned_sha!r}"
             )
             return
-        only = next(iter(pinned_shas))
-        if re.fullmatch(r"[0-9a-f]{40}", only) is None:
+        if self._expected_upstream_sha is not None and pinned_sha != self._expected_upstream_sha:
             report.skill_snapshot_status = "FAIL"
             report.skill_snapshot_mismatches.append(
-                f"pinned upstream_commit_sha is not a 40-hex commit: {only!r}"
+                f"snapshot pin {pinned_sha} != expected {self._expected_upstream_sha}"
             )
             return
         report.skill_snapshot_status = "PASS"

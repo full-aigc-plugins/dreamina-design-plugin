@@ -16,6 +16,7 @@ the failure surface required by Task 2:
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import stat
 import subprocess
@@ -35,6 +36,7 @@ from scripts.dreamina_adapter import (  # noqa: E402  (path injection above)
     InvalidJSONError,
     PermissionDeniedError,
     TimeoutError as AdapterTimeoutError,
+    UntrustedCLIError,
     UpgradeRequiredError,
     _parse_command_help,
 )
@@ -47,6 +49,14 @@ def write_fake_cli(directory: Path, body: str) -> Path:
     target.write_text(textwrap.dedent(body))
     target.chmod(target.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     return target
+
+
+def trusted_adapter(cli: Path, **kwargs) -> DreaminaAdapter:
+    return DreaminaAdapter(
+        cli_command=str(cli),
+        trusted_binary_sha256=hashlib.sha256(cli.read_bytes()).hexdigest(),
+        **kwargs,
+    )
 
 
 class DreaminaAdapterConstructionTests(unittest.TestCase):
@@ -63,7 +73,18 @@ class DreaminaAdapterConstructionTests(unittest.TestCase):
 
         source = inspect.getsource(module.DreaminaAdapter.run)
         self.assertNotIn("shell=True", source)
-        self.assertTrue("subprocess.run" in source)
+        helper_source = inspect.getsource(module.DreaminaAdapter._run_bounded_text)
+        self.assertIn("subprocess.Popen", helper_source)
+
+    def test_relative_path_and_digest_mismatch_are_rejected(self) -> None:
+        with self.assertRaises(UntrustedCLIError):
+            DreaminaAdapter(cli_command="dreamina").capability_snapshot()
+        with tempfile.TemporaryDirectory() as tmp:
+            cli = write_fake_cli(Path(tmp), "#!/bin/sh\necho '{}'")
+            with self.assertRaises(UntrustedCLIError):
+                DreaminaAdapter(
+                    cli_command=str(cli), trusted_binary_sha256="0" * 64
+                ).capability_snapshot()
 
 
 class DreaminaAdapterRunTests(unittest.TestCase):
@@ -74,7 +95,7 @@ class DreaminaAdapterRunTests(unittest.TestCase):
 
     def _make_adapter(self, body: str) -> DreaminaAdapter:
         cli = write_fake_cli(self.cli_dir, body)
-        return DreaminaAdapter(cli_command=str(cli), timeout_seconds=5)
+        return trusted_adapter(cli, timeout_seconds=5)
 
     def test_successful_json_payload_is_returned(self) -> None:
         adapter = self._make_adapter(
@@ -155,6 +176,18 @@ class DreaminaAdapterRunTests(unittest.TestCase):
         with self.assertRaises(InvalidJSONError):
             adapter.run(["anything"])
 
+    def test_oversize_stderr_is_rejected_while_process_is_running(self) -> None:
+        adapter = self._make_adapter(
+            """\
+            #!/bin/sh
+            head -c 200000 /dev/zero | tr '\0' 'E' 1>&2
+            echo '{}'
+            """
+        )
+        adapter.max_output_bytes = 1024
+        with self.assertRaises(InvalidJSONError):
+            adapter.run(["anything"])
+
 
 class CapabilitySnapshotTests(unittest.TestCase):
     def test_command_help_preserves_model_specific_constraints(self) -> None:
@@ -181,7 +214,8 @@ class CapabilitySnapshotTests(unittest.TestCase):
             adapter.capability_snapshot()
 
     def test_capability_snapshot_falls_back_to_command_help(self) -> None:
-        adapter = DreaminaAdapter(cli_command=self._make_cli())
+        cli = Path(self._make_cli())
+        adapter = trusted_adapter(cli)
         snapshot = adapter.capability_snapshot()
         self.assertEqual(snapshot["cli_version"], "ec1b9fa-dirty")
         self.assertEqual(snapshot["cli_commit"], "ec1b9fa")
@@ -199,7 +233,7 @@ class CapabilitySnapshotTests(unittest.TestCase):
               schema) echo '{"modes":["text2image"]}' ;;
             esac
         """)
-        snapshot = DreaminaAdapter(cli_command=str(cli)).capability_snapshot()
+        snapshot = trusted_adapter(cli).capability_snapshot()
         self.assertEqual(snapshot["cli_version"], "1.4.18")
 
     def _make_cli(self) -> str:

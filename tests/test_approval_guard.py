@@ -12,6 +12,7 @@ The approval guard wraps the ``approval_receipt`` schema and adds:
 from __future__ import annotations
 
 import json
+import multiprocessing
 import sys
 import tempfile
 import unittest
@@ -61,6 +62,25 @@ def _approval(fingerprint: str, *, expires_in_seconds: int | None = None, **extr
     return payload
 
 
+def _create_same_session_worker(root: str, start, queue) -> None:
+    guard = ApprovalGuard(root=Path(root))
+    start.wait()
+    try:
+        queue.put(("ok", guard.create_session(label="concurrent")))
+    except Exception as exc:
+        queue.put((type(exc).__name__, str(exc)))
+
+
+def _consume_same_approval_worker(root: str, session_id: str, request: dict, approval_id: str, start, queue) -> None:
+    guard = ApprovalGuard(root=Path(root))
+    start.wait()
+    try:
+        guard.consume_approval(session_id, request=request, approval_id=approval_id)
+        queue.put("ok")
+    except Exception as exc:
+        queue.put(type(exc).__name__)
+
+
 class ModuleExportTests(unittest.TestCase):
     def test_module_exports_guard(self) -> None:
         self.assertIsNotNone(ApprovalGuard)
@@ -95,6 +115,21 @@ class SessionLifecycleTests(unittest.TestCase):
         with self.assertRaises(SessionNotFoundError):
             self.guard.delete_session("missing")
 
+    def test_session_id_path_traversal_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            self.guard.select_session("../../outside")
+        with self.assertRaises(ValueError):
+            self.guard.delete_session("../../outside")
+
+    def test_session_symlink_is_rejected(self) -> None:
+        outside = Path(self.tmp.name) / "outside"
+        outside.mkdir()
+        (outside / "session.json").write_text("{}", encoding="utf-8")
+        link = Path(self.tmp.name) / "sessions" / "sessions" / ("a" * 16)
+        link.symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            self.guard.select_session("a" * 16)
+
 
 class ApprovalReplayTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -124,9 +159,68 @@ class ApprovalReplayTests(unittest.TestCase):
     def test_replay_with_wrong_fingerprint_raises(self) -> None:
         request = {"mode": "text2image", "prompt": "x", "model": "seedream-5.0-pro", "count": 1, "resolution_type": "1k"}
         receipt = _approval("a" * 64)
-        self.guard.record_approval(self.session_id, request=request, receipt=receipt)
         with self.assertRaises(ApprovalReplayMismatchError):
-            self.guard.assert_approval_for(self.session_id, request=request)
+            self.guard.record_approval(self.session_id, request=request, receipt=receipt)
+
+    def test_approval_is_single_use(self) -> None:
+        request = {"mode": "text2image", "prompt": "x", "model": "seedream-5.0-pro", "count": 1, "resolution_type": "1k"}
+        from scripts.image_service import build_request_fingerprint
+        approval_id = self.guard.record_approval(
+            self.session_id,
+            request=request,
+            receipt=_approval(build_request_fingerprint(request)),
+        )
+        self.guard.consume_approval(self.session_id, request=request, approval_id=approval_id)
+        from scripts.approval_guard import ApprovalConsumedError
+        with self.assertRaises(ApprovalConsumedError):
+            self.guard.consume_approval(self.session_id, request=request, approval_id=approval_id)
+
+    def test_concurrent_consumption_has_exactly_one_winner(self) -> None:
+        request = {"mode": "text2image", "prompt": "x", "model": "seedream-5.0-pro", "count": 1, "resolution_type": "1k"}
+        from scripts.image_service import build_request_fingerprint
+        approval_id = self.guard.record_approval(
+            self.session_id,
+            request=request,
+            receipt=_approval(build_request_fingerprint(request)),
+        )
+        ctx = multiprocessing.get_context("fork")
+        start = ctx.Event()
+        queue = ctx.Queue()
+        root = str(Path(self.tmp.name) / "sessions")
+        processes = [
+            ctx.Process(
+                target=_consume_same_approval_worker,
+                args=(root, self.session_id, request, approval_id, start, queue),
+            )
+            for _ in range(4)
+        ]
+        for process in processes:
+            process.start()
+        start.set()
+        results = [queue.get(timeout=5) for _ in processes]
+        for process in processes:
+            process.join(timeout=5)
+        self.assertEqual(results.count("ok"), 1)
+
+
+class ConcurrentSessionTests(unittest.TestCase):
+    def test_duplicate_label_has_exactly_one_winner_across_processes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = str(Path(tmp) / "guard")
+            ctx = multiprocessing.get_context("fork")
+            start = ctx.Event()
+            queue = ctx.Queue()
+            processes = [
+                ctx.Process(target=_create_same_session_worker, args=(root, start, queue))
+                for _ in range(4)
+            ]
+            for process in processes:
+                process.start()
+            start.set()
+            results = [queue.get(timeout=5) for _ in processes]
+            for process in processes:
+                process.join(timeout=5)
+            self.assertEqual(sum(1 for status, _ in results if status == "ok"), 1)
 
 
 class ApprovalExpiryTests(unittest.TestCase):

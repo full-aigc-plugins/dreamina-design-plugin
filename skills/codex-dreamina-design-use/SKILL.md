@@ -2,7 +2,7 @@
 name: codex-dreamina-design-use
 description: |
   Thin router Skill for Dreamina Design image and video workflows.
-  Selects between the 12 packaged Dreamina Skills (dreamina-cli-* and
+  Selects between the 13 packaged Dreamina Skills (dreamina-cli-* and
   dreamina-prompt-*) and never duplicates their prompt or CLI bodies.
 ---
 
@@ -25,7 +25,7 @@ Invoke this Skill when a user asks Codex to:
 
 ## Routing rules
 
-The router chooses between the 12 packaged Dreamina Skills based on:
+The router chooses between the 13 packaged Dreamina Skills based on:
 
 | User intent                     | Packaged Skill               |
 |---------------------------------|------------------------------|
@@ -33,9 +33,8 @@ The router chooses between the 12 packaged Dreamina Skills based on:
 | image-to-image                  | `dreamina-cli-image2image`   |
 | text-to-video                   | `dreamina-cli-text2video`    |
 | image-to-video                  | `dreamina-cli-image2video`   |
-| frames-to-video / multimodal    | (deferred — use the CLI      |
-|                                 | capability snapshot to       |
-|                                 | determine support)           |
+| frames-to-video                 | `dreamina-cli`                |
+| multimodal / multi-frame video  | `dreamina-cli`                |
 
 If the user's request is ambiguous (matches more than one mode), the
 router must refuse to guess and ask for clarification instead.
@@ -56,8 +55,8 @@ router must refuse to guess and ask for clarification instead.
 * **No blind resubmission.** When a submission outcome is ambiguous,
   `scripts.operation_ledger.OperationLedger.query` is invoked by submit
   ID before any new submission is attempted.
-* **No prompt / CLI instruction duplication.** The router Skill never
-  embeds another Skill's body. Bodies live in the 12 packaged Skills
+* **Verified packaged instructions.** The router Skill never embeds another
+  Skill's body. The 13 complete upstream Skill trees are packaged locally
   and must remain byte-identical to the verified upstream
   `full-aigc-skills/dreamina-skills` commit. Run
   `scripts/verify_skill_snapshot.py` to confirm parity.
@@ -83,6 +82,14 @@ router must refuse to guess and ask for clarification instead.
    which validates SHA-256, truncations, and media metadata before
    declaring the task complete.
 
+Example routing check:
+
+```text
+用户：用首尾两张图生成视频
+路由：video / frames2video -> dreamina-cli
+下一步：先读取实时 help，展示将消费积分的精确请求，等待明确批准后提交
+```
+
 ## Out of scope
 
 This Skill does **not**:
@@ -91,5 +98,5 @@ This Skill does **not**:
 * embed private credentials or account snapshots;
 * hard-code model / resolution / ratio catalogs;
 * bypass the web-console first-video prerequisite;
-* retry submissions on ambiguous state without a `status <submit_id>`
-  query.
+* retry submissions on ambiguous state without a
+  `query_result --submit_id=<submit_id>` query.

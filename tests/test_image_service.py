@@ -29,6 +29,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.dreamina_adapter import DreaminaResult  # noqa: E402
+from scripts.approval_guard import ApprovalGuard  # noqa: E402
+
+
+class _TestReferencePolicy:
+    def validate(self, reference):
+        return dict(reference)
 
 # Importing the module under test is expected to fail until Task 3.3 lands.
 try:  # pragma: no cover - exercised by RED phase
@@ -78,6 +84,29 @@ def synthetic_image_snapshot() -> dict:
     }
 
 
+def issue_approval(root: Path, request: dict, scope: dict):
+    scope = {
+        "count": request.get("count", 1),
+        "model": request.get("model"),
+        "resolution": request.get("resolution_type"),
+        **scope,
+    }
+    guard = ApprovalGuard(root=root)
+    session_id = guard.create_session(label="submission")
+    approval_id = guard.record_approval(
+        session_id,
+        request=request,
+        receipt={
+            "request_fingerprint": build_request_fingerprint(request),
+            "acknowledged_cost": "credits",
+            "acknowledged_scope": scope,
+            "approved_at": "2026-09-12T00:00:00Z",
+            "approver": "test",
+        },
+    )
+    return guard, session_id, approval_id
+
+
 class FingerprintTests(unittest.TestCase):
     def test_fingerprint_is_deterministic(self) -> None:
         payload_a = {"mode": "text2image", "prompt": "a mountain", "model": "seedream-5.0-pro", "count": 1, "resolution_type": "1k"}
@@ -100,7 +129,7 @@ class TextToImageRequestTests(unittest.TestCase):
         self.snapshot = synthetic_image_snapshot()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.service = ImageService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger")
+        self.service = ImageService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger", reference_policy=_TestReferencePolicy())
 
     def test_text2image_uses_default_count_one(self) -> None:
         request = self.service.build_request(
@@ -188,7 +217,7 @@ class ImageToImageRequestTests(unittest.TestCase):
         self.snapshot = synthetic_image_snapshot()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.service = ImageService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger")
+        self.service = ImageService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger", reference_policy=_TestReferencePolicy())
 
     def test_image2image_requires_subject_reference(self) -> None:
         with self.assertRaises(InvalidReferenceError):
@@ -198,6 +227,20 @@ class ImageToImageRequestTests(unittest.TestCase):
                 model="seedream-5.0-pro",
                 resolution_type="1k",
                 references=[{"path": "/tmp/ref.png", "role": "style"}],
+            )
+
+    def test_image2image_rejects_upload_without_reference_policy(self) -> None:
+        service = ImageService(
+            snapshot=self.snapshot,
+            ledger_dir=Path(self.tmp.name) / "untrusted-ledger",
+        )
+        with self.assertRaises(InvalidReferenceError):
+            service.build_request(
+                mode="image2image",
+                prompt="x",
+                model="seedream-5.0-pro",
+                resolution_type="1k",
+                references=[{"path": "/tmp/input.png", "role": "subject"}],
             )
 
     def test_image2image_accepts_subject_reference(self) -> None:
@@ -232,7 +275,7 @@ class BatchCountTests(unittest.TestCase):
         self.snapshot = synthetic_image_snapshot()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.service = ImageService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger")
+        self.service = ImageService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger", reference_policy=_TestReferencePolicy())
 
     def test_count_zero_is_rejected(self) -> None:
         with self.assertRaises(BatchCountOutOfRangeError):
@@ -271,7 +314,7 @@ class UnsupportedModelTests(unittest.TestCase):
         self.snapshot = synthetic_image_snapshot()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.service = ImageService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger")
+        self.service = ImageService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger", reference_policy=_TestReferencePolicy())
 
     def test_unknown_model_is_rejected(self) -> None:
         with self.assertRaises(UnsupportedCapabilityError):
@@ -288,7 +331,7 @@ class UnsupportedModelTests(unittest.TestCase):
         snapshot["models"] = [
             {"name": "image-only-model", "modes": ["image2image"], "resolutions": ["1k"], "ratios": ["1:1"], "max_count": 1}
         ]
-        service = ImageService(snapshot=snapshot, ledger_dir=Path(self.tmp.name) / "ledger2")
+        service = ImageService(snapshot=snapshot, ledger_dir=Path(self.tmp.name) / "ledger2", reference_policy=_TestReferencePolicy())
         with self.assertRaises(UnsupportedCapabilityError):
             service.build_request(
                 mode="text2image",
@@ -303,7 +346,7 @@ class ApprovalBindingTests(unittest.TestCase):
         self.snapshot = synthetic_image_snapshot()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.service = ImageService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger")
+        self.service = ImageService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger", reference_policy=_TestReferencePolicy())
 
     def test_submit_without_approval_raises(self) -> None:
         request = self.service.build_request(
@@ -313,7 +356,7 @@ class ApprovalBindingTests(unittest.TestCase):
             resolution_type="1k",
         )
         with self.assertRaises(MissingApprovalError):
-            self.service.submit(request, adapter=None, approval=None)  # type: ignore[arg-type]
+            self.service.submit(request, adapter=None, approval_guard=None, session_id=None, approval_id=None)  # type: ignore[arg-type]
 
     def test_submit_with_mismatched_approval_raises(self) -> None:
         request = self.service.build_request(
@@ -322,15 +365,9 @@ class ApprovalBindingTests(unittest.TestCase):
             model="seedream-5.0-pro",
             resolution_type="1k",
         )
-        bad_approval = {
-            "request_fingerprint": "0" * 64,
-            "acknowledged_cost": "credits",
-            "acknowledged_scope": {"count": 1},
-            "approved_at": "2026-09-12T00:00:00Z",
-            "approver": "test",
-        }
+        guard, session_id, _ = issue_approval(Path(self.tmp.name) / "approvals", request, {"count": 1})
         with self.assertRaises(ApprovalMismatchError):
-            self.service.submit(request, adapter=None, approval=bad_approval)  # type: ignore[arg-type]
+            self.service.submit(request, adapter=None, approval_guard=guard, session_id=session_id, approval_id="wrong")  # type: ignore[arg-type]
 
 
 class SubmitSemanticsTests(unittest.TestCase):
@@ -338,7 +375,7 @@ class SubmitSemanticsTests(unittest.TestCase):
         self.snapshot = synthetic_image_snapshot()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.service = ImageService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger")
+        self.service = ImageService(snapshot=self.snapshot, ledger_dir=Path(self.tmp.name) / "ledger", reference_policy=_TestReferencePolicy())
 
     def test_submit_invokes_adapter_once_for_batch(self) -> None:
         """A batch of N must be submitted as a single adapter call."""
@@ -349,14 +386,7 @@ class SubmitSemanticsTests(unittest.TestCase):
             resolution_type="1k",
             count=3,
         )
-        fingerprint = build_request_fingerprint(request)
-        approval = {
-            "request_fingerprint": fingerprint,
-            "acknowledged_cost": "credits",
-            "acknowledged_scope": {"count": 3, "model": "seedream-5.0-pro", "resolution": "1k"},
-            "approved_at": "2026-09-12T00:00:00Z",
-            "approver": "test",
-        }
+        guard, session_id, approval_id = issue_approval(Path(self.tmp.name) / "approvals", request, {"count": 3, "model": "seedream-5.0-pro", "resolution": "1k"})
 
         class _StubAdapter:
             def __init__(self) -> None:
@@ -377,7 +407,7 @@ class SubmitSemanticsTests(unittest.TestCase):
                 )
 
         adapter = _StubAdapter()
-        result = self.service.submit(request, adapter=adapter, approval=approval)
+        result = self.service.submit(request, adapter=adapter, approval_guard=guard, session_id=session_id, approval_id=approval_id)
         self.assertEqual(len(adapter.calls), 1)
         self.assertEqual(adapter.calls[0][0], "text2image")
         self.assertIn("--generate_num", adapter.calls[0])
@@ -393,14 +423,7 @@ class SubmitSemanticsTests(unittest.TestCase):
             resolution_type="1k",
             count=2,
         )
-        fingerprint = build_request_fingerprint(request)
-        approval = {
-            "request_fingerprint": fingerprint,
-            "acknowledged_cost": "credits",
-            "acknowledged_scope": {"count": 2, "model": "seedream-5.0-pro", "resolution": "1k"},
-            "approved_at": "2026-09-12T00:00:00Z",
-            "approver": "test",
-        }
+        guard, session_id, approval_id = issue_approval(Path(self.tmp.name) / "approvals", request, {"count": 2, "model": "seedream-5.0-pro", "resolution": "1k"})
 
         class _StubAdapter:
             def run(self, args):
@@ -416,7 +439,7 @@ class SubmitSemanticsTests(unittest.TestCase):
                 )
 
         adapter = _StubAdapter()
-        result = self.service.submit(request, adapter=adapter, approval=approval)
+        result = self.service.submit(request, adapter=adapter, approval_guard=guard, session_id=session_id, approval_id=approval_id)
         self.assertEqual([item["index"] for item in result["items"]], [0, 1])
         self.assertEqual([item["url"] for item in result["items"]], ["https://x/0", "https://x/1"])
 

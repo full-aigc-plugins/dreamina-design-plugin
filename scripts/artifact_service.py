@@ -13,8 +13,6 @@ all of the following hold:
 from __future__ import annotations
 
 import hashlib
-import os
-import re
 import struct
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +37,10 @@ class ArtifactChecksumMismatchError(ArtifactServiceError):
 
 class MediaMetadataMissingError(ArtifactServiceError):
     """No media metadata could be derived from the downloaded payload."""
+
+
+class ArtifactPolicyError(ArtifactServiceError):
+    """URL, destination, size, or overwrite policy rejected the download."""
 
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -104,9 +106,19 @@ def _media_metadata(payload: bytes, mime: str) -> dict[str, Any]:
 class ArtifactService:
     """Download an artifact, validate it, and return an ArtifactReceipt."""
 
-    def __init__(self, *, fetcher: Any | None = None, min_bytes: int = MIN_PNG_BYTES) -> None:
-        self._fetcher = fetcher
+    def __init__(
+        self,
+        *,
+        min_bytes: int = MIN_PNG_BYTES,
+        destination_root: Path,
+        max_bytes: int = 512 * 1024 * 1024,
+    ) -> None:
         self._min_bytes = min_bytes
+        self._destination_root = Path(destination_root).resolve()
+        self._destination_root.mkdir(parents=True, exist_ok=True)
+        if max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
+        self._max_bytes = max_bytes
 
     # ------------------------------------------------------------------
     # Public surface
@@ -119,73 +131,43 @@ class ArtifactService:
         destination: Path,
         expected_checksum: Mapping[str, str],
     ) -> dict[str, Any]:
-        if not self._fetcher:
-            raise ArtifactDownloadError("no fetcher configured")
+        raise ArtifactPolicyError(
+            "remote fetching is disabled; use `dreamina query_result "
+            "--download_dir=<approved-root>` and verify_local()"
+        )
+
+    def verify_local(self, *, submit_id: str, path: Path) -> dict[str, Any]:
+        """Verify a file downloaded by ``dreamina query_result --download_dir``."""
+        candidate = Path(path)
+        if candidate.is_symlink() or not candidate.is_file():
+            raise ArtifactPolicyError("downloaded artifact must be a regular non-symlink file")
+        resolved = candidate.resolve(strict=True)
         try:
-            payload = self._fetcher.fetch(url)
-        except Exception as exc:  # noqa: BLE001 — surface as typed error
-            raise ArtifactDownloadError(f"download failed: {exc}") from exc
-        if not isinstance(payload, (bytes, bytearray)) or len(payload) == 0:
-            raise ArtifactTruncatedError("downloaded payload is empty")
-        # Truncation check: if the payload *looks like* a known media format
-        # (PNG / JPEG / MP4) but is too short to be a valid file, report
-        # truncation rather than checksum mismatch.
-        mime = _detect_mime(bytes(payload))
-        if mime is not None and (
-            len(payload) < self._min_bytes
-            or not _looks_complete(bytes(payload), mime)
-        ):
-            raise ArtifactTruncatedError(
-                f"downloaded payload looks like {mime} but appears truncated"
-            )
+            resolved.relative_to(self._destination_root)
+        except ValueError as exc:
+            raise ArtifactPolicyError("downloaded artifact escapes approved root") from exc
+        size = resolved.stat().st_size
+        if size <= 0 or size > self._max_bytes:
+            raise ArtifactPolicyError(f"downloaded artifact size is outside 1..{self._max_bytes}")
+        payload = resolved.read_bytes()
+        mime = _detect_mime(payload)
         if mime is None:
-            raise MediaMetadataMissingError(
-                f"could not derive media metadata from payload (size {len(payload)})"
-            )
-        algorithm = expected_checksum.get("algorithm", "sha256").lower()
-        digest = expected_checksum.get("digest", "").lower()
-        if algorithm != "sha256" or not re.fullmatch(r"[a-f0-9]{64}", digest):
-            raise ArtifactChecksumMismatchError(
-                f"unsupported checksum spec: algorithm={algorithm}"
-            )
-        actual = _sha256_hex(bytes(payload))
-        if actual != digest:
-            raise ArtifactChecksumMismatchError(
-                f"checksum mismatch: expected {digest}, got {actual}"
-            )
-        metadata = _media_metadata(bytes(payload), mime)
-        destination = Path(destination)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        self._atomic_write(destination, bytes(payload))
-        receipt = {
+            raise MediaMetadataMissingError("could not derive media metadata from local artifact")
+        if len(payload) < self._min_bytes or not _looks_complete(payload, mime):
+            raise ArtifactTruncatedError(f"local {mime} artifact appears truncated")
+        digest = _sha256_hex(payload)
+        return {
             "submit_id": submit_id,
-            "local_path": str(destination),
-            "checksum": {"algorithm": algorithm, "digest": actual},
-            "media_metadata": metadata,
+            "local_path": str(resolved),
+            "checksum": {"algorithm": "sha256", "digest": digest},
+            "media_metadata": _media_metadata(payload, mime),
             "verified_at": _now_iso(),
         }
-        return receipt
-
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _atomic_write(path: Path, payload: bytes) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_suffix(path.suffix + ".part")
-        try:
-            with open(tmp_path, "wb") as handle:
-                handle.write(payload)
-            os.replace(tmp_path, path)
-        except Exception:
-            if tmp_path.exists():
-                tmp_path.unlink()
-            raise
-
 
 __all__ = [
     "ArtifactChecksumMismatchError",
     "ArtifactDownloadError",
+    "ArtifactPolicyError",
     "ArtifactService",
     "ArtifactTruncatedError",
     "MediaMetadataMissingError",

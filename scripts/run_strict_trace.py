@@ -148,7 +148,7 @@ class StrictTracer:
         skills_root: Path,
         check_external_links: bool = False,
         required_fields: Iterable[str] = ("name", "description"),
-        additional_required_for_packaged: Iterable[str] = ("upstream_commit_sha",),
+        additional_required_for_packaged: Iterable[str] = (),
         upstream_skills_root: Path | None = None,
     ) -> None:
         self._skills_root = Path(skills_root)
@@ -185,12 +185,8 @@ class StrictTracer:
     def trace_against_upstream(self) -> StrictTraceReport:
         """Run the same per-Skill checks against the upstream source of truth.
 
-        This is the strict-TRACE counterpart of the snapshot parity gate:
-        the plugin does not copy upstream Skill bodies, so the local
-        SKILL.md files are metadata stubs. To prove every packaged entry
-        actually contains well-formed frontmatter / substantial body /
-        examples / valid links, the tracer walks the cloned upstream
-        ``skills/`` directory and reports per-Skill results.
+        This independently walks the cloned upstream ``skills/`` directory
+        so callers can compare source quality with the byte-parity verifier.
         """
         if self._upstream_skills_root is None:
             raise RuntimeError(

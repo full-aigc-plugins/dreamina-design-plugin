@@ -69,9 +69,9 @@ class PluginIdentityTests(unittest.TestCase):
         self.assertFalse(manifest.get("skills", "").endswith("/*"))
         self.assertTrue(manifest["skills"].endswith("/"))
 
-    def test_manifest_has_no_mcp_or_credentials(self) -> None:
+    def test_manifest_has_guarded_mcp_and_no_credentials(self) -> None:
         manifest = load_json(MANIFEST)
-        self.assertNotIn("mcpServers", manifest)
+        self.assertEqual(manifest["mcpServers"], "./.mcp.json")
         self.assertNotIn("mcp", manifest)
         lowered = {key.lower() for key in manifest}
         for forbidden in CREDENTIAL_KEYS:
