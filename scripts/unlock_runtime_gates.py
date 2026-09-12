@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -90,14 +91,74 @@ class UnlockHarness:
     # ------------------------------------------------------------------
     def status(self) -> dict:
         cli_ok = self._cli_available()
-        canary_marker = self._verification_dir / "paid-canary-approved.md"
+        artifacts_ok, artifacts_reason = self._validate_artifacts()
+        canary_ok, canary_reason = self._validate_canary()
         return {
             "cli_available": cli_ok,
             "cli_command": self._cli_command,
-            "read_only_runtime_contract": "observed" if self._artifacts_present() else "blocked",
-            "paid_canary": "APPROVED" if canary_marker.is_file() else "NOT_RUN",
+            "read_only_runtime_contract": "observed" if artifacts_ok else "blocked",
+            "read_only_runtime_reason": artifacts_reason,
+            "paid_canary": "APPROVED" if canary_ok else "NOT_RUN",
+            "paid_canary_reason": canary_reason,
             "verification_dir": str(self._verification_dir),
         }
+
+    def _validate_artifacts(self) -> tuple[bool, str]:
+        """Mirror the v7 verifier's content checks so both agree.
+
+        Existence alone is not evidence: empty or malformed captures must not
+        report the gate as satisfied.
+        """
+        version = self._verification_dir / "cli-version.txt"
+        help_text = self._verification_dir / "cli-help.txt"
+        schema = self._verification_dir / "cli-schema.json"
+        missing = [p.name for p in (version, help_text, schema) if not p.is_file()]
+        if missing:
+            return False, f"missing capture(s): {', '.join(missing)}"
+        try:
+            version_text = version.read_text(encoding="utf-8").strip()
+            help_value = help_text.read_text(encoding="utf-8").strip()
+            schema_text = schema.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            return False, f"cannot read captures: {exc}"
+        if not version_text:
+            return False, "cli-version.txt is empty"
+        if re.search(r"\d+\.\d+", version_text) is None:
+            return False, f"cli-version.txt has no version-like token: {version_text!r}"
+        if len(help_value) < 40:
+            return False, f"cli-help.txt too short ({len(help_value)} chars)"
+        try:
+            parsed = json.loads(schema_text)
+        except (json.JSONDecodeError, ValueError):
+            return False, "cli-schema.json does not parse as JSON"
+        if not isinstance(parsed, (dict, list)):
+            return False, "cli-schema.json is not a JSON object or array"
+        return True, "captures present and well-formed"
+
+    def _validate_canary(self) -> tuple[bool, str]:
+        """Mirror the v7 verifier's canary content checks."""
+        marker = self._verification_dir / "paid-canary-approved.md"
+        if not marker.is_file():
+            return False, "no approval marker present"
+        try:
+            text = marker.read_text(encoding="utf-8")
+        except OSError as exc:
+            return False, f"cannot read marker: {exc}"
+        if not text.strip():
+            return False, "marker is empty"
+        missing: list[str] = []
+        if re.search(r"submit[_-]?id\s*[:`]*\s*`?\S+", text, re.IGNORECASE) is None:
+            missing.append("submit_id")
+        if re.search(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}", text) is None:
+            missing.append("timestamp")
+        if re.search(r"approver\s*[:`]*\s*`?\S+", text, re.IGNORECASE) is None:
+            missing.append("approver")
+        observed = re.split(r"observed behavior", text, flags=re.IGNORECASE)
+        if len(observed) < 2 or len(observed[-1].strip()) < 20:
+            missing.append("observed behavior")
+        if missing:
+            return False, f"marker missing required evidence: {', '.join(missing)}"
+        return True, "marker carries submit_id, timestamp, approver, observed behavior"
 
     # ------------------------------------------------------------------
     # Probe

@@ -106,6 +106,7 @@ class DistributionV7Report:
     paid_canary: str = "NOT_RUN"
     read_only_runtime_contract: str = "blocked"
     read_only_runtime_reason: str = ""
+    cli_available: bool = False
     legacy_validator_exit_code: int = 0
 
     def to_json(self) -> str:
@@ -123,6 +124,7 @@ class DistributionV7Verifier:
         dreamina_command: str = "dreamina",
     ) -> None:
         self._root = Path(root)
+        self._verification_dir = self._root / "docs" / "verification"
         self._expected_upstream_sha = expected_upstream_sha
         self._dreamina_command = dreamina_command
 
@@ -131,6 +133,7 @@ class DistributionV7Verifier:
     # ------------------------------------------------------------------
     def run(self) -> DistributionV7Report:
         report = DistributionV7Report()
+        report.cli_available = self._dreamina_available()
         self._run_legacy_validator(report)
         self._run_skill_snapshot_check(report)
         self._run_secret_scan(report)
@@ -249,29 +252,103 @@ class DistributionV7Verifier:
         report.marketplace_url_matches = False
 
     def _run_canary_check(self, report: DistributionV7Report) -> None:
-        marker = self._root / "docs" / "verification" / "paid-canary-approved.md"
-        if marker.is_file():
-            report.paid_canary = "APPROVED"
-        else:
-            report.paid_canary = "NOT_RUN"
+        approved, _reason = self._validate_canary_marker()
+        report.paid_canary = "APPROVED" if approved else "NOT_RUN"
 
     def _canary_approved(self) -> bool:
+        approved, _reason = self._validate_canary_marker()
+        return approved
+
+    def _validate_canary_marker(self) -> tuple[bool, str]:
+        """Validate the paid-canary marker's *content*, not just its existence.
+
+        A marker that merely exists proves nothing: any non-empty file would
+        otherwise unlock the gate. The record must actually carry the four
+        pieces of evidence the plan requires — submit ID, timestamp,
+        approver, and observed behavior.
+        """
         marker = self._root / "docs" / "verification" / "paid-canary-approved.md"
-        return marker.is_file()
+        if not marker.is_file():
+            return False, "no approval marker present"
+        try:
+            text = marker.read_text(encoding="utf-8")
+        except OSError as exc:
+            return False, f"cannot read marker: {exc}"
+        if not text.strip():
+            return False, "marker is empty"
+        missing: list[str] = []
+        if re.search(r"submit[_-]?id\s*[:`]*\s*`?\S+", text, re.IGNORECASE) is None:
+            missing.append("submit_id")
+        if re.search(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}", text) is None:
+            missing.append("timestamp")
+        if re.search(r"approver\s*[:`]*\s*`?\S+", text, re.IGNORECASE) is None:
+            missing.append("approver")
+        observed = re.split(r"observed behavior", text, flags=re.IGNORECASE)
+        if len(observed) < 2 or len(observed[-1].strip()) < 20:
+            missing.append("observed behavior")
+        if missing:
+            return False, f"marker is missing required evidence: {', '.join(missing)}"
+        return True, "marker carries submit_id, timestamp, approver, and observed behavior"
 
     def _run_runtime_contract_check(self, report: DistributionV7Report) -> None:
-        if self._dreamina_available():
+        """Evidence-based: the committed artifacts ARE the observation record.
+
+        The gate is satisfied when the version / help / schema captures exist
+        and are well-formed. This is deliberately not a check of whether the
+        CLI happens to be on PATH right now — the record is what gets
+        committed and reviewed, and a CI machine need not have the binary.
+        Whether the binary is currently resolvable is reported separately as
+        `cli_available`.
+        """
+        ok, reason = self._validate_cli_artifacts()
+        if ok:
             report.read_only_runtime_contract = "observed"
             report.read_only_runtime_reason = (
-                f"{self._dreamina_command} found on PATH; ready for read-only "
-                "version/help/schema probes after separate authorization"
+                "version / help / schema captures present and well-formed"
             )
         else:
             report.read_only_runtime_contract = "blocked"
-            report.read_only_runtime_reason = (
-                f"{self._dreamina_command} not found on PATH; "
-                "install the dreamina CLI and authorize its use before requesting PASS"
+            report.read_only_runtime_reason = reason
+
+    def _validate_cli_artifacts(self) -> tuple[bool, str]:
+        """Validate the CLI capture artifacts' contents, not just existence."""
+        version = self._verification_dir / "cli-version.txt"
+        help_text = self._verification_dir / "cli-help.txt"
+        schema = self._verification_dir / "cli-schema.json"
+        missing = [
+            p.name for p in (version, help_text, schema) if not p.is_file()
+        ]
+        if missing:
+            return False, (
+                f"missing capture(s): {', '.join(missing)}; run "
+                "`python3 scripts/unlock_runtime_gates.py probe` after "
+                "installing and authorizing the dreamina CLI"
             )
+        try:
+            version_text = version.read_text(encoding="utf-8").strip()
+            help_text_value = help_text.read_text(encoding="utf-8").strip()
+            schema_text = schema.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            return False, f"cannot read captures: {exc}"
+        if not version_text:
+            return False, "cli-version.txt is empty"
+        if re.search(r"\d+\.\d+", version_text) is None:
+            return False, (
+                f"cli-version.txt has no version-like token: {version_text!r}; "
+                "the capture does not look like real `dreamina --version` output"
+            )
+        if len(help_text_value) < 40:
+            return False, (
+                "cli-help.txt is too short to be real `dreamina --help` output "
+                f"({len(help_text_value)} chars)"
+            )
+        try:
+            parsed = json.loads(schema_text)
+        except (json.JSONDecodeError, ValueError):
+            return False, "cli-schema.json does not parse as JSON"
+        if not isinstance(parsed, (dict, list)):
+            return False, "cli-schema.json is not a JSON object or array"
+        return True, "captures present and well-formed"
 
     # ------------------------------------------------------------------
     # Internals

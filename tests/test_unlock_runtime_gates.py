@@ -184,14 +184,14 @@ class StatusTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cli = _fake_cli(
                 Path(tmp) / "bin",
-                """\
-                #!/bin/sh
-                case "$1" in
-                  --version) echo 'dreamina 1.4.18' ;;
-                  --help) echo 'help' ;;
-                  schema) echo '{}' ;;
-                esac
-                """,
+                "#!/bin/sh\n"
+                "case \"$1\" in\n"
+                "  --version) echo 'dreamina 1.4.18' ;;\n"
+                "  --help) printf 'Usage: dreamina <command> [options]\\n\\n"
+                "Commands:\\n  generate   Submit a generation request\\n"
+                "  status     Query a submission by id\\n' ;;\n"
+                "  schema) echo '{\"modes\": [\"text2image\"]}' ;;\n"
+                "esac\n",
             )
             verification = Path(tmp) / "verification"
             harness = UnlockHarness(verification_dir=verification, cli_command=str(cli))
@@ -199,11 +199,39 @@ class StatusTests(unittest.TestCase):
             harness.record_canary(
                 submit_id="20260912-real-id-999",
                 approver="wandl",
-                observed="observed a real generation",
+                observed="observed a real generation end to end",
             )
             status = harness.status()
             self.assertEqual(status["paid_canary"], "APPROVED")
             self.assertEqual(status["read_only_runtime_contract"], "observed")
+
+    def test_status_does_not_report_observed_for_empty_artifacts(self) -> None:
+        """Existence alone must not satisfy the gate."""
+        with tempfile.TemporaryDirectory() as tmp:
+            verification = Path(tmp) / "verification"
+            verification.mkdir(parents=True)
+            for name in ("cli-version.txt", "cli-help.txt", "cli-schema.json"):
+                (verification / name).write_text("", encoding="utf-8")
+            harness = UnlockHarness(
+                verification_dir=verification,
+                cli_command="/nonexistent/dreamina",
+            )
+            status = harness.status()
+            self.assertEqual(status["read_only_runtime_contract"], "blocked")
+
+    def test_status_does_not_approve_canary_without_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            verification = Path(tmp) / "verification"
+            verification.mkdir(parents=True)
+            (verification / "paid-canary-approved.md").write_text(
+                "# approved\n\nlooks fine\n", encoding="utf-8"
+            )
+            harness = UnlockHarness(
+                verification_dir=verification,
+                cli_command="/nonexistent/dreamina",
+            )
+            status = harness.status()
+            self.assertEqual(status["paid_canary"], "NOT_RUN")
 
 
 if __name__ == "__main__":

@@ -239,7 +239,15 @@ class CanaryGateTests(unittest.TestCase):
     def test_paid_canary_approved_when_canary_file_present(self) -> None:
         canary = self.root / "docs" / "verification" / "paid-canary-approved.md"
         canary.parent.mkdir(parents=True, exist_ok=True)
-        canary.write_text("# Paid canary approved by <user> on <date>\n", encoding="utf-8")
+        canary.write_text(
+            "# Paid canary approval record\n\n"
+            "- **submit_id:** `20260912-abc-def-12345`\n"
+            "- **timestamp:** 2026-09-12T15:00:00Z\n"
+            "- **approver:** wandl\n\n"
+            "## Observed behavior\n\n"
+            "Generated one 1k image; submit_id returned; cost 1 credit.\n",
+            encoding="utf-8",
+        )
         verifier = DistributionV7Verifier(root=self.root)
         report = verifier.run()
         self.assertEqual(report.paid_canary, "APPROVED")
@@ -260,7 +268,12 @@ class ReadOnlyRuntimeContractTests(unittest.TestCase):
         verifier = DistributionV7Verifier(root=self.root, dreamina_command="/nonexistent/dreamina")
         report = verifier.run()
         self.assertEqual(report.read_only_runtime_contract, "blocked")
-        self.assertIn("not found", report.read_only_runtime_reason.lower())
+        # The gate is evidence-based: what unblocks it is the presence of
+        # well-formed version/help/schema captures, not whether the binary
+        # happens to be resolvable here. The binary state is reported
+        # separately.
+        self.assertFalse(report.cli_available)
+        self.assertIn("missing capture", report.read_only_runtime_reason.lower())
 
     def test_strict_runtime_raises_when_blocked(self) -> None:
         verifier = DistributionV7Verifier(root=self.root, dreamina_command="/nonexistent/dreamina")
@@ -370,6 +383,105 @@ class ExitCodeContractTests(unittest.TestCase):
         )
         self.assertIn(result.returncode, (5, 6))
         self.assertIn("paid_canary", result.stdout)
+
+
+class GateContentValidationTests(unittest.TestCase):
+    """The two human gates must validate evidence, not merely file existence.
+
+    Otherwise `touch cli-version.txt cli-help.txt cli-schema.json` would
+    report `read_only_runtime_contract = observed` and any non-empty
+    `paid-canary-approved.md` would report `paid_canary = APPROVED` —
+    a gate that is trivially spoofable proves nothing.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = _write_minimal_repo(Path(self.tmp.name))
+        self.verification = self.root / "docs" / "verification"
+        self.verification.mkdir(parents=True, exist_ok=True)
+
+    def _write_good_cli_artifacts(self) -> None:
+        (self.verification / "cli-version.txt").write_text(
+            "dreamina 1.4.18\n", encoding="utf-8"
+        )
+        (self.verification / "cli-help.txt").write_text(
+            "Usage: dreamina <command> [options]\n\nCommands:\n"
+            "  generate   Submit a generation request\n"
+            "  status     Query a submission\n",
+            encoding="utf-8",
+        )
+        (self.verification / "cli-schema.json").write_text(
+            '{"modes": ["text2image"]}\n', encoding="utf-8"
+        )
+
+    # --- empty / spoofed artifacts must NOT unlock the runtime gate ---
+
+    def test_empty_files_do_not_unlock_runtime_contract(self) -> None:
+        for name in ("cli-version.txt", "cli-help.txt", "cli-schema.json"):
+            (self.verification / name).write_text("", encoding="utf-8")
+        verifier = DistributionV7Verifier(root=self.root, dreamina_command="dreamina")
+        report = verifier.run()
+        self.assertEqual(report.read_only_runtime_contract, "blocked")
+
+    def test_invalid_json_schema_does_not_unlock_runtime_contract(self) -> None:
+        self._write_good_cli_artifacts()
+        (self.verification / "cli-schema.json").write_text(
+            "this is not json\n", encoding="utf-8"
+        )
+        verifier = DistributionV7Verifier(root=self.root)
+        report = verifier.run()
+        self.assertEqual(report.read_only_runtime_contract, "blocked")
+
+    def test_truncated_help_does_not_unlock_runtime_contract(self) -> None:
+        self._write_good_cli_artifacts()
+        (self.verification / "cli-help.txt").write_text("x\n", encoding="utf-8")
+        verifier = DistributionV7Verifier(root=self.root)
+        report = verifier.run()
+        self.assertEqual(report.read_only_runtime_contract, "blocked")
+
+    def test_version_without_a_version_token_does_not_unlock(self) -> None:
+        self._write_good_cli_artifacts()
+        (self.verification / "cli-version.txt").write_text("dreamina\n", encoding="utf-8")
+        verifier = DistributionV7Verifier(root=self.root)
+        report = verifier.run()
+        self.assertEqual(report.read_only_runtime_contract, "blocked")
+
+    def test_valid_artifacts_unlock_runtime_contract(self) -> None:
+        self._write_good_cli_artifacts()
+        verifier = DistributionV7Verifier(root=self.root)
+        report = verifier.run()
+        self.assertEqual(report.read_only_runtime_contract, "observed")
+
+    # --- spoofed canary markers must NOT unlock the canary gate ---
+
+    def test_empty_canary_marker_does_not_unlock(self) -> None:
+        (self.verification / "paid-canary-approved.md").write_text("", encoding="utf-8")
+        verifier = DistributionV7Verifier(root=self.root)
+        report = verifier.run()
+        self.assertEqual(report.paid_canary, "NOT_RUN")
+
+    def test_canary_marker_without_required_fields_does_not_unlock(self) -> None:
+        (self.verification / "paid-canary-approved.md").write_text(
+            "# approved\n\nlooks fine to me\n", encoding="utf-8"
+        )
+        verifier = DistributionV7Verifier(root=self.root)
+        report = verifier.run()
+        self.assertEqual(report.paid_canary, "NOT_RUN")
+
+    def test_complete_canary_marker_unlocks(self) -> None:
+        (self.verification / "paid-canary-approved.md").write_text(
+            "# Paid canary approval record\n\n"
+            "- **submit_id:** `20260912-abc-def-12345`\n"
+            "- **timestamp:** 2026-09-12T15:00:00Z\n"
+            "- **approver:** wandl\n\n"
+            "## Observed behavior\n\n"
+            "Generated one 1k image; submit_id returned immediately; cost 1 credit.\n",
+            encoding="utf-8",
+        )
+        verifier = DistributionV7Verifier(root=self.root)
+        report = verifier.run()
+        self.assertEqual(report.paid_canary, "APPROVED")
 
 
 if __name__ == "__main__":

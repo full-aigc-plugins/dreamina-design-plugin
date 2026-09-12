@@ -52,7 +52,30 @@ The v7 validator returns a JSON report with these gates:
 | `marketplace_url_matches`           | `true`                                            |
 | `paid_canary`                       | `NOT_RUN` (no approval marker present)            |
 | `read_only_runtime_contract`        | `blocked` (dreamina CLI not on PATH)              |
-| `read_only_runtime_reason`          | explicit instructions for unlocking               |
+| `read_only_runtime_reason`          | which captures are missing and how to produce them |
+| `cli_available`                     | `false` (informational; the gate is evidence-based) |
+
+### Gate contents are validated, not just file existence
+
+Both human gates are checked by **content**, so they cannot be satisfied
+by touching empty files:
+
+* `read_only_runtime_contract` requires all three captures to be present
+  **and** well-formed — `cli-version.txt` must contain a version-like
+  token (`\d+\.\d+`), `cli-help.txt` must be at least 40 characters of
+  real help output, and `cli-schema.json` must parse as a JSON object or
+  array.
+* `paid_canary` requires the marker to actually carry the four pieces of
+  evidence the plan names: a `submit_id`, an ISO-like timestamp, an
+  `approver`, and an "Observed behavior" section with substantive
+  content.
+
+Verified by 10 dedicated tests (8 in `tests/test_distribution_v7.py`,
+2 in `tests/test_unlock_runtime_gates.py`) covering empty files, invalid
+JSON, truncated help, a version string with no version token, and a
+canary marker missing required fields — each asserted **not** to unlock
+its gate. `scripts/unlock_runtime_gates.py status` applies the identical
+checks so the harness and the verifier cannot disagree.
 
 ### Modes and exit-code contract
 
