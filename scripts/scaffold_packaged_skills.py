@@ -50,9 +50,13 @@ def scaffold(skills_root: Path) -> list[Path]:
         skill_md.write_text(
             "---\n"
             f"name: {name}\n"
+            # NOTE: the description must be a *single-line* YAML scalar. A
+            # plain scalar continued on an unindented next line is invalid
+            # YAML, and Codex silently skips any Skill whose frontmatter
+            # fails to parse — the Skill becomes invisible to the model.
             f"description: Stub for the upstream Dreamina Skill '{name}'. "
-            "Body is fetched from full-aigc-skills/dreamina-skills on demand and\n"
-            "must remain byte-identical to the pinned upstream commit.\n"
+            "The body is not copied into this plugin; it is tracked at\n"
+            "  full-aigc-skills/dreamina-skills under upstream_commit_sha.\n"
             f"upstream_commit_sha: {PLACEHOLDER_UPSTREAM_SHA}\n"
             "upstream_repository: https://github.com/full-aigc-skills/dreamina-skills\n"
             "do_not_edit_body: true\n"

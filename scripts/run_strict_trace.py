@@ -32,7 +32,45 @@ from typing import Iterable
 FRONTMATTER_OPEN = re.compile(r"^---\s*$")
 LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 CODE_FENCE_PATTERN = re.compile(r"^```", re.MULTILINE)
+FRONTMATTER_KEY_PATTERN = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):(.*)$")
 MIN_BODY_LENGTH = 80
+
+
+def _validate_frontmatter_block(block: str) -> list[str]:
+    """Return a list of YAML-shape errors for a frontmatter block.
+
+    A frontmatter block must consist of ``key: value`` pairs. A value may
+    continue on subsequent lines **only if those lines are indented**
+    (either a ``|`` / ``>`` block scalar or an indented plain scalar).
+
+    An unindented continuation line makes the block unparseable YAML. Codex
+    silently skips any Skill whose frontmatter fails to parse, so such a
+    Skill is invisible to the model even though every key is nominally
+    present — this check exists to catch exactly that failure mode.
+    """
+    errors: list[str] = []
+    lines = block.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip():
+            i += 1
+            continue
+        match = FRONTMATTER_KEY_PATTERN.match(line)
+        if match is None:
+            errors.append(
+                "invalid frontmatter line (not a `key: value` pair, and not "
+                f"indented): {line!r} — an unindented plain-scalar "
+                "continuation makes the block unparseable YAML and the Skill "
+                "will be silently skipped"
+            )
+            i += 1
+            continue
+        j = i + 1
+        while j < len(lines) and lines[j].strip() and lines[j][:1] in (" ", "\t"):
+            j += 1
+        i = j
+    return errors
 
 
 @dataclass
@@ -70,6 +108,16 @@ class StrictTraceReport:
 
     def to_json(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=2, sort_keys=True)
+
+
+def _extract_frontmatter_block(text: str) -> str | None:
+    """Return the raw frontmatter block between the ``---`` fences."""
+    if not text.startswith("---\n") and not text.startswith("---\r\n"):
+        return None
+    end = text.find("\n---", 3)
+    if end == -1:
+        return None
+    return text[3:end].strip("\n")
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, str], int]:
@@ -185,6 +233,13 @@ class StrictTracer:
         text = skill_md.read_text(encoding="utf-8")
         frontmatter, body_offset = _parse_frontmatter(text)
         self._check_frontmatter(frontmatter, skill_dir.name, result, require_packaged_pin=require_packaged_pin)
+        # Catch unparseable-YAML frontmatter that still yields the expected
+        # keys. Codex silently skips such Skills entirely.
+        block = _extract_frontmatter_block(text)
+        if block is not None:
+            result.frontmatter_errors.extend(_validate_frontmatter_block(block))
+            if result.frontmatter_errors:
+                result.frontmatter_status = "FAIL"
         body = text[body_offset:] if body_offset >= 0 else ""
         self._check_body(body, result)
         self._check_examples(body, result)

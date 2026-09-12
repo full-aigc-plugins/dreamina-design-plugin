@@ -68,6 +68,80 @@ class FrontmatterCheckTests(unittest.TestCase):
             self.assertEqual(report.skill_results["bad"].frontmatter_status, "FAIL")
             self.assertIn("name", report.skill_results["bad"].frontmatter_errors[0])
 
+    def test_multiline_plain_scalar_description_reports_failure(self) -> None:
+        """A plain YAML scalar continued on an unindented line is invalid.
+
+        Codex silently skips any Skill whose frontmatter fails to parse, so
+        such a Skill is invisible to the model even though every key is
+        present. The tracer must reject it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_root = Path(tmp) / "skills"
+            skill = skills_root / "broken-desc"
+            skill.mkdir(parents=True)
+            skill.joinpath("SKILL.md").write_text(
+                "---\n"
+                "name: broken-desc\n"
+                "description: Stub for the upstream Skill. Body is fetched and\n"
+                "must remain byte-identical to the pinned commit.\n"
+                "upstream_commit_sha: " + "a" * 40 + "\n"
+                "---\n\n"
+                "A substantial body so the body check passes independently of "
+                "the frontmatter check being exercised here.\n\n"
+                "```bash\nok\n```\n",
+                encoding="utf-8",
+            )
+            tracer = StrictTracer(skills_root=skills_root)
+            report = tracer.run()
+            result = report.skill_results["broken-desc"]
+            self.assertEqual(result.frontmatter_status, "FAIL")
+            self.assertTrue(
+                any("plain scalar" in err or "not a valid" in err or "indent" in err
+                    for err in result.frontmatter_errors),
+                f"expected a frontmatter-parse error, got {result.frontmatter_errors}",
+            )
+
+    def test_valid_single_line_description_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_root = Path(tmp) / "skills"
+            skill = skills_root / "good-desc"
+            skill.mkdir(parents=True)
+            skill.joinpath("SKILL.md").write_text(
+                "---\n"
+                "name: good-desc\n"
+                "description: A single-line description that parses cleanly.\n"
+                "upstream_commit_sha: " + "a" * 40 + "\n"
+                "---\n\n"
+                "A substantial body so the body check passes independently.\n\n"
+                "```bash\nok\n```\n",
+                encoding="utf-8",
+            )
+            tracer = StrictTracer(skills_root=skills_root)
+            report = tracer.run()
+            self.assertEqual(report.skill_results["good-desc"].frontmatter_status, "PASS")
+
+    def test_block_scalar_description_passes(self) -> None:
+        """A ``|`` block scalar is valid YAML and must be accepted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_root = Path(tmp) / "skills"
+            skill = skills_root / "block-desc"
+            skill.mkdir(parents=True)
+            skill.joinpath("SKILL.md").write_text(
+                "---\n"
+                "name: block-desc\n"
+                "description: |\n"
+                "  A block scalar description.\n"
+                "  It spans two lines but is valid YAML.\n"
+                "upstream_commit_sha: " + "a" * 40 + "\n"
+                "---\n\n"
+                "A substantial body so the body check passes independently.\n\n"
+                "```bash\nok\n```\n",
+                encoding="utf-8",
+            )
+            tracer = StrictTracer(skills_root=skills_root)
+            report = tracer.run()
+            self.assertEqual(report.skill_results["block-desc"].frontmatter_status, "PASS")
+
 
 class BodyCheckTests(unittest.TestCase):
     def test_empty_body_reports_failure(self) -> None:

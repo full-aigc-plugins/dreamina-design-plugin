@@ -1,7 +1,6 @@
 ---
 name: dreamina-cli-text2image
-description: Stub for the upstream Dreamina Skill 'dreamina-cli-text2image'. Body is fetched from full-aigc-skills/dreamina-skills on demand and
-must remain byte-identical to the pinned upstream commit.
+description: Stub for the upstream Dreamina Skill 'dreamina-cli-text2image'. The body is not copied into this plugin; it is tracked at full-aigc-skills/dreamina-skills under upstream_commit_sha.
 upstream_commit_sha: 373bf7ffa698eefd3308576300e28ea2bff9cc6b
 upstream_repository: https://github.com/full-aigc-skills/dreamina-skills
 do_not_edit_body: true
