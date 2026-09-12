@@ -39,9 +39,29 @@ paid generation. `read_only_runtime_contract` is **not** `observed`, and
   closing state for this work — the implementation is complete and
   offline-verified, and the live-runtime evidence is deliberately
   deferred; **or**
-* **(b)** upgrade the two gates to `observed` / `APPROVED` by running
-  §0 A and §0 B below in your own authorized shell, after which the
-  verifier flips them automatically with no code change.
+* **(b)** upgrade the two gates to `observed` / `APPROVED`.
+
+Each path has a mechanism, and in both the **human supplies the decision**
+— the tooling only records it.
+
+**Path (a)** — record your acceptance (this is the command *you* run):
+
+```text
+$ python3 scripts/record_gate_decision.py accept-blocked \
+      --approver <your-name> \
+      --reason "<why the live-runtime evidence is deferred>"
+```
+
+It writes `docs/verification/gate-decision-accepted.md`, naming you as
+approver, and rewrites the two §8 audit rows to read
+*`✅ owner-accepted`* with the disjunct relied on spelled out. It
+**refuses** to run without an explicit, non-placeholder approver (so the
+assistant cannot generate its own acceptance record), it refuses a second
+recording, and it never writes wording claiming the gates were `observed`
+or `APPROVED`.
+
+**Path (b)** — run `§0 A` and `§0 B` below in your own authorized shell.
+The verifier then flips both gates automatically, with no code change.
 
 Either answer closes the work. Neither will be written into this file by
 the assistant on your behalf.
