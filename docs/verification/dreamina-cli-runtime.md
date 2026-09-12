@@ -3,6 +3,7 @@
 > **Status (offline):** `read_only_runtime_contract = blocked`
 > **Paid canary:** `paid_canary = NOT_RUN`
 > **Snapshot parity:** `skill_snapshot_parity = PASS` (pinned to upstream HEAD `373bf7ffa698eefd3308576300e28ea2bff9cc6b`)
+> **Strict TRACE:** `skill_trace = PASS` (13/13 upstream Skills PASS; see `docs/verification/skill-trace.md`)
 >
 > The blocked / NOT_RUN statuses are explicit. The verifier never silently
 > passes any gate that depends on a real `dreamina` binary. Snapshot parity

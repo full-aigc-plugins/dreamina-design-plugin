@@ -1,0 +1,204 @@
+{
+  "failed_skills": 14,
+  "overall_status": "FAIL",
+  "passed_skills": 0,
+  "skill_results": {
+    "codex-dreamina-design-use": {
+      "body_errors": [],
+      "body_status": "PASS",
+      "examples_errors": [
+        "no fenced code block found"
+      ],
+      "examples_status": "FAIL",
+      "frontmatter_errors": [],
+      "frontmatter_status": "PASS",
+      "links_errors": [],
+      "links_status": "PASS",
+      "skill_md_path": "/Users/wandl/workspaces/workspace-partme-ai/codex-dreamina-design-plugin-wt/skills/codex-dreamina-design-use/SKILL.md",
+      "skill_name": "codex-dreamina-design-use"
+    },
+    "dreamina-cli": {
+      "body_errors": [],
+      "body_status": "PASS",
+      "examples_errors": [
+        "no fenced code block found"
+      ],
+      "examples_status": "FAIL",
+      "frontmatter_errors": [],
+      "frontmatter_status": "PASS",
+      "links_errors": [],
+      "links_status": "PASS",
+      "skill_md_path": "/Users/wandl/workspaces/workspace-partme-ai/codex-dreamina-design-plugin-wt/skills/dreamina-cli/SKILL.md",
+      "skill_name": "dreamina-cli"
+    },
+    "dreamina-cli-image2image": {
+      "body_errors": [],
+      "body_status": "PASS",
+      "examples_errors": [
+        "no fenced code block found"
+      ],
+      "examples_status": "FAIL",
+      "frontmatter_errors": [],
+      "frontmatter_status": "PASS",
+      "links_errors": [],
+      "links_status": "PASS",
+      "skill_md_path": "/Users/wandl/workspaces/workspace-partme-ai/codex-dreamina-design-plugin-wt/skills/dreamina-cli-image2image/SKILL.md",
+      "skill_name": "dreamina-cli-image2image"
+    },
+    "dreamina-cli-image2video": {
+      "body_errors": [],
+      "body_status": "PASS",
+      "examples_errors": [
+        "no fenced code block found"
+      ],
+      "examples_status": "FAIL",
+      "frontmatter_errors": [],
+      "frontmatter_status": "PASS",
+      "links_errors": [],
+      "links_status": "PASS",
+      "skill_md_path": "/Users/wandl/workspaces/workspace-partme-ai/codex-dreamina-design-plugin-wt/skills/dreamina-cli-image2video/SKILL.md",
+      "skill_name": "dreamina-cli-image2video"
+    },
+    "dreamina-cli-text2image": {
+      "body_errors": [],
+      "body_status": "PASS",
+      "examples_errors": [
+        "no fenced code block found"
+      ],
+      "examples_status": "FAIL",
+      "frontmatter_errors": [],
+      "frontmatter_status": "PASS",
+      "links_errors": [],
+      "links_status": "PASS",
+      "skill_md_path": "/Users/wandl/workspaces/workspace-partme-ai/codex-dreamina-design-plugin-wt/skills/dreamina-cli-text2image/SKILL.md",
+      "skill_name": "dreamina-cli-text2image"
+    },
+    "dreamina-cli-text2video": {
+      "body_errors": [],
+      "body_status": "PASS",
+      "examples_errors": [
+        "no fenced code block found"
+      ],
+      "examples_status": "FAIL",
+      "frontmatter_errors": [],
+      "frontmatter_status": "PASS",
+      "links_errors": [],
+      "links_status": "PASS",
+      "skill_md_path": "/Users/wandl/workspaces/workspace-partme-ai/codex-dreamina-design-plugin-wt/skills/dreamina-cli-text2video/SKILL.md",
+      "skill_name": "dreamina-cli-text2video"
+    },
+    "dreamina-opencli-image2image": {
+      "body_errors": [],
+      "body_status": "PASS",
+      "examples_errors": [
+        "no fenced code block found"
+      ],
+      "examples_status": "FAIL",
+      "frontmatter_errors": [],
+      "frontmatter_status": "PASS",
+      "links_errors": [],
+      "links_status": "PASS",
+      "skill_md_path": "/Users/wandl/workspaces/workspace-partme-ai/codex-dreamina-design-plugin-wt/skills/dreamina-opencli-image2image/SKILL.md",
+      "skill_name": "dreamina-opencli-image2image"
+    },
+    "dreamina-opencli-image2video": {
+      "body_errors": [],
+      "body_status": "PASS",
+      "examples_errors": [
+        "no fenced code block found"
+      ],
+      "examples_status": "FAIL",
+      "frontmatter_errors": [],
+      "frontmatter_status": "PASS",
+      "links_errors": [],
+      "links_status": "PASS",
+      "skill_md_path": "/Users/wandl/workspaces/workspace-partme-ai/codex-dreamina-design-plugin-wt/skills/dreamina-opencli-image2video/SKILL.md",
+      "skill_name": "dreamina-opencli-image2video"
+    },
+    "dreamina-opencli-text2image": {
+      "body_errors": [],
+      "body_status": "PASS",
+      "examples_errors": [
+        "no fenced code block found"
+      ],
+      "examples_status": "FAIL",
+      "frontmatter_errors": [],
+      "frontmatter_status": "PASS",
+      "links_errors": [],
+      "links_status": "PASS",
+      "skill_md_path": "/Users/wandl/workspaces/workspace-partme-ai/codex-dreamina-design-plugin-wt/skills/dreamina-opencli-text2image/SKILL.md",
+      "skill_name": "dreamina-opencli-text2image"
+    },
+    "dreamina-opencli-text2video": {
+      "body_errors": [],
+      "body_status": "PASS",
+      "examples_errors": [
+        "no fenced code block found"
+      ],
+      "examples_status": "FAIL",
+      "frontmatter_errors": [],
+      "frontmatter_status": "PASS",
+      "links_errors": [],
+      "links_status": "PASS",
+      "skill_md_path": "/Users/wandl/workspaces/workspace-partme-ai/codex-dreamina-design-plugin-wt/skills/dreamina-opencli-text2video/SKILL.md",
+      "skill_name": "dreamina-opencli-text2video"
+    },
+    "dreamina-prompt-image2image": {
+      "body_errors": [],
+      "body_status": "PASS",
+      "examples_errors": [
+        "no fenced code block found"
+      ],
+      "examples_status": "FAIL",
+      "frontmatter_errors": [],
+      "frontmatter_status": "PASS",
+      "links_errors": [],
+      "links_status": "PASS",
+      "skill_md_path": "/Users/wandl/workspaces/workspace-partme-ai/codex-dreamina-design-plugin-wt/skills/dreamina-prompt-image2image/SKILL.md",
+      "skill_name": "dreamina-prompt-image2image"
+    },
+    "dreamina-prompt-image2video": {
+      "body_errors": [],
+      "body_status": "PASS",
+      "examples_errors": [
+        "no fenced code block found"
+      ],
+      "examples_status": "FAIL",
+      "frontmatter_errors": [],
+      "frontmatter_status": "PASS",
+      "links_errors": [],
+      "links_status": "PASS",
+      "skill_md_path": "/Users/wandl/workspaces/workspace-partme-ai/codex-dreamina-design-plugin-wt/skills/dreamina-prompt-image2video/SKILL.md",
+      "skill_name": "dreamina-prompt-image2video"
+    },
+    "dreamina-prompt-text2image": {
+      "body_errors": [],
+      "body_status": "PASS",
+      "examples_errors": [
+        "no fenced code block found"
+      ],
+      "examples_status": "FAIL",
+      "frontmatter_errors": [],
+      "frontmatter_status": "PASS",
+      "links_errors": [],
+      "links_status": "PASS",
+      "skill_md_path": "/Users/wandl/workspaces/workspace-partme-ai/codex-dreamina-design-plugin-wt/skills/dreamina-prompt-text2image/SKILL.md",
+      "skill_name": "dreamina-prompt-text2image"
+    },
+    "dreamina-prompt-text2video": {
+      "body_errors": [],
+      "body_status": "PASS",
+      "examples_errors": [
+        "no fenced code block found"
+      ],
+      "examples_status": "FAIL",
+      "frontmatter_errors": [],
+      "frontmatter_status": "PASS",
+      "links_errors": [],
+      "links_status": "PASS",
+      "skill_md_path": "/Users/wandl/workspaces/workspace-partme-ai/codex-dreamina-design-plugin-wt/skills/dreamina-prompt-text2video/SKILL.md",
+      "skill_name": "dreamina-prompt-text2video"
+    }
+  },
+  "skills_root": "/Users/wandl/workspaces/workspace-partme-ai/codex-dreamina-design-plugin-wt/skills"
+}

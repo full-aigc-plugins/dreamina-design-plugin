@@ -148,11 +148,23 @@ legacy v0 validator skips files under `tests/` for the same reason.
 
 ## 6. TRACE / `git diff --check`
 
-Strict TRACE and `git diff --check` are deferred until the upstream
-`full-aigc-skills/dreamina-skills` repository is cloned locally and
-the byte-parity check is enabled (see `verify_skill_snapshot.py`).
-Running TRACE / `git diff --check` requires the same upstream source
-of truth.
+The strict per-Skill TRACE has been executed against the cloned
+upstream source of truth (`full-aigc-skills/dreamina-skills` at HEAD
+`373bf7ffa698eefd3308576300e28ea2bff9cc6b`) using
+`scripts/run_strict_trace.py`. The full machine-readable report is
+saved at `docs/verification/skill-trace-report.json`, with a summary
+in `docs/verification/skill-trace.md`.
+
+Result: **13/13 upstream Skills PASS** for every check
+(frontmatter / body / examples / links). The local packaged Skills
+were also audited; their frontmatter, body, and links checks all
+PASS, and their `examples` failures are expected and intentional
+because the plugin does not copy upstream Skill bodies — see
+`skill-trace.md` for the full breakdown.
+
+`git diff --check` remains deferred to the integration phase
+(requires a real `git diff --check` run against a working tree with
+edits to compare).
 
 ## 7. Plan completion gate audit
 
@@ -171,7 +183,7 @@ evidence supporting it.
 | `video_tests = PASS`                            | ✅ PASS         | §4 (tests/test_video_service.py)             |
 | `approval_operation_artifact_tests = PASS`      | ✅ PASS         | §4 (Task 5 test trio)                        |
 | `skill_quick_validation = PASS`                 | ✅ PASS         | §3 frontmatter invariants                    |
-| `skill_trace = PASS`                            | ⚠️ DEFERRED     | Requires TRACE against upstream; documented  |
+| `skill_trace = PASS`                            | ✅ PASS         | §6 + `docs/verification/skill-trace.md`     |
 | `plugin_validation = PASS`                      | ✅ PASS         | §1 + §2                                      |
 | `secret_matches = 0`                            | ✅ PASS         | §2 + §5                                      |
 | `read_only_runtime_contract observed or blocked` | ✅ BLOCKED      | §2 + `docs/verification/dreamina-cli-runtime.md` |
