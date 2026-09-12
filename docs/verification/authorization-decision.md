@@ -74,36 +74,77 @@ directly contradict the plan.
 
 ## 4. What the user must do to actually unlock the gates
 
+An unlock harness is provided at `scripts/unlock_runtime_gates.py`. It
+automates the mechanical parts of the six steps **for you to run** and
+enforces the plan's anti-fabrication boundary: it refuses to write
+anything when the CLI is absent, and it refuses placeholder submit IDs.
+
+Check the current gate state at any time (read-only):
+
+```text
+$ python3 scripts/unlock_runtime_gates.py status
+{
+  "cli_available": false,
+  "paid_canary": "NOT_RUN",
+  "read_only_runtime_contract": "blocked",
+  ...
+}
+```
+
 To unlock `read_only_runtime_contract` to `observed`:
 
 1. Install the `dreamina` CLI on this machine (or another machine you
-   control).
-2. Run `dreamina --version` and capture `docs/verification/cli-version.txt`.
-3. Run `dreamina --help` and capture `docs/verification/cli-help.txt`.
-4. Run `dreamina schema` and capture `docs/verification/cli-schema.json`.
-5. Capture `docs/verification/account-readiness.md` noting whether
-   the user is authenticated and which membership tier is available —
-   **without** performing any generation.
+   control) and authorize it with your Dreamina account.
+2. Run the probe — it captures `--version` / `--help` / `schema`
+   verbatim and refuses to run at all if `dreamina` is not on PATH:
 
-Once those artifacts are present, re-run
-`scripts/validate_distribution_v7.py --strict`. The v7 verifier will
-detect `dreamina` on PATH and report `read_only_runtime_contract =
-observed`.
+   ```text
+   $ python3 scripts/unlock_runtime_gates.py probe
+   ```
+
+   This writes `cli-version.txt`, `cli-help.txt`, `cli-schema.json`,
+   and a `account-readiness.md` stub marked **PENDING**.
+3. Edit `docs/verification/account-readiness.md` and fill in the
+   authenticated user, membership tier, and capture timestamp. Do not
+   record credentials — the plan forbids storing tokens, cookies, or
+   account snapshots. Do not perform any generation for this step.
+
+Re-running `scripts/validate_distribution_v7.py --strict` will now
+report `read_only_runtime_contract = observed`.
 
 To unlock `paid_canary` to `APPROVED`:
 
 1. Run a real image or video generation interactively via the
    `dreamina` CLI with a low-cost prompt.
-2. Capture the submit ID, output URL, observed cost, and timestamp.
-3. Write `docs/verification/paid-canary-approved.md` containing the
-   submit ID, the timestamp, the user/principal who approved it, and
-   a one-paragraph summary of the observed behavior. **Do not have
-   the model write this file** — the plan requires it be the record
-   of a separate action-time approval you performed.
+2. Capture the server-issued submit ID and a one-paragraph summary of
+   what you observed (cost, latency, returned artifact).
+3. Record it — the harness rejects placeholder submit IDs such as
+   `TBD`, `fake`, `test`, or `example`, and requires all three fields:
 
-After the marker is in place, re-run
-`scripts/validate_distribution_v7.py --strict`; the verifier will
+   ```text
+   $ python3 scripts/unlock_runtime_gates.py record-canary \
+         --submit-id <real-server-issued-id> \
+         --approver <your-name> \
+         --observed "<one paragraph on what you saw>"
+   ```
+
+   This writes `docs/verification/paid-canary-approved.md` with the
+   real submit ID, a timestamp, your name as approver, and the observed
+   behavior.
+
+Re-running `scripts/validate_distribution_v7.py --strict` will now
 report `paid_canary = APPROVED`.
+
+The harness never performs generation, never authenticates, and never
+invents a submit ID. If you try to record a canary without having run
+one, it exits non-zero with a `REFUSED` message:
+
+```text
+$ python3 scripts/unlock_runtime_gates.py record-canary \
+      --submit-id TBD --approver me --observed "x"
+REFUSED: submit_id looks like a placeholder ('TBD'); record the real
+server-issued submit ID from your generation
+```
 
 ## 5. Plan completion gate audit (current truthful state)
 
