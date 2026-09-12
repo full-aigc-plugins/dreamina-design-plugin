@@ -1,10 +1,14 @@
 # Skill discovery verification (Codex CLI)
 
-> **Status:** `marketplace_install_and_skill_discovery = PASS (local personal marketplace)`
-> **Public-marketplace variant:** blocked — see §5.
-
-Task 7 requires "Install from the public marketplace and verify Skill
-discovery in a fresh Codex task." This document records that verification.
+> **Status:** `marketplace_install_and_skill_discovery = PASS`
+> **Public marketplace:** PASS — `partme-ai-dreamina-design` installed from
+> `https://github.com/partme-ai/codex-dreamina-design-plugin.git` @ `main`;
+> `discovered: 14 / missing: none`.
+> **Local personal marketplace:** PASS — same 14/14.
+>
+> Task 7 requires "Install from the public marketplace and verify Skill
+> discovery in a fresh Codex task." This document records that
+> verification for both the public and the local marketplace.
 
 ## 1. Install
 
@@ -121,24 +125,81 @@ now reports `frontmatter_status = PASS` for all 14 Skills. (Its
 `examples_status` remains FAIL for the 13 packaged stubs by design — the
 plugin does not copy upstream Skill bodies; see `skill-trace.md`.)
 
-## 5. Why the *public*-marketplace variant is blocked
+## 5. Public-marketplace install (the plan's literal requirement)
 
 The repository's marketplace manifest points at
 `https://github.com/partme-ai/codex-dreamina-design-plugin.git` ref `main`.
-At verification time:
+The merged work reached the remote, so the public path became testable and
+was then executed:
 
 ```text
-$ git ls-tree --name-only origin/main skills/
-skills/.gitkeep
+$ codex plugin marketplace add partme-ai/codex-dreamina-design-plugin@main
+Added marketplace `partme-ai-dreamina-design` from
+  https://github.com/partme-ai/codex-dreamina-design-plugin.git#main.
+Installed marketplace root: ~/.codex/.tmp/marketplaces/partme-ai-dreamina-design
+
+$ codex plugin list        # the new marketplace section
+Marketplace `partme-ai-dreamina-design`
+PLUGIN                                           STATUS         VERSION  PATH
+codex-dreamina-design@partme-ai-dreamina-design  not installed           https://github.com/.../codex-dreamina-design-plugin.git, ref `main`
 ```
 
-The public `main` still contains only `skills/.gitkeep` — none of the 14
-Skills, because this work lives on the unpushed
-`feat/dreamina-design-runtime` branch. Installing from the public
-marketplace today would fetch an empty plugin. Merging the branch into
-`main` and pushing is a repository decision the user owns; once that is
-done, the identical `codex plugin list` / `codex debug prompt-input`
-checks will pass against the public marketplace without any code change.
+The plugin was offered straight from the repo's own
+`.agents/plugins/marketplace.json` over the public URL — confirming the
+manifest is consumed correctly by the real CLI from the public source.
+
+The earlier personal-scoped install was then removed so the verification
+would be unambiguous (only one marketplace could be satisfying the name),
+and the plugin was re-installed from the public marketplace:
+
+```text
+$ codex plugin remove codex-dreamina-design@personal
+Removed plugin `codex-dreamina-design` from marketplace `personal`.
+
+$ codex plugin add codex-dreamina-design@partme-ai-dreamina-design
+Added plugin `codex-dreamina-design` from marketplace `partme-ai-dreamina-design`.
+Installed plugin root: ~/.codex/plugins/cache/partme-ai-dreamina-design/codex-dreamina-design/0.1.0
+```
+
+Resulting state and discovery:
+
+```text
+$ codex plugin list
+Marketplace `partme-ai-dreamina-design`
+codex-dreamina-design@partme-ai-dreamina-design  installed, enabled  0.1.0
+    https://github.com/partme-ai/codex-dreamina-design-plugin.git, ref `main`
+
+$ ls ~/.codex/plugins/cache/partme-ai-dreamina-design/codex-dreamina-design/0.1.0/skills | wc -l
+14
+
+$ codex debug prompt-input        # skill root r6 ->
+r6 -> /Users/wandl/.codex/plugins/cache/partme-ai-dreamina-design/codex-dreamina-design/0.1.0/skills
+
+discovered under codex-dreamina-design: 14
+  codex-dreamina-design-use
+  dreamina-cli
+  dreamina-cli-image2image
+  dreamina-cli-image2video
+  dreamina-cli-text2image
+  dreamina-cli-text2video
+  dreamina-opencli-image2image
+  dreamina-opencli-image2video
+  dreamina-opencli-text2image
+  dreamina-opencli-text2video
+  dreamina-prompt-image2image
+  dreamina-prompt-image2video
+  dreamina-prompt-text2image
+  dreamina-prompt-text2video
+```
+
+**Result: PASS** — the plan's literal requirement ("Install from the
+public marketplace and verify Skill discovery in a fresh Codex task") is
+satisfied. All 14 Skills are discovered from the marketplace-namespaced
+cache path fed by the public GitHub repository.
+
+Note: the remote `main` used for this install is `865f8d5`, which carries
+all 14 Skills. The doc-only commit that follows this install
+(`81e826a` and later) is not needed for install or discovery to work.
 
 ## 6. Reproducing the checks
 

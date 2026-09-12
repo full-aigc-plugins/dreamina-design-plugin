@@ -222,30 +222,37 @@ discovered: 14
 missing:    none
 ```
 
-**Result: PASS (local personal marketplace).**
+**Result: PASS.**
 
-The install was repeated from the **merged `main` checkout** (not just the
-feature worktree), so the verified artifact is the merged tree:
+The plan's literal requirement — *install from the **public** marketplace
+and verify Skill discovery* — has since been executed end to end:
 
 ```text
-$ git checkout main && git log --oneline -1
-865f8d5 fix: model the plan's gate semantics in the verifier exit codes
-$ git ls-tree --name-only main skills/ | wc -l
-14
-# re-installed from ./codex-dreamina-design-plugin (main), then:
+$ codex plugin marketplace add partme-ai/codex-dreamina-design-plugin@main
+Added marketplace `partme-ai-dreamina-design` from
+  https://github.com/partme-ai/codex-dreamina-design-plugin.git#main
+
+$ codex plugin add codex-dreamina-design@partme-ai-dreamina-design
+Added plugin `codex-dreamina-design` from marketplace `partme-ai-dreamina-design`.
+Installed plugin root: ~/.codex/plugins/cache/partme-ai-dreamina-design/codex-dreamina-design/0.1.0
+
+$ codex plugin list
+codex-dreamina-design@partme-ai-dreamina-design  installed, enabled  0.1.0
+    https://github.com/partme-ai/codex-dreamina-design-plugin.git, ref `main`
+
 $ codex debug prompt-input
+r6 -> ~/.codex/plugins/cache/partme-ai-dreamina-design/codex-dreamina-design/0.1.0/skills
 discovered: 14
 ```
 
-All 14 Skills — `codex-dreamina-design-use` plus the 13 `dreamina-*`
-packages — are listed. The merged `main` tree was independently
-re-verified: 169/169 tests, v0 validator green, snapshot parity PASS,
-strict TRACE 13/13 PASS.
+The earlier personal-scoped install was removed first so that only one
+marketplace could be satisfying the name, making the public-path
+verification unambiguous. Full transcript in
+`docs/verification/skill-discovery.md` §5.
 
-The public-marketplace variant still requires a `git push origin main`
-(13 commits ahead of `origin/main`, 0 behind — a safe fast-forward).
-That push publishes to a public repository and is left to the
-repository owner rather than performed automatically.
+The merged `main` tree was also independently re-verified: 169/169 tests,
+v0 validator green, snapshot parity PASS, strict TRACE 13/13 PASS, and a
+re-install from the merged checkout still discovers 14/14.
 
 This step caught and fixed a real defect: the 13 packaged Skills used a
 multi-line plain-scalar `description`, which is invalid YAML, so Codex
