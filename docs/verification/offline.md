@@ -1,6 +1,6 @@
 # Offline verification evidence
 
-> Current audit: 2026-09-13 · 221/221 tests PASS
+> Current audit: 2026-09-13 · 222/222 tests PASS
 
 ## Verified gates
 

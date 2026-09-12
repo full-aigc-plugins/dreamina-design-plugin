@@ -43,6 +43,10 @@ class ArtifactPolicyError(ArtifactServiceError):
     """URL, destination, size, or overwrite policy rejected the download."""
 
 
+class ArtifactProvenanceError(ArtifactServiceError):
+    """The artifact is not tied to a successful recorded operation."""
+
+
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 JPEG_SIGNATURE = b"\xff\xd8\xff"
 MP4_FTYP = b"ftyp"
@@ -111,10 +115,12 @@ class ArtifactService:
         *,
         min_bytes: int = MIN_PNG_BYTES,
         destination_root: Path,
+        operation_ledger: Any,
         max_bytes: int = 512 * 1024 * 1024,
     ) -> None:
         self._min_bytes = min_bytes
         self._destination_root = Path(destination_root).resolve()
+        self._operation_ledger = operation_ledger
         self._destination_root.mkdir(parents=True, exist_ok=True)
         if max_bytes <= 0:
             raise ValueError("max_bytes must be positive")
@@ -136,8 +142,24 @@ class ArtifactService:
             "--download_dir=<approved-root>` and verify_local()"
         )
 
-    def verify_local(self, *, submit_id: str, path: Path) -> dict[str, Any]:
+    def verify_local(
+        self,
+        *,
+        submit_id: str,
+        path: Path,
+        expected_metadata: Mapping[str, Any],
+    ) -> dict[str, Any]:
         """Verify a file downloaded by ``dreamina query_result --download_dir``."""
+        try:
+            operation = self._operation_ledger.get(submit_id=submit_id)
+        except Exception as exc:
+            raise ArtifactProvenanceError(
+                f"submit_id is not present in the operation ledger: {submit_id}"
+            ) from exc
+        if operation.get("state") != "succeeded" or operation.get("required_action") != "download":
+            raise ArtifactProvenanceError(
+                f"operation is not in succeeded/download state: {operation.get('state')}"
+            )
         candidate = Path(path)
         if candidate.is_symlink() or not candidate.is_file():
             raise ArtifactPolicyError("downloaded artifact must be a regular non-symlink file")
@@ -156,11 +178,18 @@ class ArtifactService:
         if len(payload) < self._min_bytes or not _looks_complete(payload, mime):
             raise ArtifactTruncatedError(f"local {mime} artifact appears truncated")
         digest = _sha256_hex(payload)
+        metadata = _media_metadata(payload, mime)
+        for field in ("mime_type", "width", "height", "duration_seconds"):
+            expected = expected_metadata.get(field)
+            if expected is not None and metadata.get(field) != expected:
+                raise ArtifactProvenanceError(
+                    f"artifact metadata mismatch for {field}: expected {expected}, got {metadata.get(field)}"
+                )
         return {
             "submit_id": submit_id,
             "local_path": str(resolved),
             "checksum": {"algorithm": "sha256", "digest": digest},
-            "media_metadata": _media_metadata(payload, mime),
+            "media_metadata": metadata,
             "verified_at": _now_iso(),
         }
 
@@ -168,6 +197,7 @@ __all__ = [
     "ArtifactChecksumMismatchError",
     "ArtifactDownloadError",
     "ArtifactPolicyError",
+    "ArtifactProvenanceError",
     "ArtifactService",
     "ArtifactTruncatedError",
     "MediaMetadataMissingError",

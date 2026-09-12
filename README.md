@@ -23,7 +23,7 @@ Creative intent -> prompt contract -> live CLI capability discovery
 ```
 
 All seven baseline plan tasks are implemented; the current hardening suite is
-covered by 221 offline tests
+covered by 222 offline tests
 (no network, no `dreamina` binary, no paid calls). Eleven of the plan's
 thirteen completion-gate lines are `PASS` on measured evidence — including
 Skill snapshot parity pinned to upstream

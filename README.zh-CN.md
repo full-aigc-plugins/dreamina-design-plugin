@@ -20,7 +20,7 @@
         -> 按 submit_id 查询 -> 验证/下载产物
 ```
 
-基线计划 7 个任务已经实现；当前生产加固由 221 个离线测试覆盖（测试本身无付费调用）。
+基线计划 7 个任务已经实现；当前生产加固由 222 个离线测试覆盖（测试本身无付费调用）。
 计划 13 行完成门禁中 11 行为有实测证据的 `PASS` —— 含 Skill snapshot parity 固定到上游
 `full-aigc-skills/dreamina-skills@300bfc1`、严格 TRACE 13/13、plugin 校验、
 凭证零命中，以及**公开 marketplace 安装后经 `codex debug prompt-input` 验证发现全部 14 个 Skill**。

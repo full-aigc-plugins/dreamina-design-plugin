@@ -32,7 +32,7 @@ historical feature baseline.
 - [x] Restrict destinations to an approved root, reject overwrite/symlinks, and cap payload size.
 - [x] Enforce approved roots, regular-file/no-symlink checks, MIME sniffing, and size limits for every uploaded reference.
 - [x] Use the CLI `query_result --download_dir` path for production downloads and verify the resulting local file inside an approved root.
-- [ ] Bind artifact provenance to the recorded operation and verify all returned media metadata.
+- [x] Bind artifact provenance to a recorded `succeeded/download` operation and verify returned MIME/dimensions before issuing the receipt.
 
 ## P4 — Packaged Skill supply chain
 

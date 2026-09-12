@@ -55,8 +55,8 @@ def validate(root: Path) -> list[str]:
     repository = manifest.get("repository", "")
     if NAME_PATTERN.fullmatch(plugin_id) is None or not plugin_id.startswith("codex-"):
         errors.append("manifest name must be a codex-prefixed kebab-case identifier")
-    if manifest.get("version") != "0.1.0":
-        errors.append("foundation version must be 0.1.0")
+    if re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?", str(manifest.get("version", ""))) is None:
+        errors.append("manifest version must be semantic-version shaped")
     if manifest.get("skills") != "./skills/":
         errors.append("manifest skills path must be ./skills/")
     mcp_path = root / ".mcp.json"
