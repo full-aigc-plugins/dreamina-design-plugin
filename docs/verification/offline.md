@@ -224,6 +224,29 @@ missing:    none
 
 **Result: PASS (local personal marketplace).**
 
+The install was repeated from the **merged `main` checkout** (not just the
+feature worktree), so the verified artifact is the merged tree:
+
+```text
+$ git checkout main && git log --oneline -1
+865f8d5 fix: model the plan's gate semantics in the verifier exit codes
+$ git ls-tree --name-only main skills/ | wc -l
+14
+# re-installed from ./codex-dreamina-design-plugin (main), then:
+$ codex debug prompt-input
+discovered: 14
+```
+
+All 14 Skills — `codex-dreamina-design-use` plus the 13 `dreamina-*`
+packages — are listed. The merged `main` tree was independently
+re-verified: 169/169 tests, v0 validator green, snapshot parity PASS,
+strict TRACE 13/13 PASS.
+
+The public-marketplace variant still requires a `git push origin main`
+(13 commits ahead of `origin/main`, 0 behind — a safe fast-forward).
+That push publishes to a public repository and is left to the
+repository owner rather than performed automatically.
+
 This step caught and fixed a real defect: the 13 packaged Skills used a
 multi-line plain-scalar `description`, which is invalid YAML, so Codex
 silently skipped them and only the router Skill was visible. All 13

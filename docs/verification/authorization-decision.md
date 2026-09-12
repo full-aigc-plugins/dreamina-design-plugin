@@ -30,25 +30,28 @@ $ python3 scripts/unlock_runtime_gates.py record-canary \
       --observed "<one paragraph on what you saw>"
 ```
 
-**C. (optional) Cover the public-marketplace install variant** — merge
-and push the feature branch:
+**C. (optional) Cover the public-marketplace install variant** — one
+`git push` remains. The merge itself is **done**: `main` was
+fast-forwarded to `865f8d5` (all 14 Skills present, merged tree
+re-verified: 169/169 tests, parity PASS, TRACE 13/13, and a re-install
+from the merged checkout still discovers 14/14).
 
 ```text
-$ git checkout main
-$ git merge feat/dreamina-design-runtime
+$ git rev-list --count origin/main..main      # 13 ahead
+$ git rev-list --count main..origin/main      # 0 behind
+$ git merge-base --is-ancestor origin/main main && echo fast-forward
 $ git push origin main
 ```
 
-Merge is already dry-run verified conflict-free
-(`git merge-tree --write-tree main feat/dreamina-design-runtime` → exit 0,
-zero conflicts, 11 commits). Pushing publishes to the public GitHub repo,
-so it is left to you.
+The push is a verified fast-forward, so it cannot lose remote work. It
+publishes the plugin to the public GitHub repository, which is why it is
+left to the repository owner rather than performed automatically.
 
 After A and B, tell me and I will re-run
-`python3 scripts/validate_distribution_v7.py --strict` (the verifier
-flips both gates automatically from the artifacts, with no code change),
-update the `docs/verification/offline.md` §8 audit rows, and add one
-commit.
+`python3 scripts/validate_distribution_v7.py --require-runtime-gates`
+(the verifier flips both gates automatically from the artifacts, with no
+code change), update the `docs/verification/offline.md` §8 audit rows,
+and add one commit.
 
 ## 1. What was requested
 
