@@ -80,6 +80,8 @@ class _VideoModelSpec:
     duration_max_seconds: int
     web_prerequisite_required: bool
     audio_reference_max_seconds: int | None
+    ratio_forbidden_modes: frozenset[str]
+    max_references: int
 
     @classmethod
     def from_snapshot(cls, entry: Mapping[str, Any]) -> "_VideoModelSpec":
@@ -93,6 +95,8 @@ class _VideoModelSpec:
             duration_max_seconds=int(entry.get("duration_max_seconds", 30)),
             web_prerequisite_required=bool(entry.get("web_prerequisite_required", False)),
             audio_reference_max_seconds=int(audio_max) if audio_max is not None else None,
+            ratio_forbidden_modes=frozenset(entry.get("ratio_forbidden_modes", [])),
+            max_references=int(entry.get("max_references", REFERENCE_LIMIT)),
         )
 
 
@@ -164,12 +168,16 @@ class VideoService:
             raise UnsupportedCapabilityError(f"model {model} does not support mode {mode}")
         if not video_resolution:
             raise UnsupportedCapabilityError("video_resolution is required for video requests")
-        if video_resolution not in spec.resolutions and video_resolution not in self._video_resolutions:
+        advertised_resolutions = spec.resolutions or self._video_resolutions
+        if video_resolution not in advertised_resolutions:
             raise UnsupportedCapabilityError(f"video_resolution not advertised: {video_resolution}")
-        if ratio is None:
-            raise UnsupportedCapabilityError("ratio is required for video requests")
-        if ratio not in spec.ratios and ratio not in self._ratios:
+        advertised_ratios = spec.ratios or self._ratios
+        if ratio is not None and ratio not in advertised_ratios:
             raise UnsupportedCapabilityError(f"ratio not advertised: {ratio}")
+        if ratio is not None and mode in spec.ratio_forbidden_modes:
+            raise UnsupportedCapabilityError(
+                f"ratio is not accepted for model {model} in mode {mode}"
+            )
         effective_duration = duration_seconds if duration_seconds is not None else spec.duration_min_seconds
         if not (spec.duration_min_seconds <= effective_duration <= spec.duration_max_seconds):
             raise DurationOutOfRangeError(
@@ -187,9 +195,10 @@ class VideoService:
             "prompt": prompt,
             "model": model,
             "video_resolution": video_resolution,
-            "ratio": ratio,
             "duration_seconds": effective_duration,
         }
+        if ratio is not None:
+            request["ratio"] = ratio
         if normalized_refs:
             request["references"] = normalized_refs
         return request
@@ -206,8 +215,8 @@ class VideoService:
             raise InvalidReferenceError(f"mode {mode} requires references with roles {sorted(required_roles)}")
         if not references:
             return []
-        if len(references) > REFERENCE_LIMIT:
-            raise InvalidReferenceError(f"too many references (max {REFERENCE_LIMIT})")
+        if len(references) > spec.max_references:
+            raise InvalidReferenceError(f"too many references (max {spec.max_references})")
         normalized: list[dict[str, Any]] = []
         for ref in references:
             if not isinstance(ref, Mapping):
@@ -241,6 +250,14 @@ class VideoService:
             raise InvalidReferenceError(
                 f"mode {mode} requires references with at least one of {sorted(required_roles)}"
             )
+        if mode == "image2video" and (
+            len(normalized) != 1 or normalized[0]["role"] != "subject"
+        ):
+            raise InvalidReferenceError("image2video requires exactly one subject reference")
+        if mode == "frames2video" and (
+            len(normalized) != 2 or any(r["role"] != "frame" for r in normalized)
+        ):
+            raise InvalidReferenceError("frames2video requires exactly two frame references")
         return normalized
 
     # ------------------------------------------------------------------
@@ -287,16 +304,24 @@ class VideoService:
     @staticmethod
     def _request_to_argv(request: Mapping[str, Any]) -> list[str]:
         argv: list[str] = [
-            "generate",
-            "--mode", str(request["mode"]),
-            "--model", str(request["model"]),
+            str(request["mode"]),
+            "--model_version", str(request["model"]),
             "--prompt", str(request["prompt"]),
-            "--video-resolution", str(request["video_resolution"]),
-            "--ratio", str(request["ratio"]),
-            "--duration-seconds", str(request["duration_seconds"]),
+            "--video_resolution", str(request["video_resolution"]),
+            "--duration", str(request["duration_seconds"]),
         ]
-        for ref in request.get("references", []) or []:
-            argv.extend(["--reference", f"{ref['role']}:{ref['path']}"])
+        if "ratio" in request:
+            argv.extend(["--ratio", str(request["ratio"])])
+        references = list(request.get("references", []) or [])
+        if request["mode"] == "image2video" and references:
+            argv.extend(["--image", str(references[0]["path"])])
+        elif request["mode"] == "frames2video":
+            argv.extend(["--first", str(references[0]["path"])])
+            argv.extend(["--last", str(references[1]["path"])])
+        elif request["mode"] == "multimodal2video":
+            flag_by_role = {"audio": "--audio", "frame": "--image", "style": "--image", "subject": "--image", "reference": "--video"}
+            for ref in references:
+                argv.extend([flag_by_role[ref["role"]], str(ref["path"])])
         return argv
 
 

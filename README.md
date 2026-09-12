@@ -8,7 +8,7 @@
 
 ## Status and purpose
 
-**Implementation complete; two runtime gates await an owner decision.**
+**Implementation complete; read-only runtime observed; paid canary intentionally not run.**
 
 ```text
 Creative intent -> prompt contract -> live CLI capability discovery
@@ -16,7 +16,7 @@ Creative intent -> prompt contract -> live CLI capability discovery
                 -> query by submit_id -> validate/download artifacts
 ```
 
-All seven plan tasks are implemented and covered by 192 offline tests
+All seven plan tasks are implemented and covered by 203 offline tests
 (no network, no `dreamina` binary, no paid calls). Eleven of the plan's
 thirteen completion-gate lines are `PASS` on measured evidence — including
 Skill snapshot parity pinned to upstream
@@ -31,8 +31,8 @@ read_only_runtime_contract = observed or explicitly blocked
 paid_canary = separately approved or NOT_RUN
 ```
 
-Both are currently in their second disjunct (`blocked` / `NOT_RUN`),
-because the `dreamina` binary is not installed on this machine and no paid
+The read-only runtime contract is now `observed` from the installed CLI's
+version and command-help snapshot. The paid canary remains `NOT_RUN`; no paid
 generation has been performed. `--plan-gate` reports
 `plan_gate = SATISFIED` for exactly that state:
 

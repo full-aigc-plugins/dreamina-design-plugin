@@ -15,6 +15,7 @@ own authorized shell. It must:
 
 from __future__ import annotations
 
+import json
 import stat
 import sys
 import tempfile
@@ -123,6 +124,31 @@ class ProbeCaptureTests(unittest.TestCase):
             readiness = (verification / "account-readiness.md").read_text(encoding="utf-8")
             self.assertIn("PENDING", readiness)
 
+    def test_probe_builds_help_snapshot_when_schema_command_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cli = _fake_cli(
+                Path(tmp) / "bin",
+                """\
+                #!/bin/sh
+                case "$1" in
+                  --version) echo '{"version":"ec1b9fa-dirty","commit":"ec1b9fa"}' ;;
+                  --help) printf 'Usage: dreamina [flags]\\nBuilt-in Commands:\\n  text2image  Generate image\\n' ;;
+                  schema) echo 'unknown command "schema" for "dreamina"' >&2; exit 1 ;;
+                  text2image) printf 'Usage: dreamina text2image [flags]\\nFlags:\\n  --prompt string  generation prompt\\n' ;;
+                esac
+                """,
+            )
+            verification = Path(tmp) / "verification"
+            harness = UnlockHarness(verification_dir=verification, cli_command=str(cli))
+            harness.probe()
+            snapshot = json.loads(
+                (verification / "cli-schema.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(snapshot["source"], "command-help")
+            self.assertIn("text2image", snapshot["commands"])
+            readiness = (verification / "account-readiness.md").read_text(encoding="utf-8")
+            self.assertIn("= `ec1b9fa-dirty`", readiness)
+
 
 class CanaryRecordTests(unittest.TestCase):
     def test_record_canary_requires_all_fields(self) -> None:
@@ -203,6 +229,28 @@ class StatusTests(unittest.TestCase):
             )
             status = harness.status()
             self.assertEqual(status["paid_canary"], "APPROVED")
+            self.assertEqual(status["read_only_runtime_contract"], "observed")
+
+    def test_status_accepts_commit_based_json_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            verification = Path(tmp) / "verification"
+            verification.mkdir(parents=True)
+            (verification / "cli-version.txt").write_text(
+                '{"version":"ec1b9fa-dirty","commit":"ec1b9fa",'
+                '"build_time":"2026-09-09T09:09:35Z"}\n',
+                encoding="utf-8",
+            )
+            (verification / "cli-help.txt").write_text(
+                "Usage: dreamina <command> [options]\n\nCommands:\n"
+                "  generate   Submit a generation request\n",
+                encoding="utf-8",
+            )
+            (verification / "cli-schema.json").write_text("{}\n", encoding="utf-8")
+            harness = UnlockHarness(
+                verification_dir=verification,
+                cli_command="/nonexistent/dreamina",
+            )
+            status = harness.status()
             self.assertEqual(status["read_only_runtime_contract"], "observed")
 
     def test_status_does_not_report_observed_for_empty_artifacts(self) -> None:

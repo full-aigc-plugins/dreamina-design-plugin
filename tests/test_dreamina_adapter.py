@@ -36,6 +36,7 @@ from scripts.dreamina_adapter import (  # noqa: E402  (path injection above)
     PermissionDeniedError,
     TimeoutError as AdapterTimeoutError,
     UpgradeRequiredError,
+    _parse_command_help,
 )
 
 
@@ -156,6 +157,21 @@ class DreaminaAdapterRunTests(unittest.TestCase):
 
 
 class CapabilitySnapshotTests(unittest.TestCase):
+    def test_command_help_preserves_model_specific_constraints(self) -> None:
+        snapshot = _parse_command_help(
+            {
+                "text2image": "- model_version: 5.0, 5.0Pro\n- generate_num: 1-10\n- 5.0 -> resolution_type 2k or 4k\n- 5.0Pro -> resolution_type 1.5k, 2k, or 4k\n- ratio: 16:9, 1:1\n",
+                "image2image": "Upload 1 to 10 local images.\n- model_version: 5.0Pro\n- generate_num: 1-10\n- 5.0Pro -> resolution_type 1.5k, 2k, or 4k\n- ratio: 16:9, 1:1\n",
+                "text2video": "- model_version: seedance2.0, seedance2.0_vip, seedance2.5\n- seedance2.5 -> video_resolution 480p, 720p, or 1080p; duration 4-30s\n- seedance2.0_vip -> video_resolution 720p, 1080p, or 4k; duration 4-15s\n- all other models -> video_resolution 720p; duration 4-15s\n- ratio: 16:9, 9:16\n",
+            }
+        )
+        by_name = {entry["name"]: entry for entry in snapshot["models"]}
+        self.assertEqual(by_name["5.0Pro"]["max_count"], 10)
+        self.assertEqual(by_name["5.0Pro"]["max_references"], 10)
+        self.assertEqual(by_name["5.0Pro"]["resolutions"], ["1.5k", "2k", "4k"])
+        self.assertEqual(by_name["seedance2.0"]["resolutions"], ["720p"])
+        self.assertEqual(by_name["seedance2.5"]["duration_max_seconds"], 30)
+
     def test_capability_snapshot_returns_dict(self) -> None:
         """``capability_snapshot`` must rely on argv-only CLI calls."""
         adapter = DreaminaAdapter(cli_command="/nonexistent/dreamina-binary")
@@ -163,6 +179,44 @@ class CapabilitySnapshotTests(unittest.TestCase):
         # that calling it without a CLI is a typed error.
         with self.assertRaises(CLINotFoundError):
             adapter.capability_snapshot()
+
+    def test_capability_snapshot_falls_back_to_command_help(self) -> None:
+        adapter = DreaminaAdapter(cli_command=self._make_cli())
+        snapshot = adapter.capability_snapshot()
+        self.assertEqual(snapshot["cli_version"], "ec1b9fa-dirty")
+        self.assertEqual(snapshot["cli_commit"], "ec1b9fa")
+        self.assertIn("text2image", snapshot["modes"])
+        by_name = {entry["name"]: entry for entry in snapshot["models"]}
+        self.assertEqual(by_name["5.0Pro"]["modes"], ["text2image"])
+        self.assertIn("1.5k", snapshot["resolutions"]["image"])
+        self.assertIn("16:9", snapshot["ratios"])
+
+    def test_capability_snapshot_accepts_plain_text_version(self) -> None:
+        cli = write_fake_cli(Path(tempfile.mkdtemp()), """\
+            #!/bin/sh
+            case "$1" in
+              --version) echo 'dreamina 1.4.18' ;;
+              schema) echo '{"modes":["text2image"]}' ;;
+            esac
+        """)
+        snapshot = DreaminaAdapter(cli_command=str(cli)).capability_snapshot()
+        self.assertEqual(snapshot["cli_version"], "1.4.18")
+
+    def _make_cli(self) -> str:
+        directory = Path(self._temp_dir.name) if hasattr(self, "_temp_dir") else None
+        if directory is None:
+            self._temp_dir = tempfile.TemporaryDirectory()
+            self.addCleanup(self._temp_dir.cleanup)
+            directory = Path(self._temp_dir.name)
+        return str(write_fake_cli(directory, """\
+            #!/bin/sh
+            case "$1" in
+              --version) echo '{"version":"ec1b9fa-dirty","commit":"ec1b9fa"}' ;;
+              schema) echo 'unknown command "schema" for "dreamina"' >&2; exit 1 ;;
+              --help) printf 'Usage: dreamina [flags]\\nGenerator Commands:\\n  text2image  Submit image\\n' ;;
+              text2image) printf 'Usage: dreamina text2image [flags]\\nSupported combinations:\\n- model_version: 5.0, 5.0Pro\\n- ratio: 16:9, 1:1\\n- 5.0Pro -> resolution_type 1.5k, 2k, or 4k\\n' ;;
+            esac
+        """))
 
 
 if __name__ == "__main__":

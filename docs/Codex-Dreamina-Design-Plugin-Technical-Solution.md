@@ -10,7 +10,7 @@ The 13 existing Skill directories are renamed mechanically from `jimeng-*` to `d
 
 ## Contracts
 
-- `CapabilitySnapshot`: CLI version/commit plus parsed current help/schema.
+- `CapabilitySnapshot`: CLI version/commit plus current schema, or a command-help snapshot when the installed CLI has no `schema` command.
 - `GenerationRequest`: mode, prompt, references, model token, resolution, ratio, duration, count.
 - `ApprovalReceipt`: exact request fingerprint and quote/credit acknowledgement.
 - `OperationReceipt`: session, submit ID, state, timestamps, required action.

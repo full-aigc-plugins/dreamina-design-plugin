@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -28,6 +29,14 @@ from typing import Mapping
 
 DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_MAX_OUTPUT_BYTES = 1 * 1024 * 1024  # 1 MiB
+CAPABILITY_MODES = (
+    "text2image",
+    "image2image",
+    "text2video",
+    "image2video",
+    "frames2video",
+    "multimodal2video",
+)
 
 
 class DreaminaAdapterError(RuntimeError):
@@ -179,30 +188,77 @@ class DreaminaAdapter:
         Combines ``--version`` and ``schema`` (or ``--help``) into the
         shape described by ``schemas/capability_snapshot.schema.json``.
         """
-        version_result = self.run(["--version"])
+        version_text = self._run_text(["--version"]).strip()
+        version_payload = _safe_parse_json(version_text)
         cli_version = ""
-        if isinstance(version_result.payload, Mapping):
-            cli_version = str(version_result.payload.get("version", "")).strip()
+        cli_commit = None
+        if isinstance(version_payload, Mapping):
+            cli_version = str(version_payload.get("version", "")).strip()
+            cli_commit = version_payload.get("commit")
         if not cli_version:
-            # Fallback: parse the first line of stdout when --version is not JSON.
-            cli_version = (version_result.stderr or "").splitlines()[0:1] or [""]
+            match = re.search(r"\b(\d+\.\d+\.\d+(?:[+-][A-Za-z0-9.-]+)?)\b", version_text)
+            if match:
+                cli_version = match.group(1)
+        if not cli_version:
+            raise InvalidJSONError("dreamina --version emitted no usable build identity")
 
-        schema_result = self.run(["schema"])
+        schema_payload: Mapping[str, object] = {}
+        try:
+            schema_result = self.run(["schema"])
+            if isinstance(schema_result.payload, Mapping):
+                schema_payload = schema_result.payload
+        except DreaminaAdapterError as exc:
+            if 'unknown command "schema"' not in str(exc):
+                raise
+            help_text = self._run_text(["--help"])
+            modes = [
+                mode
+                for mode in CAPABILITY_MODES
+                if re.search(rf"(?m)^\s{{2}}{re.escape(mode)}\s+", help_text)
+            ]
+            schema_payload = _parse_command_help(
+                {mode: self._run_text([mode, "--help"]) for mode in modes}
+            )
         snapshot = {
             "cli_version": cli_version or "0.0.0",
             "captured_at": _now_iso(),
             "modes": [],
         }
-        if isinstance(schema_result.payload, Mapping):
-            if schema_result.payload.get("cli_commit"):
-                snapshot["cli_commit"] = schema_result.payload["cli_commit"]
-            modes = schema_result.payload.get("modes")
+        if cli_commit:
+            snapshot["cli_commit"] = cli_commit
+        if schema_payload:
+            if schema_payload.get("cli_commit"):
+                snapshot["cli_commit"] = schema_payload["cli_commit"]
+            modes = schema_payload.get("modes")
             if isinstance(modes, list):
                 snapshot["modes"] = modes
             for key in ("models", "resolutions", "ratios", "durations"):
-                if key in schema_result.payload:
-                    snapshot[key] = schema_result.payload[key]
+                if key in schema_payload:
+                    snapshot[key] = schema_payload[key]
         return snapshot
+
+    def _run_text(self, args: list[str]) -> str:
+        """Run a read-only help command whose stdout is plain text."""
+        binary = self._resolve_cli()
+        completed = subprocess.run(
+            [binary, *args],
+            capture_output=True,
+            text=True,
+            timeout=self.timeout_seconds,
+            shell=False,
+            check=False,
+            env=self.env,
+        )
+        if completed.returncode != 0:
+            raise DreaminaAdapterError(
+                f"dreamina CLI failed (exit {completed.returncode}): "
+                f"{completed.stderr.strip()}"
+            )
+        if len(completed.stdout or "") > self.max_output_bytes:
+            raise InvalidJSONError(
+                f"dreamina CLI output exceeded {self.max_output_bytes} bytes"
+            )
+        return completed.stdout or ""
 
 
 def _safe_parse_json(text: str):
@@ -212,6 +268,117 @@ def _safe_parse_json(text: str):
         return json.loads(text)
     except json.JSONDecodeError:
         return None
+
+
+def _parse_command_help(command_help: Mapping[str, str]) -> dict:
+    """Derive capability unions from the installed CLI's generator help."""
+    models: dict[str, dict] = {}
+    resolutions = {"image": set(), "video": set()}
+    ratios: set[str] = set()
+    duration_bounds: list[int] = []
+    for mode, help_text in command_help.items():
+        model_match = re.search(
+            r"(?m)(?:^- model_version(?: values)?:|--model_version\s+\w+\s+supported values:|flag values:)\s*([^\n)]+)",
+            help_text,
+        )
+        if model_match:
+            for token in model_match.group(1).split(","):
+                name = token.strip()
+                if name:
+                    entry = models.setdefault(name, {"name": name, "modes": []})
+                    entry["modes"].append(mode)
+        mode_ratios = set(re.findall(r"\b(?:21:9|16:9|9:16|4:3|3:4|3:2|2:3|1:1)\b", help_text))
+        ratios.update(mode_ratios)
+        values = {
+            value.lower()
+            for value in re.findall(
+                r"\b(?:1(?:\.5)?k|2k|4k|480p|720p|1080p)\b",
+                help_text,
+                re.IGNORECASE,
+            )
+        }
+        resolutions["image" if mode.endswith("image") else "video"].update(values)
+        mode_bounds = [
+            (int(lower), int(upper))
+            for lower, upper in re.findall(r"duration[^\n]*?(\d+)-(\d+)", help_text)
+        ]
+        for lower, upper in mode_bounds:
+            duration_bounds.extend((int(lower), int(upper)))
+        count_match = re.search(r"generate_num:\s*(\d+)-(\d+)", help_text)
+        reference_count_match = re.search(r"Upload\s+(\d+)\s+to\s+(\d+)\s+local images", help_text)
+        for entry in models.values():
+            if mode not in entry["modes"]:
+                continue
+            entry.setdefault("ratios", set()).update(mode_ratios)
+            if count_match and mode.endswith("image"):
+                entry["max_count"] = int(count_match.group(2))
+            if reference_count_match and mode == "image2image":
+                entry["max_references"] = int(reference_count_match.group(2))
+            if mode == "multimodal2video":
+                entry.setdefault("max_references", 12)
+            entry.setdefault("resolutions", set())
+            for line in help_text.splitlines():
+                if not line.startswith("- ") or "->" not in line or re.search(
+                    rf"(?<![A-Za-z0-9._]){re.escape(entry['name'])}(?![A-Za-z0-9._])",
+                    line.split("->", 1)[0],
+                ) is None:
+                    continue
+                entry["resolutions"].update(
+                    value.lower()
+                    for value in re.findall(
+                        r"\b(?:1(?:\.5)?k|2k|4k|480p|720p|1080p)\b", line, re.IGNORECASE
+                    )
+                )
+                bounds = re.search(r"output duration\s+(\d+)-(\d+)s", line)
+                if bounds is None and "video/audio duration" not in line:
+                    bounds = re.search(r"duration\s+(\d+)-(\d+)s", line)
+                if bounds:
+                    entry["duration_min_seconds"] = int(bounds.group(1))
+                    entry["duration_max_seconds"] = int(bounds.group(2))
+                reference_bounds = re.search(r"video/audio duration\s+(\d+)-(\d+)s", line)
+                if reference_bounds:
+                    entry["audio_reference_max_seconds"] = int(reference_bounds.group(2))
+                total_inputs = re.search(r"total inputs<=([0-9]+)", line)
+                if total_inputs:
+                    entry["max_references"] = int(total_inputs.group(1))
+            if mode in {"image2video", "frames2video"} and re.search(
+                rf"not accepted with model_version\s+{re.escape(entry['name'])}", help_text
+            ):
+                entry.setdefault("ratio_forbidden_modes", []).append(mode)
+        # Apply explicit "all other models" constraints to entries that did not
+        # receive a model-specific line for this mode.
+        other_line = next((line for line in help_text.splitlines() if "all other" in line and "->" in line), "")
+        if other_line:
+            other_resolutions = {
+                value.lower() for value in re.findall(r"\b(?:480p|720p|1080p|4k)\b", other_line, re.IGNORECASE)
+            }
+            bounds = re.search(r"duration\s+(\d+)-(\d+)s", other_line)
+            for entry in models.values():
+                if mode in entry["modes"] and not entry.get("resolutions"):
+                    entry["resolutions"] = set(other_resolutions)
+                    if bounds:
+                        entry["duration_min_seconds"] = int(bounds.group(1))
+                        entry["duration_max_seconds"] = int(bounds.group(2))
+    result = {
+        "modes": list(command_help),
+        "models": [
+            {
+                key: sorted(value) if isinstance(value, set) else value
+                for key, value in entry.items()
+            }
+            for _, entry in sorted(models.items())
+        ],
+        "resolutions": {
+            key: sorted(values) for key, values in resolutions.items() if values
+        },
+        "ratios": sorted(ratios),
+    }
+    if duration_bounds:
+        result["durations"] = {
+            "min_seconds": min(duration_bounds),
+            "max_seconds": max(duration_bounds),
+        }
+    return result
 
 
 def _now_iso() -> str:

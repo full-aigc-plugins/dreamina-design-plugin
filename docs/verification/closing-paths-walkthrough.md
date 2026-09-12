@@ -90,18 +90,19 @@ Verified in the same runs:
 * Empty / malformed captures or a canary marker lacking required evidence
   → gate stays `blocked` / `NOT_RUN` (10 dedicated tests).
 
-## Real repository state after these runs
+## Real repository state after these historical dry runs
 
 ```text
 $ ls docs/verification/ | grep -E "cli-|account-|paid-canary|gate-decision"
 (none)
 ```
 
-The real repository contains **no** cli-version.txt, cli-help.txt,
-cli-schema.json, account-readiness.md, paid-canary-approved.md, or
-gate-decision-accepted.md. Every artifact produced during these
-walkthroughs lived in `/tmp/path-ab-test` and `/tmp/path-b-test`. Nothing
-was fabricated into the repository and no gate status changed.
+At the time of these dry runs, the real repository contained no runtime
+capture or decision files; every walkthrough artifact lived in scratch
+directories. On 2026-09-12 the real installed CLI was subsequently probed:
+`cli-version.txt`, `cli-help.txt`, `cli-schema.json` (a command-help snapshot),
+and a non-secret `account-readiness.md` now exist. No paid-canary or fabricated
+generation evidence was added.
 
 ## Exit-code contract, summarised
 

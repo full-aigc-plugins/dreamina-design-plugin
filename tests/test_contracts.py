@@ -84,6 +84,11 @@ class SchemaPresenceTests(unittest.TestCase):
             target = SCHEMAS_DIR / name
             self.assertTrue(target.is_file(), f"missing schema: {name}")
 
+    def test_capability_schema_accepts_commit_based_cli_versions(self) -> None:
+        schema = load_json(SCHEMAS_DIR / "capability_snapshot.schema.json")
+        pattern = schema["properties"]["cli_version"]["pattern"]
+        self.assertIsNotNone(re.fullmatch(pattern, "ec1b9fa-dirty"))
+
 
 class ClosedSchemaTests(unittest.TestCase):
     def test_each_schema_rejects_unknown_properties(self) -> None:

@@ -1,6 +1,6 @@
 # `dreamina` CLI runtime evidence
 
-> **Status (offline):** `read_only_runtime_contract = blocked`
+> **Status (2026-09-12):** `read_only_runtime_contract = observed`
 > **Paid canary:** `paid_canary = NOT_RUN`
 > **Snapshot parity:** `skill_snapshot_parity = PASS` (pinned to upstream HEAD `373bf7ffa698eefd3308576300e28ea2bff9cc6b`)
 > **Strict TRACE:** `skill_trace = PASS` (13/13 upstream Skills PASS; see `docs/verification/skill-trace.md`)
@@ -12,11 +12,11 @@
 > `upstream_commit_sha` matches the cloned upstream HEAD.
 
 This document records the read-only CLI runtime evidence for
-`codex-dreamina-design`. The read-only runtime evidence below is
-currently empty: the local machine does not have the `dreamina` binary
-installed, and the plugin has not been authorized to authenticate
-against any user account. Paid operations remain explicitly out of
-scope.
+`codex-dreamina-design`. The installed CLI reports build identity
+`ec1b9fa-dirty` / commit `ec1b9fa`; its top-level help and nine relevant
+command-help pages were captured without generation. The authenticated account
+readiness check succeeded, while identity and credit balance were deliberately
+omitted. Paid operations remain explicitly out of scope.
 
 ## 1. Unlocking the read-only runtime contract
 
@@ -45,7 +45,10 @@ To promote `read_only_runtime_contract` from `blocked` to `observed`:
    $ dreamina schema > docs/verification/cli-schema.json
    ```
 
-   These outputs feed
+   If the installed CLI has no `schema` command, use
+   `python3 scripts/unlock_runtime_gates.py probe`; it stores the real
+   top-level and per-command help in `cli-schema.json` with
+   `source = command-help`. These outputs feed
    `scripts/dreamina_adapter.DreaminaAdapter.capability_snapshot()`
    and the per-mode validators in `image_service.py` /
    `video_service.py`.

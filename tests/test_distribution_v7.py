@@ -453,6 +453,27 @@ class GateContentValidationTests(unittest.TestCase):
         report = verifier.run()
         self.assertEqual(report.read_only_runtime_contract, "observed")
 
+    def test_incomplete_command_help_snapshot_does_not_unlock(self) -> None:
+        self._write_good_cli_artifacts()
+        (self.verification / "cli-schema.json").write_text(
+            '{"source":"command-help","commands":{"text2image":"short"}}\n',
+            encoding="utf-8",
+        )
+        verifier = DistributionV7Verifier(root=self.root)
+        report = verifier.run()
+        self.assertEqual(report.read_only_runtime_contract, "blocked")
+
+    def test_commit_based_json_version_unlocks_runtime_contract(self) -> None:
+        self._write_good_cli_artifacts()
+        (self.verification / "cli-version.txt").write_text(
+            '{"version":"ec1b9fa-dirty","commit":"ec1b9fa",'
+            '"build_time":"2026-09-09T09:09:35Z"}\n',
+            encoding="utf-8",
+        )
+        verifier = DistributionV7Verifier(root=self.root)
+        report = verifier.run()
+        self.assertEqual(report.read_only_runtime_contract, "observed")
+
     # --- spoofed canary markers must NOT unlock the canary gate ---
 
     def test_empty_canary_marker_does_not_unlock(self) -> None:
@@ -525,9 +546,10 @@ class PlanGateModeTests(unittest.TestCase):
         result = self._run("--plan-gate", "--expected-upstream-sha", "0" * 40)
         self.assertNotEqual(result.returncode, 0)
 
-    def test_plan_gate_does_not_claim_observed(self) -> None:
+    def test_plan_gate_reports_observed_runtime_without_approving_canary(self) -> None:
         result = self._run("--plan-gate")
-        self.assertIn('"read_only_runtime_contract": "blocked"', result.stdout)
+        self.assertIn('"read_only_runtime_contract": "observed"', result.stdout)
+        self.assertIn('"paid_canary": "NOT_RUN"', result.stdout)
 
     def test_require_runtime_gates_is_stricter_than_plan_gate(self) -> None:
         plan_gate = self._run("--plan-gate").returncode

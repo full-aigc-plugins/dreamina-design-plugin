@@ -64,6 +64,25 @@ SAFE_BASENAMES: frozenset[str] = frozenset(
 )
 
 
+def _is_valid_version_capture(version_text: str) -> bool:
+    """Accept semantic versions or the CLI's commit-based JSON build identity."""
+    if re.search(r"\d+\.\d+", version_text):
+        return True
+    try:
+        payload = json.loads(version_text)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    version = payload.get("version")
+    commit = payload.get("commit")
+    if not isinstance(version, str) or not isinstance(commit, str):
+        return False
+    if re.fullmatch(r"[0-9a-fA-F]{7,40}", commit) is None:
+        return False
+    return version in {commit, f"{commit}-dirty"}
+
+
 class DistributionV7Error(Exception):
     """Base class for v7 verifier errors."""
 
@@ -367,7 +386,7 @@ class DistributionV7Verifier:
             return False, f"cannot read captures: {exc}"
         if not version_text:
             return False, "cli-version.txt is empty"
-        if re.search(r"\d+\.\d+", version_text) is None:
+        if not _is_valid_version_capture(version_text):
             return False, (
                 f"cli-version.txt has no version-like token: {version_text!r}; "
                 "the capture does not look like real `dreamina --version` output"
@@ -383,6 +402,31 @@ class DistributionV7Verifier:
             return False, "cli-schema.json does not parse as JSON"
         if not isinstance(parsed, (dict, list)):
             return False, "cli-schema.json is not a JSON object or array"
+        if isinstance(parsed, dict) and parsed.get("source") == "command-help":
+            commands = parsed.get("commands")
+            required_commands = {
+                "text2image", "image2image", "text2video", "image2video",
+                "frames2video", "multimodal2video", "session", "list_task",
+                "query_result",
+            }
+            if not isinstance(commands, dict) or not required_commands.issubset(commands):
+                return False, "command-help snapshot is missing required commands"
+            if any(
+                not isinstance(commands[name], str) or len(commands[name]) < 40
+                for name in required_commands
+            ):
+                return False, "command-help snapshot contains empty or truncated help"
+            readiness = self._verification_dir / "account-readiness.md"
+            readiness_text = (
+                readiness.read_text(encoding="utf-8") if readiness.is_file() else ""
+            )
+            if (
+                "Status: READY" not in readiness_text
+                or "authenticated user: **yes**" not in readiness_text
+            ):
+                return False, "account-readiness.md is missing READY authentication evidence"
+            if "generation performed as part of this check: **no**" not in readiness_text:
+                return False, "account-readiness.md does not preserve the no-generation boundary"
         return True, "captures present and well-formed"
 
     # ------------------------------------------------------------------

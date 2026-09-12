@@ -78,6 +78,7 @@ class _ModelSpec:
     resolutions: frozenset[str]
     ratios: frozenset[str]
     max_count: int
+    max_references: int
 
     @classmethod
     def from_snapshot(cls, entry: Mapping[str, Any]) -> "_ModelSpec":
@@ -87,6 +88,7 @@ class _ModelSpec:
             resolutions=frozenset(entry.get("resolutions", [])),
             ratios=frozenset(entry.get("ratios", [])),
             max_count=int(entry.get("max_count", 1)),
+            max_references=int(entry.get("max_references", REFERENCE_LIMIT)),
         )
 
 
@@ -133,7 +135,8 @@ class ImageService:
             raise UnsupportedCapabilityError(f"model {model} does not support mode {mode}")
         if not resolution_type:
             raise UnsupportedCapabilityError("resolution_type is required for image requests")
-        if resolution_type not in spec.resolutions and resolution_type not in self._image_resolutions:
+        advertised_resolutions = spec.resolutions or self._image_resolutions
+        if resolution_type not in advertised_resolutions:
             raise UnsupportedCapabilityError(f"resolution_type not advertised: {resolution_type}")
         if not (GLOBAL_MIN_COUNT <= count <= GLOBAL_MAX_COUNT):
             raise BatchCountOutOfRangeError(
@@ -143,10 +146,13 @@ class ImageService:
             raise BatchCountOutOfRangeError(
                 f"model {model} supports at most {spec.max_count} images per batch"
             )
-        if ratio is not None and ratio not in spec.ratios and ratio not in self._ratios:
+        advertised_ratios = spec.ratios or self._ratios
+        if ratio is not None and ratio not in advertised_ratios:
             raise UnsupportedCapabilityError(f"ratio not advertised: {ratio}")
         self._validate_dimensions(width=width, height=height, ratio=ratio)
-        normalized_refs = self._validate_references(mode=mode, references=references or [])
+        normalized_refs = self._validate_references(
+            mode=mode, references=references or [], max_references=spec.max_references
+        )
 
         request: dict[str, Any] = {
             "mode": mode,
@@ -172,13 +178,13 @@ class ImageService:
             raise UnsupportedCapabilityError("width/height are mutually exclusive with ratio")
 
     @staticmethod
-    def _validate_references(*, mode: str, references: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    def _validate_references(*, mode: str, references: list[Mapping[str, Any]], max_references: int) -> list[dict[str, Any]]:
         if not references:
             if mode in SUBJECT_REQUIRED_MODES:
                 raise InvalidReferenceError(f"mode {mode} requires at least one subject reference")
             return []
-        if len(references) > REFERENCE_LIMIT:
-            raise InvalidReferenceError(f"too many references (max {REFERENCE_LIMIT})")
+        if len(references) > max_references:
+            raise InvalidReferenceError(f"too many references (max {max_references})")
         normalized: list[dict[str, Any]] = []
         for ref in references:
             if not isinstance(ref, Mapping):
@@ -236,19 +242,18 @@ class ImageService:
     @staticmethod
     def _request_to_argv(request: Mapping[str, Any]) -> list[str]:
         argv: list[str] = [
-            "generate",
-            "--mode", str(request["mode"]),
-            "--model", str(request["model"]),
+            str(request["mode"]),
+            "--model_version", str(request["model"]),
             "--prompt", str(request["prompt"]),
-            "--count", str(request["count"]),
-            "--resolution-type", str(request["resolution_type"]),
+            "--generate_num", str(request["count"]),
+            "--resolution_type", str(request["resolution_type"]),
         ]
         if "ratio" in request:
             argv.extend(["--ratio", str(request["ratio"])])
         if "width" in request and "height" in request:
             argv.extend(["--width", str(request["width"]), "--height", str(request["height"])])
         for ref in request.get("references", []) or []:
-            argv.extend(["--reference", f"{ref['role']}:{ref['path']}"])
+            argv.extend(["--images", str(ref["path"])])
         return argv
 
 

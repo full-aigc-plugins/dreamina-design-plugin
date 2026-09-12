@@ -208,6 +208,17 @@ class ImageToVideoTests(unittest.TestCase):
         self.assertEqual(len(req["references"]), 1)
         self.assertEqual(req["references"][0]["role"], "subject")
 
+    def test_image2video_rejects_extra_reference_before_subject(self) -> None:
+        with self.assertRaises(InvalidReferenceError):
+            self.service.build_request(
+                mode="image2video", prompt="x", model="seedance-2.5",
+                video_resolution="720P", ratio=None,
+                references=[
+                    {"path": "/tmp/style.png", "role": "style"},
+                    {"path": "/tmp/subject.png", "role": "subject"},
+                ],
+            )
+
 
 class FramesToVideoTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -242,6 +253,29 @@ class FramesToVideoTests(unittest.TestCase):
         )
         self.assertEqual(len(req["references"]), 2)
         self.assertTrue(all(r["role"] == "frame" for r in req["references"]))
+
+    def test_frames2video_rejects_single_frame(self) -> None:
+        with self.assertRaises(InvalidReferenceError):
+            self.service.build_request(
+                mode="frames2video",
+                prompt="transition",
+                model="seedance-2.5",
+                video_resolution="720P",
+                ratio=None,
+                references=[{"path": "/tmp/f1.png", "role": "frame"}],
+            )
+
+    def test_frames2video_rejects_mixed_roles(self) -> None:
+        with self.assertRaises(InvalidReferenceError):
+            self.service.build_request(
+                mode="frames2video", prompt="transition", model="seedance-2.5",
+                video_resolution="720P", ratio=None,
+                references=[
+                    {"path": "/tmp/wrong.png", "role": "subject"},
+                    {"path": "/tmp/f1.png", "role": "frame"},
+                    {"path": "/tmp/f2.png", "role": "frame"},
+                ],
+            )
 
 
 class MultimodalToVideoTests(unittest.TestCase):
@@ -491,10 +525,10 @@ class SubmitSemanticsTests(unittest.TestCase):
         adapter = _StubAdapter()
         result = self.service.submit(req, adapter=adapter, approval=approval, web_prerequisite_cleared=False)
         self.assertEqual(len(adapter.calls), 1)
-        self.assertEqual(adapter.calls[0][0], "generate")
-        self.assertIn("--video-resolution", adapter.calls[0])
+        self.assertEqual(adapter.calls[0][0], "text2video")
+        self.assertIn("--video_resolution", adapter.calls[0])
         self.assertIn("720P", adapter.calls[0])
-        self.assertIn("--duration-seconds", adapter.calls[0])
+        self.assertIn("--duration", adapter.calls[0])
         self.assertIn("4", adapter.calls[0])
         self.assertEqual(result["submit_id"], "vsub-2")
 

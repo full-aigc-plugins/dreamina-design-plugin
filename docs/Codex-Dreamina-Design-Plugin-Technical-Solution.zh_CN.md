@@ -10,7 +10,7 @@
 
 ## 契约
 
-- `CapabilitySnapshot`：CLI version/commit 和当前 help/schema。
+- `CapabilitySnapshot`：CLI version/commit 和当前 schema；若已安装 CLI 没有 `schema` 子命令，则使用 command-help 快照。
 - `GenerationRequest`：模式、Prompt、参考素材、模型 token、分辨率、比例、时长和数量。
 - `ApprovalReceipt`：精确请求指纹及费用/积分确认。
 - `OperationReceipt`：Session、submit ID、状态、时间和 required action。

@@ -1,5 +1,11 @@
 # Offline verification evidence
 
+> **Fresh audit (2026-09-12):** 203/203 offline tests pass. The read-only
+> runtime gate has additionally moved from `blocked` to `observed` using real
+> CLI version and command-help captures. The paid canary remains `NOT_RUN`.
+> Tables below that show `blocked` are retained as historical evidence from
+> the earlier offline-only run.
+
 This document records the offline (no-network, no-paid-CLI) verification
 evidence for `codex-dreamina-design` v0.1.0.
 

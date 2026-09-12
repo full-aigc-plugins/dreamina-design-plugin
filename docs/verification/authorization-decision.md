@@ -1,5 +1,12 @@
 # Authorization decision record — runtime + paid canary gates
 
+> **Current update (2026-09-12):** the read-only runtime gate is now
+> `observed`. The installed CLI exposes no top-level `schema` command, so the
+> probe captured its real version, top-level help, and relevant per-command
+> help as a `command-help` snapshot. Account readiness was confirmed without
+> recording identity or credit balance. The paid canary remains `NOT_RUN`.
+> Historical `blocked` passages below document the earlier decision state.
+
 > **This document records an explicit decision, not a verification
 > result.** The two remaining plan gates — `read_only_runtime_contract`
 > and `paid_canary` — cannot be flipped to PASS without a real

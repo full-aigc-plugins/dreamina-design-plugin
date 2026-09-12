@@ -8,7 +8,7 @@
 
 ## 状态与定位
 
-**实现已完成；两项 runtime 门禁等待 owner 决定。**
+**实现已完成；只读 runtime 已观测；付费 canary 按计划保持未执行。**
 
 ```text
 创作意图 -> Prompt 契约 -> 实时发现 CLI 能力
@@ -16,7 +16,7 @@
         -> 按 submit_id 查询 -> 验证/下载产物
 ```
 
-计划 7 个任务全部实现，由 192 个离线测试覆盖（无网络、无 `dreamina` 二进制、无付费调用）。
+计划 7 个任务全部实现，由 203 个离线测试覆盖（测试本身无网络、无付费调用）。
 计划 13 行完成门禁中 11 行为有实测证据的 `PASS` —— 含 Skill snapshot parity 固定到上游
 `full-aigc-skills/dreamina-skills@373bf7f`、严格 TRACE 13/13、plugin 校验、
 凭证零命中，以及**公开 marketplace 安装后经 `codex debug prompt-input` 验证发现全部 14 个 Skill**。
@@ -28,8 +28,8 @@ read_only_runtime_contract = observed or explicitly blocked
 paid_canary = separately approved or NOT_RUN
 ```
 
-两者当前都处于第二个析取项（`blocked` / `NOT_RUN`）——本机未安装 `dreamina` 二进制，
-也未执行过付费生成。`--plan-gate` 对正是这个状态报 `plan_gate = SATISFIED`：
+只读 runtime 契约已由本机 CLI 的 version 与 command-help 快照提升为 `observed`；
+付费 canary 仍为 `NOT_RUN`，未执行过付费生成。`--plan-gate` 对该状态报 `plan_gate = SATISFIED`：
 
 ```text
 $ python3 scripts/validate_distribution_v7.py --plan-gate     # exit 0

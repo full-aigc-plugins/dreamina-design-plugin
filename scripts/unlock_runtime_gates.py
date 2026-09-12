@@ -66,6 +66,49 @@ PLACEHOLDER_TOKENS = (
     "sample",
 )
 
+CAPABILITY_COMMANDS = (
+    "text2image",
+    "image2image",
+    "text2video",
+    "image2video",
+    "frames2video",
+    "multimodal2video",
+    "session",
+    "list_task",
+    "query_result",
+)
+
+
+def _is_valid_version_capture(version_text: str) -> bool:
+    """Accept semantic versions or the CLI's commit-based JSON build identity."""
+    if re.search(r"\d+\.\d+", version_text):
+        return True
+    try:
+        payload = json.loads(version_text)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    version = payload.get("version")
+    commit = payload.get("commit")
+    if not isinstance(version, str) or not isinstance(commit, str):
+        return False
+    if re.fullmatch(r"[0-9a-fA-F]{7,40}", commit) is None:
+        return False
+    return version in {commit, f"{commit}-dirty"}
+
+
+def _version_label(version_text: str) -> str:
+    """Extract a compact human-readable version label from captured output."""
+    try:
+        payload = json.loads(version_text)
+    except (json.JSONDecodeError, ValueError):
+        payload = None
+    if isinstance(payload, dict) and isinstance(payload.get("version"), str):
+        return payload["version"].strip()
+    parts = version_text.split()
+    return parts[-1] if parts else "unknown"
+
 
 class UnlockError(Exception):
     """Base class for unlock harness errors."""
@@ -123,7 +166,7 @@ class UnlockHarness:
             return False, f"cannot read captures: {exc}"
         if not version_text:
             return False, "cli-version.txt is empty"
-        if re.search(r"\d+\.\d+", version_text) is None:
+        if not _is_valid_version_capture(version_text):
             return False, f"cli-version.txt has no version-like token: {version_text!r}"
         if len(help_value) < 40:
             return False, f"cli-help.txt too short ({len(help_value)} chars)"
@@ -133,6 +176,21 @@ class UnlockHarness:
             return False, "cli-schema.json does not parse as JSON"
         if not isinstance(parsed, (dict, list)):
             return False, "cli-schema.json is not a JSON object or array"
+        if isinstance(parsed, dict) and parsed.get("source") == "command-help":
+            commands = parsed.get("commands")
+            if not isinstance(commands, dict) or not set(CAPABILITY_COMMANDS).issubset(commands):
+                return False, "command-help snapshot is missing required commands"
+            if any(
+                not isinstance(commands[name], str) or len(commands[name]) < 40
+                for name in CAPABILITY_COMMANDS
+            ):
+                return False, "command-help snapshot contains empty or truncated help"
+            readiness = self._verification_dir / "account-readiness.md"
+            readiness_text = readiness.read_text(encoding="utf-8") if readiness.is_file() else ""
+            if "Status: READY" not in readiness_text or "authenticated user: **yes**" not in readiness_text:
+                return False, "account-readiness.md is missing READY authentication evidence"
+            if "generation performed as part of this check: **no**" not in readiness_text:
+                return False, "account-readiness.md does not preserve the no-generation boundary"
         return True, "captures present and well-formed"
 
     def _validate_canary(self) -> tuple[bool, str]:
@@ -173,7 +231,21 @@ class UnlockHarness:
         binary = self._resolve_cli()
         version = self._run([binary, "--version"])
         help_text = self._run([binary, "--help"])
-        schema = self._run([binary, "schema"])
+        try:
+            schema = self._run([binary, "schema"])
+        except UnlockError as exc:
+            if 'unknown command "schema"' not in str(exc):
+                raise
+            command_help = {}
+            for command in CAPABILITY_COMMANDS:
+                if re.search(rf"(?m)^\s{{2}}{re.escape(command)}\s+", help_text):
+                    command_help[command] = self._run([binary, command, "--help"])
+            schema = json.dumps(
+                {"source": "command-help", "commands": command_help},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
         self._verification_dir.mkdir(parents=True, exist_ok=True)
         (self._verification_dir / "cli-version.txt").write_text(
             version + "\n", encoding="utf-8"
@@ -184,7 +256,7 @@ class UnlockHarness:
         (self._verification_dir / "cli-schema.json").write_text(
             schema + "\n", encoding="utf-8"
         )
-        nickname = version.split()[-1] if version.split() else "unknown"
+        nickname = _version_label(version)
         readiness_path = self._verification_dir / "account-readiness.md"
         if not readiness_path.exists():
             readiness_path.write_text(

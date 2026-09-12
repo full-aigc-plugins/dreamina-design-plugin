@@ -1,0 +1,5 @@
+{
+  "version": "ec1b9fa-dirty",
+  "commit": "ec1b9fa",
+  "build_time": "2026-09-09T09:09:35Z"
+}
