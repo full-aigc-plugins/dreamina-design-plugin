@@ -119,7 +119,12 @@ class VideoProjectStore:
             return project
 
     def write_version(
-        self, project_id: str, family: str, payload: Mapping[str, Any]
+        self,
+        project_id: str,
+        family: str,
+        payload: Mapping[str, Any],
+        *,
+        schema_name: str | None = None,
     ) -> dict[str, Any]:
         if FAMILY.fullmatch(family) is None:
             raise ValueError("invalid version family")
@@ -128,10 +133,16 @@ class VideoProjectStore:
             family_root = self.project_root(project_id) / family
             family_root.mkdir(mode=0o700, exist_ok=True)
             os.chmod(family_root, 0o700)
-            numbers = [int(path.stem[1:]) for path in family_root.glob("v[0-9][0-9][0-9].json")]
+            numbers = [
+                int(match.group(1))
+                for path in family_root.glob("v*.json")
+                if (match := re.fullmatch(r"v([0-9]{3,})", path.stem)) is not None
+            ]
             version = f"v{max(numbers, default=0) + 1:03d}"
             document = dict(payload)
             document["version"] = version
+            if schema_name is not None:
+                validate_contract(document, schema_name)
             self._atomic_write(family_root / f"{version}.json", document)
             return document
 

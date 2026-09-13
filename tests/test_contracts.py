@@ -94,6 +94,22 @@ class SchemaPresenceTests(unittest.TestCase):
 
 
 class ClosedSchemaTests(unittest.TestCase):
+    def test_video_project_policy_enums_are_exact(self) -> None:
+        schema = load_json(SCHEMAS_DIR / "video_project.schema.json")
+        self.assertEqual(
+            schema["properties"]["creative_mode"]["enum"],
+            ["authorized_replication", "original_redesign"],
+        )
+        self.assertEqual(
+            schema["properties"]["audio_policy"]["enum"],
+            [
+                "full_redesign",
+                "preserve_authorized_audio",
+                "subtitles_only",
+                "silent",
+            ],
+        )
+
     def test_each_schema_rejects_unknown_properties(self) -> None:
         for name in EXPECTED_SCHEMAS:
             schema = load_json(SCHEMAS_DIR / name)

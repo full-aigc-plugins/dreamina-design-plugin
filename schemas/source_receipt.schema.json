@@ -4,13 +4,14 @@
   "title": "Dreamina Source Receipt",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "project_id", "source_sha256", "size_bytes", "mime_type", "video_codec", "width", "height", "fps", "duration_seconds", "audio_streams", "approved_roots_digest", "staged_path", "intake_at"],
+  "required": ["schema_version", "version", "project_id", "source_sha256", "size_bytes", "mime_type", "video_codec", "width", "height", "fps", "duration_seconds", "audio_streams", "approved_roots_digest", "staged_path", "intake_at"],
   "properties": {
     "schema_version": {"type": "string", "const": "1.0"},
+    "version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
     "project_id": {"type": "string", "pattern": "^vp_[a-f0-9]{24}$"},
     "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "size_bytes": {"type": "integer", "minimum": 1},
-    "mime_type": {"type": "string", "enum": ["video/mp4", "video/quicktime", "video/webm", "video/x-matroska"]},
+    "mime_type": {"type": "string", "enum": ["video/mp4", "video/quicktime", "video/webm"]},
     "video_codec": {"type": "string", "minLength": 1},
     "width": {"type": "integer", "minimum": 1},
     "height": {"type": "integer", "minimum": 1},
@@ -24,8 +25,8 @@
         "required": ["codec", "channels", "sample_rate"],
         "properties": {
           "codec": {"type": "string", "minLength": 1},
-          "channels": {"type": "integer", "minimum": 0},
-          "sample_rate": {"type": "integer", "minimum": 0}
+          "channels": {"type": "integer", "minimum": 1},
+          "sample_rate": {"type": "integer", "minimum": 1}
         }
       }
     },

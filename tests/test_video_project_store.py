@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.json_contracts import ContractValidationError
 from scripts.video_project_store import ProjectStateConflictError, VideoProjectStore
 
 
@@ -31,6 +32,36 @@ class VideoProjectStoreTests(unittest.TestCase):
         self.assertEqual(project_root.stat().st_mode & 0o777, 0o700)
         self.assertEqual((project_root / "project.json").stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.store.get(project["project_id"]), project)
+
+    def test_create_accepts_only_authoritative_creative_and_audio_tokens(self) -> None:
+        for creative_mode in ("original_redesign", "authorized_replication"):
+            for audio_policy in (
+                "full_redesign",
+                "preserve_authorized_audio",
+                "subtitles_only",
+                "silent",
+            ):
+                with self.subTest(creative_mode=creative_mode, audio_policy=audio_policy):
+                    created = self.store.create(
+                        title="exact enums",
+                        creative_mode=creative_mode,
+                        audio_policy=audio_policy,
+                    )
+                    self.assertEqual(created["creative_mode"], creative_mode)
+                    self.assertEqual(created["audio_policy"], audio_policy)
+
+        for creative_mode, audio_policy in (
+            ("reference_faithful", "silent"),
+            ("original_redesign", "replace"),
+            ("original_redesign", "preserve"),
+        ):
+            with self.subTest(rejected=(creative_mode, audio_policy)):
+                with self.assertRaises(ContractValidationError):
+                    self.store.create(
+                        title="obsolete enums",
+                        creative_mode=creative_mode,
+                        audio_policy=audio_policy,
+                    )
 
     def test_transition_requires_expected_current_state(self) -> None:
         project = self.store.create(
