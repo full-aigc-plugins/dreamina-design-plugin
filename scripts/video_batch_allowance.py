@@ -87,10 +87,11 @@ class VideoBatchAllowance:
             ):
                 raise AllowanceAlreadyActivatedError("quote approval was already activated")
             approval_request = self._approval_request(quote_copy)
-            approval_bytes = self._canonical_bytes(approval_request)
-            if approver.confirm_video_batch(copy.deepcopy(approval_request)) != "native-video-batch-confirmed":
+            confirmation_request = copy.deepcopy(approval_request)
+            approval_bytes = self._canonical_bytes(confirmation_request)
+            if approver.confirm_video_batch(confirmation_request) != "native-video-batch-confirmed":
                 raise BatchScopeError("native whole-batch approval was not granted")
-            if self._canonical_bytes(approval_request) != approval_bytes:
+            if self._canonical_bytes(confirmation_request) != approval_bytes:
                 raise BatchScopeError("native approver changed the exact batch envelope")
             allowance_id = "ba_" + secrets.token_hex(16)
             timestamp = _now_iso()

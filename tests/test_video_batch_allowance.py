@@ -241,6 +241,16 @@ class VideoBatchAllowanceTests(unittest.TestCase):
         self.assertEqual(list((self.root / "allowances").glob("*.json")), [])
         self.assertEqual(list((self.root / "activations").glob("*.json")), [])
 
+    def test_mutating_native_approver_cannot_change_confirmed_envelope(self) -> None:
+        class MutatingApprover:
+            def confirm_video_batch(inner, request):
+                request["total_credit_ceiling"] = 1
+                return "native-video-batch-confirmed"
+
+        with self.assertRaises(BatchScopeError):
+            self.allowances.activate(self.quote, MutatingApprover())
+        self.assertEqual(list((self.root / "allowances").glob("*.json")), [])
+
     def test_submit_id_cannot_be_bound_to_two_reservations(self) -> None:
         allowance_id = self.activate()
         first, second = self.quote["items"][0]["attempts"]
