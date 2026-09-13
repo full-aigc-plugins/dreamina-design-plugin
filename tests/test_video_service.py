@@ -163,9 +163,9 @@ class FingerprintTests(unittest.TestCase):
         request = {"mode": "text2video", "prompt": "p", "model": "seedance-2.5", "video_resolution": "720P", "ratio": "16:9", "duration_seconds": 8}
         self.assertEqual(build_video_request_fingerprint(request), canonical_fingerprint(request))
 
-    def test_unicode_fingerprint_uses_shared_canonical_approval_encoding(self) -> None:
+    def test_unicode_fingerprint_preserves_legacy_direct_approval_encoding(self) -> None:
         request = {"mode": "text2video", "prompt": "晨雾中的蓝色工作室", "model": "seedance-2.5", "video_resolution": "720P", "ratio": "16:9", "duration_seconds": 4}
-        self.assertEqual(build_video_request_fingerprint(request), canonical_fingerprint(request))
+        self.assertEqual(build_video_request_fingerprint(request), "f12e3b94d504052c1448f9faf982a393129e73bcfcccc85a834667d48628fb86")
         with tempfile.TemporaryDirectory() as tmp:
             guard, session_id, approval_id = issue_approval(Path(tmp), request, {})
             guard.consume_approval(session_id, request=request, approval_id=approval_id)

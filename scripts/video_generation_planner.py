@@ -65,6 +65,11 @@ def validate_batch_quote(quote: Mapping[str, Any]) -> None:
     task_count = sum(len(item["attempts"]) for item in items)
     if quote["task_count"] != task_count:
         raise PlanningError("task_count does not match attempts")
+    if quote["reserved_retry_count"] != task_count - len(items):
+        raise PlanningError("reserved_retry_count does not match attempts")
+    target_duration = sum(int(item["attempts"][0]["request"]["duration_seconds"]) for item in items)
+    if quote["target_total_duration_seconds"] != target_duration:
+        raise PlanningError("target_total_duration_seconds does not match base requests")
     if quote["total_credit_ceiling"] != quote_total(items):
         raise PlanningError("total_credit_ceiling does not match attempts")
     for item in items:
@@ -144,12 +149,18 @@ class VideoGenerationPlanner:
             shots = design["payload"].get("shots")
         if not isinstance(shots, list) or not shots:
             raise PlanningError("design must contain at least one shot")
+        output_profile = design.get("output_profile")
+        if not isinstance(output_profile, Mapping) or output_profile.get("codec") != "h264":
+            raise PlanningError("output profile codec must be h264")
 
         items: list[dict[str, Any]] = []
         for shot in shots:
             if "retry_prompt" in shot:
                 raise PlanningError("free-form retry prompt is forbidden")
-            max_attempts = int(shot.get("max_attempts", 1))
+            raw_max_attempts = shot.get("max_attempts", 1)
+            if isinstance(raw_max_attempts, bool) or not isinstance(raw_max_attempts, int):
+                raise PlanningError("max_attempts must be an integer between 1 and 3")
+            max_attempts = raw_max_attempts
             if not 1 <= max_attempts <= 3:
                 raise PlanningError("max_attempts must be between 1 and 3")
             repairs = list(shot.get("repair_directives", []))
@@ -187,6 +198,10 @@ class VideoGenerationPlanner:
             "cost_basis": normalized_cost, "items": items,
             "item_count": len(items),
             "task_count": sum(len(item["attempts"]) for item in items),
+            "reserved_retry_count": sum(len(item["attempts"]) - 1 for item in items),
+            "target_total_duration_seconds": sum(
+                int(item["attempts"][0]["request"]["duration_seconds"]) for item in items
+            ),
             "total_credit_ceiling": quote_total(items),
             "quoted_at": normalized_cost["recorded_at"],
         }

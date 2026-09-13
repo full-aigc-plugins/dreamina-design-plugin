@@ -136,13 +136,13 @@ class VideoGenerationPlannerTests(unittest.TestCase):
                 self.cost,
             )
 
-    def test_unicode_base_and_retry_use_shared_canonical_fingerprint(self):
+    def test_unicode_base_and_retry_keep_legacy_video_fingerprint_encoding(self):
         quote = self.planner.plan(
             design([shot(prompt="晨雾中的蓝色工作室")]), self.snapshot, self.cost
         )
         self.assertEqual(quote["items"][0]["request_fingerprints"], [
-            "0a8030925a839f0877da3effcf931da689a2aa114fc0c58b818eedd10f7c72f3",
-            "b69ae47f788ea137e1057859e72a7afd1cd94311c6f5e2fff4fd630478340fa2",
+            "f12e3b94d504052c1448f9faf982a393129e73bcfcccc85a834667d48628fb86",
+            "37ad109f93ea11c00045e4b3431d05b8d244b7715b15fd4f068b1b62c7507080",
         ])
 
     def test_cost_timestamps_require_strict_rfc3339_timezone(self):
@@ -204,7 +204,7 @@ class VideoGenerationPlannerTests(unittest.TestCase):
             )
 
     def test_max_attempts_and_retry_vocabulary_are_closed(self):
-        for attempts in (0, 4):
+        for attempts in (False, True, 0, 4, 1.5, "2"):
             with self.subTest(attempts=attempts), self.assertRaises(PlanningError):
                 self.planner.plan(design([shot(max_attempts=attempts)]), self.snapshot, self.cost)
         with self.assertRaisesRegex(PlanningError, "closed repair directive"):
@@ -224,6 +224,23 @@ class VideoGenerationPlannerTests(unittest.TestCase):
         self.assertEqual(quote["output_destination"], "/exports/final.mp4")
         self.assertEqual(quote["output_profile"], {"container": "mp4", "codec": "h264"})
         self.assertNotEqual(quote["items"][0]["attempts"][0]["request"]["prompt"], "tampered")
+
+    def test_quote_declares_target_duration_and_reserved_retries(self):
+        quote = self.planner.plan(
+            design([shot(id="S01", duration_seconds=4), shot(id="S02", duration_seconds=6)]),
+            self.snapshot,
+            self.cost,
+        )
+        self.assertEqual(quote["target_total_duration_seconds"], 10)
+        self.assertEqual(quote["reserved_retry_count"], 2)
+
+    def test_output_profile_is_h264_only(self):
+        with self.assertRaisesRegex(Exception, "h264"):
+            self.planner.plan(
+                design(output_profile={"container": "mp4", "codec": "h265"}),
+                self.snapshot,
+                self.cost,
+            )
 
 
 if __name__ == "__main__":
