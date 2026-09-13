@@ -28,6 +28,11 @@ class JsonContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractValidationError, "unsafe schema name"):
             load_schema("../README.md")
 
+    def test_canonical_fingerprint_rejects_non_finite_numbers(self) -> None:
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value), self.assertRaises(ContractValidationError):
+                canonical_fingerprint({"value": value})
+
     def test_contract_rejects_unknown_nested_property(self) -> None:
         with self.assertRaises(ContractValidationError):
             validate_contract(
@@ -103,6 +108,28 @@ class JsonContractTests(unittest.TestCase):
                 ):
                     with self.subTest(payload=payload), self.assertRaises(ContractValidationError):
                         validate_contract(payload, "main.schema.json")
+
+    def test_contract_pattern_uses_json_schema_search_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            (root / "pattern.schema.json").write_text(
+                json.dumps({"type": "string", "pattern": "[A-Z]+"}),
+                encoding="utf-8",
+            )
+            with mock.patch("scripts.json_contracts.SCHEMAS_ROOT", root):
+                validate_contract("prefix-ABC-suffix", "pattern.schema.json")
+
+    def test_contract_rejects_non_finite_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            (root / "number.schema.json").write_text(
+                json.dumps({"type": "number"}),
+                encoding="utf-8",
+            )
+            with mock.patch("scripts.json_contracts.SCHEMAS_ROOT", root):
+                for value in (float("nan"), float("inf"), float("-inf")):
+                    with self.subTest(value=value), self.assertRaises(ContractValidationError):
+                        validate_contract(value, "number.schema.json")
 
 
 if __name__ == "__main__":

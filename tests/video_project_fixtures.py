@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def project_id() -> str: return "vp_0123456789abcdef01234567"
@@ -22,9 +26,18 @@ def run_mcp_initialize() -> dict[str, Any]:
     message = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
     result = subprocess.run(
         [sys.executable, "-m", "scripts.dreamina_mcp_server"],
+        cwd=ROOT,
         input=json.dumps(message) + "\n",
         capture_output=True,
         text=True,
+        timeout=10,
         check=False,
     )
-    return json.loads(result.stdout)
+    if result.returncode != 0:
+        raise AssertionError(
+            f"MCP initialize failed with exit code {result.returncode}: {result.stderr}"
+        )
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"MCP initialize returned invalid JSON: {result.stderr}") from exc

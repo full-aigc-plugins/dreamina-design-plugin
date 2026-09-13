@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any, Mapping
@@ -36,9 +37,16 @@ def load_schema(name: str) -> dict[str, Any]:
 
 def canonical_fingerprint(payload: Mapping[str, Any]) -> str:
     """Return the SHA-256 digest of a deterministic UTF-8 JSON encoding."""
-    encoded = json.dumps(
-        dict(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
+    try:
+        encoded = json.dumps(
+            dict(payload),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ContractValidationError("payload is not canonical JSON") from exc
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -56,6 +64,9 @@ def _validate(
     document: Mapping[str, Any],
     schema_name: str,
 ) -> None:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ContractValidationError(f"{path} must be a finite number")
+
     if "$ref" in schema:
         referenced, referenced_document, referenced_name = _resolve_ref(
             str(schema["$ref"]), document=document, schema_name=schema_name
@@ -138,7 +149,7 @@ def _validate(
             raise ContractValidationError(f"{path} is shorter than allowed")
         if len(value) > int(schema.get("maxLength", len(value))):
             raise ContractValidationError(f"{path} is longer than allowed")
-        if "pattern" in schema and re.fullmatch(str(schema["pattern"]), value) is None:
+        if "pattern" in schema and re.search(str(schema["pattern"]), value) is None:
             raise ContractValidationError(f"{path} does not match the required pattern")
 
     if _is_number(value):
@@ -226,4 +237,8 @@ def _type_label(expected: Any) -> str:
 
 
 def _is_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and (not isinstance(value, float) or math.isfinite(value))
+    )
