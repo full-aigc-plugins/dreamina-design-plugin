@@ -75,6 +75,10 @@ class VideoGenerationPlannerTests(unittest.TestCase):
         self.snapshot = snapshot()
         self.cost = {"kind": "operator_ceiling", "credit_ceiling": 7, "currency": "credits", "source": "operator:launch-budget", "recorded_at": "2026-09-14T01:00:00Z"}
 
+    def test_public_plan_rejects_fabricated_design_and_snapshot_mappings(self):
+        with self.assertRaises(TypeError):
+            self.planner.plan(design(), self.snapshot, self.cost)
+
     def test_modes_are_selected_deterministically(self):
         cases = [
             (shot(kind="establishing", references=[]), "text2video"),
