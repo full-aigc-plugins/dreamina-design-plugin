@@ -79,6 +79,41 @@ class VideoGenerationPlannerTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             self.planner.plan(design(), self.snapshot, self.cost)
 
+    def test_persisted_plan_rejects_forged_provider_evidence_before_store_read(self):
+        class Store:
+            reads = 0
+            def read_version(inner, *args, **kwargs):
+                inner.reads += 1
+                raise AssertionError("design must not be read before capability evidence passes")
+
+        class Provider:
+            def capture(inner):
+                return {"snapshot": self.snapshot, "identity_receipt": {"fabricated": True}}
+
+        store = Store()
+        planner = VideoGenerationPlanner(
+            project_store=store, capability_provider_factory=lambda: Provider(),
+            now=lambda: datetime(2026, 9, 14, 2, tzinfo=timezone.utc),
+        )
+        with self.assertRaisesRegex(PlanningError, "identity receipt"):
+            planner.plan("vp_" + "1" * 24, "v001", self.cost, generation={}, output_destination="/x.mp4", output_profile={"container": "mp4", "codec": "h264"})
+        self.assertEqual(store.reads, 0)
+
+    def test_persisted_plan_rejects_nonfinite_snapshot_before_store_read(self):
+        class Store:
+            reads = 0
+            def read_version(inner, *args, **kwargs):
+                inner.reads += 1
+                raise AssertionError("store read is forbidden")
+        class Provider:
+            def capture(inner):
+                return {"snapshot": {**self.snapshot, "poison": float("nan")}, "identity_receipt": {}}
+        store = Store()
+        planner = VideoGenerationPlanner(project_store=store, capability_provider_factory=lambda: Provider())
+        with self.assertRaisesRegex(PlanningError, "canonical JSON"):
+            planner.plan("vp_" + "1" * 24, "v001", self.cost, generation={}, output_destination="/x.mp4", output_profile={"container": "mp4", "codec": "h264"})
+        self.assertEqual(store.reads, 0)
+
     def test_modes_are_selected_deterministically(self):
         cases = [
             (shot(kind="establishing", references=[]), "text2video"),

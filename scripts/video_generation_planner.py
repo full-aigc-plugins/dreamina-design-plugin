@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from scripts.json_contracts import canonical_fingerprint, validate_contract
 from scripts.video_service import (
@@ -90,10 +91,10 @@ def validate_batch_quote(quote: Mapping[str, Any]) -> None:
 class VideoGenerationPlanner:
     """Materialize every base/retry request without approving or submitting it."""
 
-    def __init__(self, reference_policy: Any | None = None, *, project_store: Any | None = None, capability_provider: Any | None = None, now: Any | None = None, snapshot_max_age_seconds: int = 86400) -> None:
+    def __init__(self, reference_policy: Any | None = None, *, project_store: Any | None = None, capability_provider_factory: Callable[[], Any] | None = None, now: Any | None = None, snapshot_max_age_seconds: int = 86400) -> None:
         self._reference_policy = reference_policy
         self._project_store = project_store
-        self._capability_provider = capability_provider
+        self._capability_provider_factory = capability_provider_factory
         self._now = now or (lambda: datetime.now(timezone.utc))
         if isinstance(snapshot_max_age_seconds, bool) or not isinstance(snapshot_max_age_seconds, int) or snapshot_max_age_seconds < 1:
             raise ValueError("snapshot_max_age_seconds must be a positive integer")
@@ -236,14 +237,12 @@ class VideoGenerationPlanner:
         """Plan from one safely read committed design and its current evidence."""
         if self._project_store is None:
             raise PlanningError("persisted planning requires a VideoProjectStore")
-        if self._capability_provider is None:
+        if self._capability_provider_factory is None:
             raise PlanningError("production planning requires a trusted capability provider")
-        from scripts.trusted_capability_provider import TrustedCapabilityProvider
-        if not isinstance(self._capability_provider, TrustedCapabilityProvider):
-            raise PlanningError("production planning requires TrustedCapabilityProvider")
         try:
-            evidence = json.loads(json.dumps(self._capability_provider.capture(), ensure_ascii=False, allow_nan=False))
-        except (TypeError, ValueError) as exc:
+            provider = self._capability_provider_factory()
+            evidence = json.loads(json.dumps(provider.capture(), ensure_ascii=False, allow_nan=False))
+        except (AttributeError, TypeError, ValueError) as exc:
             raise PlanningError("trusted capability evidence is not canonical JSON") from exc
         if not isinstance(evidence, Mapping) or set(evidence) != {"snapshot", "identity_receipt"}:
             raise PlanningError("trusted capability evidence must be complete and closed")
@@ -251,6 +250,7 @@ class VideoGenerationPlanner:
         receipt = evidence["identity_receipt"]
         if not isinstance(snapshot, Mapping) or not isinstance(receipt, Mapping):
             raise PlanningError("trusted capability evidence is invalid")
+        self._validate_snapshot(snapshot)
         receipt_core = {
             "cli_version": snapshot.get("cli_version"),
             "cli_commit": snapshot.get("cli_commit"),
@@ -262,6 +262,16 @@ class VideoGenerationPlanner:
             "cli_version", "cli_commit", "captured_at", "snapshot_fingerprint",
         }:
             raise PlanningError("capability identity receipt does not bind the snapshot")
+        if (
+            not isinstance(receipt.get("cli_path"), str)
+            or not receipt["cli_path"].startswith("/")
+            or re.fullmatch(r"[a-f0-9]{64}", str(receipt.get("cli_sha256"))) is None
+            or any(isinstance(receipt.get(key), bool) or not isinstance(receipt.get(key), int) for key in ("device", "inode", "size_bytes", "mode", "owner_uid"))
+            or receipt["device"] < 0 or receipt["inode"] < 1 or receipt["size_bytes"] < 1
+            or receipt["owner_uid"] not in {0, os.getuid()}
+            or receipt["mode"] & 0o022
+        ):
+            raise PlanningError("capability identity receipt has unsafe CLI identity fields")
         from scripts.video_redesign_service import VideoRedesignService
         from scripts.video_rights_service import VideoRightsService
 

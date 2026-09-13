@@ -57,17 +57,32 @@ class ReferencePolicy:
             raise ValueError("reference size limits must be positive")
         self._max_image_bytes = max_image_bytes
         self._max_media_bytes = max_media_bytes
-        self._root_handles = tuple(self._pin_directory(root, private=False) for root in self._roots)
+        handles: list[int] = []
+        self._root_handles: tuple[int, ...] = ()
+        self._durable_handle = None
         self._durable_root = Path(durable_root).resolve() if durable_root is not None else None
-        if self._durable_root is not None:
-            self._durable_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-            self._durable_handle = self._pin_directory(self._durable_root, private=True)
-        else:
-            self._durable_handle = None
-        self._staging_root = Path(tempfile.mkdtemp(prefix="dreamina-references-"))
-        os.chmod(self._staging_root, 0o700)
-        atexit.register(shutil.rmtree, self._staging_root, True)
-        self._finalizer = weakref.finalize(self, shutil.rmtree, self._staging_root, True)
+        try:
+            for root in self._roots:
+                handles.append(self._pin_directory(root, private=False))
+            self._root_handles = tuple(handles)
+            if self._durable_root is not None:
+                self._durable_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+                self._durable_handle = self._pin_directory(self._durable_root, private=True)
+            self._staging_root = Path(tempfile.mkdtemp(prefix="dreamina-references-"))
+            os.chmod(self._staging_root, 0o700)
+            atexit.register(shutil.rmtree, self._staging_root, True)
+            self._finalizer = weakref.finalize(self, shutil.rmtree, self._staging_root, True)
+        except Exception:
+            self._root_handles = ()
+            for handle in reversed(handles):
+                try:
+                    os.close(handle)
+                except OSError:
+                    pass
+            if self._durable_handle is not None:
+                os.close(self._durable_handle)
+                self._durable_handle = None
+            raise
 
     def validate(self, reference: Mapping[str, Any]) -> dict[str, Any]:
         normalized, resolved, source_fd, source_stat = self._inspect(reference)
@@ -87,24 +102,26 @@ class ReferencePolicy:
         if self._durable_root is None:
             raise ReferencePolicyError("durable_root is required for quote references")
         normalized, resolved, source_fd, source_stat = self._inspect(reference)
-        root_fd = self._verified_durable_handle()
-        target_name = f"{normalized['sha256']}{resolved.suffix.lower()}"
+        root_fd = -1
+        temp_name: str | None = None
         try:
-            winner_fd = os.open(target_name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=root_fd)
-        except FileNotFoundError:
-            winner_fd = -1
-        except OSError as exc:
-            os.close(source_fd)
-            raise ReferencePolicyError("durable reference collision is unsafe") from exc
-        if winner_fd >= 0:
-            os.close(source_fd)
-            self._verify_winner(winner_fd, target_name, normalized)
-            normalized["path"] = str(self._durable_root / target_name)
-            return normalized
-        temp_name = f".reference-{uuid.uuid4().hex}"
-        temp_fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o400, dir_fd=root_fd)
-        try:
-            with os.fdopen(source_fd, "rb") as reader, os.fdopen(temp_fd, "wb") as writer:
+            root_fd = self._verified_durable_handle()
+            target_name = f"{normalized['sha256']}{resolved.suffix.lower()}"
+            try:
+                winner_fd = os.open(target_name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=root_fd)
+            except FileNotFoundError:
+                winner_fd = -1
+            except OSError as exc:
+                raise ReferencePolicyError("durable reference collision is unsafe") from exc
+            if winner_fd >= 0:
+                self._verify_winner(winner_fd, target_name, normalized)
+                normalized["path"] = str(self._durable_root / target_name)
+                return normalized
+            temp_name = f".reference-{uuid.uuid4().hex}"
+            temp_fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o400, dir_fd=root_fd)
+            owned_source_fd = source_fd
+            source_fd = -1
+            with os.fdopen(owned_source_fd, "rb") as reader, os.fdopen(temp_fd, "wb") as writer:
                 self._copy_stream(reader, writer)
                 writer.flush()
                 os.fsync(writer.fileno())
@@ -121,19 +138,25 @@ class ReferencePolicy:
             except FileExistsError:
                 pass
             os.fsync(root_fd)
-        finally:
             try:
                 os.unlink(temp_name, dir_fd=root_fd)
             except FileNotFoundError:
                 pass
-        try:
+            temp_name = None
             winner_fd = os.open(target_name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=root_fd)
+            self._verify_winner(winner_fd, target_name, normalized)
+            normalized["path"] = str(self._durable_root / target_name)
+            return normalized
         except OSError as exc:
-            raise ReferencePolicyError("durable reference collision is unsafe") from exc
-        self._verify_winner(winner_fd, target_name, normalized)
-        target = self._durable_root / target_name
-        normalized["path"] = str(target)
-        return normalized
+            raise ReferencePolicyError("durable reference publication failed") from exc
+        finally:
+            if temp_name is not None and root_fd >= 0:
+                try:
+                    os.unlink(temp_name, dir_fd=root_fd)
+                except FileNotFoundError:
+                    pass
+            if source_fd >= 0:
+                os.close(source_fd)
 
     def _verify_winner(self, winner_fd: int, target_name: str, normalized: Mapping[str, Any]) -> None:
         try:
@@ -221,7 +244,8 @@ class ReferencePolicy:
 
     def close(self) -> None:
         self._finalizer()
-        for handle in self._root_handles:
+        handles, self._root_handles = self._root_handles, ()
+        for handle in handles:
             try:
                 os.close(handle)
             except OSError:
