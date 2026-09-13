@@ -239,8 +239,11 @@ class VideoGenerationPlanner:
             raise PlanningError("persisted planning requires a VideoProjectStore")
         if self._capability_provider_factory is None:
             raise PlanningError("production planning requires a trusted capability provider")
+        provider = self._capability_provider_factory()
+        from scripts.trusted_capability_provider import TrustedCapabilityProvider
+        if not isinstance(provider, TrustedCapabilityProvider):
+            raise PlanningError("production planning requires TrustedCapabilityProvider")
         try:
-            provider = self._capability_provider_factory()
             evidence = json.loads(json.dumps(provider.capture(), ensure_ascii=False, allow_nan=False))
         except (AttributeError, TypeError, ValueError) as exc:
             raise PlanningError("trusted capability evidence is not canonical JSON") from exc

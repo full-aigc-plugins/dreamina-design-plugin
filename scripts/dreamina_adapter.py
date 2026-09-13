@@ -366,7 +366,7 @@ class DreaminaAdapter:
             modes = schema_payload.get("modes")
             if isinstance(modes, list):
                 snapshot["modes"] = modes
-            for key in ("models", "resolutions", "ratios", "durations", "mode_limits"):
+            for key in ("models", "resolutions", "ratios", "durations", "mode_limits", "pricing"):
                 if key in schema_payload:
                     snapshot[key] = schema_payload[key]
         return snapshot

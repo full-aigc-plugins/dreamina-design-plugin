@@ -95,7 +95,7 @@ class VideoGenerationPlannerTests(unittest.TestCase):
             project_store=store, capability_provider_factory=lambda: Provider(),
             now=lambda: datetime(2026, 9, 14, 2, tzinfo=timezone.utc),
         )
-        with self.assertRaisesRegex(PlanningError, "identity receipt"):
+        with self.assertRaisesRegex(PlanningError, "TrustedCapabilityProvider"):
             planner.plan("vp_" + "1" * 24, "v001", self.cost, generation={}, output_destination="/x.mp4", output_profile={"container": "mp4", "codec": "h264"})
         self.assertEqual(store.reads, 0)
 
@@ -110,7 +110,7 @@ class VideoGenerationPlannerTests(unittest.TestCase):
                 return {"snapshot": {**self.snapshot, "poison": float("nan")}, "identity_receipt": {}}
         store = Store()
         planner = VideoGenerationPlanner(project_store=store, capability_provider_factory=lambda: Provider())
-        with self.assertRaisesRegex(PlanningError, "canonical JSON"):
+        with self.assertRaisesRegex(PlanningError, "TrustedCapabilityProvider"):
             planner.plan("vp_" + "1" * 24, "v001", self.cost, generation={}, output_destination="/x.mp4", output_profile={"container": "mp4", "codec": "h264"})
         self.assertEqual(store.reads, 0)
 
