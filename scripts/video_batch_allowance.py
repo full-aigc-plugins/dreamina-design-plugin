@@ -400,8 +400,11 @@ class VideoBatchAllowance:
         ]
         if len(fingerprints) != len(set(fingerprints)):
             raise BatchScopeError("request fingerprints must be unique across the approved batch")
-        if (quote["creative_mode"] == "authorized_replication") != (quote["rights_receipt_id"] is not None):
-            raise BatchScopeError("rights receipt is not bound to the selected creative mode")
+        if quote["creative_mode"] == "authorized_replication":
+            if not isinstance(quote.get("rights_receipt_id"), str) or not isinstance(quote.get("rights_receipt_fingerprint"), str):
+                raise BatchScopeError("replication quote lacks exact rights receipt binding")
+        elif "rights_receipt_id" in quote or "rights_receipt_fingerprint" in quote:
+            raise BatchScopeError("original redesign must not carry rights receipt fields")
 
     @staticmethod
     def _flatten_requests(quote: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -420,35 +423,55 @@ class VideoBatchAllowance:
 
     @classmethod
     def _approval_request(cls, quote: Mapping[str, Any]) -> dict[str, Any]:
-        return {
+        request = {
             "action": "activate-video-batch-allowance", "project_id": quote["project_id"],
             "quote_version": quote["quote_version"], "quote_fingerprint": quote["quote_fingerprint"],
             "source_sha256": quote["source_sha256"], "analysis_version": quote["analysis_version"],
             "design_version": quote["design_version"], "design_fingerprint": quote["design_fingerprint"],
-            "rights_receipt_id": quote["rights_receipt_id"], "rights_binding_fingerprint": cls._rights_binding(quote),
             "creative_mode": quote["creative_mode"], "audio_policy": quote["audio_policy"],
+            "machine_fingerprint": quote["machine_fingerprint"],
+            "capability_snapshot_fingerprint": quote["capability_snapshot_fingerprint"],
             "shot_count": quote["item_count"], "task_count": quote["task_count"],
             "reserved_retry_count": quote["reserved_retry_count"],
+            "target_total_duration_seconds": quote["target_total_duration_seconds"],
             "total_credit_ceiling": quote["total_credit_ceiling"], "destination": quote["output_destination"],
             "cost_basis": copy.deepcopy(quote["cost_basis"]),
+            "quoted_at": quote["quoted_at"],
             "output_profile": copy.deepcopy(quote["output_profile"]), "items": copy.deepcopy(quote["items"]),
         }
+        if quote["creative_mode"] == "authorized_replication":
+            request["rights_receipt_id"] = quote["rights_receipt_id"]
+            request["rights_receipt_fingerprint"] = quote["rights_receipt_fingerprint"]
+        return request
 
     @staticmethod
-    def _rights_binding(quote: Mapping[str, Any]) -> str:
-        explicit = quote.get("rights_receipt_fingerprint")
-        if isinstance(explicit, str):
-            return explicit
-        return canonical_fingerprint({
-            "creative_mode": quote.get("creative_mode"),
-            "design_fingerprint": quote.get("design_fingerprint"),
-            "project_id": quote.get("project_id"),
-            "rights_receipt_id": quote.get("rights_receipt_id"),
-            "source_sha256": quote.get("source_sha256"),
-        })
+    def _rights_binding(quote: Mapping[str, Any]) -> str | None:
+        value = quote.get("rights_receipt_fingerprint")
+        return value if isinstance(value, str) else None
 
     def _load_allowance(self, allowance_id: str, *, key: bytes) -> dict[str, Any]:
-        return self._load_path(self._allowance_path(allowance_id), key=key)
+        self._allowance_path(allowance_id)
+        return self._load_name(f"{allowance_id}.json", key=key)
+
+    def _load_name(self, name: str, *, key: bytes) -> dict[str, Any]:
+        if re.fullmatch(r"ba_[a-f0-9]{32}\.json", name) is None:
+            raise BatchScopeError("unsafe allowance file name")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(name, flags, dir_fd=self._allowances_fd)
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or stat.S_IMODE(before.st_mode) != 0o600:
+                raise BatchScopeError("allowance file ownership, type, or mode is unsafe")
+            with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            current = os.stat(name, dir_fd=self._allowances_fd, follow_symlinks=False)
+            if (before.st_dev, before.st_ino) != (current.st_dev, current.st_ino):
+                raise BatchScopeError("allowance path changed during read")
+        except BatchScopeError:
+            raise
+        except (OSError, json.JSONDecodeError) as exc:
+            raise BatchScopeError("allowance durable state is missing or corrupt") from exc
+        return self._validate_loaded(payload, key=key)
 
     def _load_path(self, path: Path, *, key: bytes) -> dict[str, Any]:
         try:
@@ -464,6 +487,9 @@ class VideoBatchAllowance:
             raise
         except (OSError, json.JSONDecodeError) as exc:
             raise BatchScopeError("allowance durable state is missing or corrupt") from exc
+        return self._validate_loaded(payload, key=key)
+
+    def _validate_loaded(self, payload: Any, *, key: bytes) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise BatchScopeError("allowance durable state is corrupt")
         seal = payload.get("seal")
@@ -526,8 +552,7 @@ class VideoBatchAllowance:
             "project_id": quote["project_id"], "quote_version": quote["quote_version"],
             "quote_fingerprint": quote["quote_fingerprint"], "source_sha256": quote["source_sha256"],
             "analysis_version": quote["analysis_version"], "design_version": quote["design_version"],
-            "design_fingerprint": quote["design_fingerprint"], "rights_receipt_id": quote["rights_receipt_id"],
-            "rights_binding_fingerprint": self._rights_binding(quote), "creative_mode": quote["creative_mode"],
+            "design_fingerprint": quote["design_fingerprint"], "creative_mode": quote["creative_mode"],
             "audio_policy": quote["audio_policy"], "destination": quote["output_destination"],
             "output_profile": quote["output_profile"], "capability_snapshot_fingerprint": quote["capability_snapshot_fingerprint"],
             "cost_basis": quote["cost_basis"], "total_credit_ceiling": quote["total_credit_ceiling"],
@@ -535,34 +560,104 @@ class VideoBatchAllowance:
             "reserved_retry_count": quote["reserved_retry_count"],
             "requests": self._flatten_requests(quote),
         }
+        if quote["creative_mode"] == "authorized_replication":
+            expected["rights_receipt_id"] = quote["rights_receipt_id"]
+            expected["rights_receipt_fingerprint"] = quote["rights_receipt_fingerprint"]
         if any(allowance.get(field) != value for field, value in expected.items()):
             raise BatchScopeError("allowance differs from the trusted immutable quote")
 
-    def _atomic_write(self, path: Path, payload: Mapping[str, Any], *, allowance_id: str, operation: str) -> None:
-        descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    def _atomic_write_at(self, directory_fd: int, name: str, payload: Mapping[str, Any], *, allowance_id: str, operation: str) -> None:
+        if re.fullmatch(r"(?:ba_[a-f0-9]{32}|[a-f0-9]{64})\.json", name) is None:
+            raise BatchScopeError("unsafe durable file name")
+        temporary = f".{name}.{secrets.token_hex(8)}"
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=directory_fd)
         replaced = False
         try:
             os.fchmod(descriptor, 0o600)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(dict(payload), handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, path)
+            encoded = self._canonical_bytes(payload)
+            os.write(descriptor, encoded)
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = -1
+            os.replace(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
             replaced = True
-            os.chmod(path, 0o600)
-            directory_fd = os.open(path.parent, os.O_RDONLY)
+            os.fsync(directory_fd)
+            verify = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
             try:
-                os.fsync(directory_fd)
+                metadata = os.fstat(verify)
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600:
+                    raise OSError("published durable file identity is unsafe")
             finally:
-                os.close(directory_fd)
+                os.close(verify)
         except Exception as exc:
+            if descriptor >= 0:
+                os.close(descriptor)
             try:
-                os.unlink(temporary)
+                os.unlink(temporary, dir_fd=directory_fd)
             except FileNotFoundError:
                 pass
             if replaced:
                 raise AllowanceCommitIndeterminateError(allowance_id, operation) from exc
             raise
+
+    def _atomic_write(self, path: Path, payload: Mapping[str, Any], *, allowance_id: str, operation: str) -> None:
+        directory_fd = self._allowances_fd if path.parent == self._allowances else self._activations_fd
+        self._atomic_write_at(directory_fd, path.name, payload, allowance_id=allowance_id, operation=operation)
+
+    def _revalidate_rights(self, quote: Mapping[str, Any]) -> None:
+        if quote["creative_mode"] == "original_redesign":
+            return
+        if self._project_store is None or self._rights_service is None:
+            raise BatchScopeError("authorized replication requires trusted rights revalidation")
+        try:
+            receipt = self._project_store.find_version_by_field(
+                quote["project_id"], "rights_receipt", field="receipt_id",
+                value=quote["rights_receipt_id"], schema_name="video_rights_receipt.schema.json",
+            )
+            if canonical_fingerprint(receipt) != quote["rights_receipt_fingerprint"]:
+                raise BatchScopeError("durable rights receipt fingerprint changed")
+            design = self._project_store.read_version(
+                quote["project_id"], "redesign", quote["design_version"], "video_redesign.schema.json"
+            )
+            payload = design["payload"]
+            if design["design_fingerprint"] != quote["design_fingerprint"]:
+                raise BatchScopeError("durable design fingerprint changed")
+            self._rights_service.assert_scope(receipt, required=set(payload["preserve"]), binding={
+                "project_id": quote["project_id"], "source_sha256": quote["source_sha256"],
+                "creative_mode": quote["creative_mode"], "design_fingerprint": quote["design_fingerprint"],
+                "required_media": payload["required_media"], "purpose": payload["purpose"],
+                "audience": payload["audience"], "territory": payload["territory"],
+            })
+        except BatchScopeError:
+            raise
+        except Exception as exc:
+            raise BatchScopeError("rights receipt no longer covers exact batch scope") from exc
+
+    def _allowance_names(self) -> list[str]:
+        return sorted(name for name in os.listdir(self._allowances_fd) if re.fullmatch(r"ba_[a-f0-9]{32}\.json", name))
+
+    def _all_allowances(self, key: bytes) -> list[dict[str, Any]]:
+        return [self._load_name(name, key=key) for name in self._allowance_names()]
+
+    @staticmethod
+    def _exists_at(directory_fd: int, name: str) -> bool:
+        try:
+            os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            return True
+        except FileNotFoundError:
+            return False
+
+    def _assert_root_identity(self) -> None:
+        current = self._root.lstat()
+        pinned = os.fstat(self._root_fd)
+        if (
+            not stat.S_ISDIR(current.st_mode)
+            or current.st_uid != os.getuid()
+            or stat.S_IMODE(current.st_mode) != 0o700
+            or (current.st_dev, current.st_ino) != (pinned.st_dev, pinned.st_ino)
+            or (pinned.st_dev, pinned.st_ino) != (self._root_identity.st_dev, self._root_identity.st_ino)
+        ):
+            raise BatchScopeError("allowance root identity changed")
 
     @staticmethod
     def _canonical_bytes(payload: Mapping[str, Any]) -> bytes:
@@ -570,14 +665,14 @@ class VideoBatchAllowance:
 
     @contextmanager
     def _exclusive_lock(self) -> Iterator[None]:
-        lock_path = self._root / ".allowance.lock"
-        with open(lock_path, "a+b") as handle:
-            os.chmod(lock_path, 0o600)
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        self._assert_root_identity()
+        fcntl.flock(self._lock_fd, fcntl.LOCK_EX)
+        try:
+            self._assert_root_identity()
+            yield
+            self._assert_root_identity()
+        finally:
+            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
 
 
 __all__ = [
