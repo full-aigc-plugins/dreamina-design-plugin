@@ -16,8 +16,36 @@
     "creative_mode": {"type": "string", "enum": ["authorized_replication", "original_redesign"]},
     "rights_receipt_id": {"type": ["string", "null"], "pattern": "^rr_[a-f0-9]{24}$"},
     "design_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-    "payload": {"type": "object"},
-    "similarity_audit": {"type": "object", "additionalProperties": false, "required": ["preserved", "replaced"], "properties": {"preserved": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}, "replaced": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}}},
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "creative_mode", "machine_fingerprint", "preserve", "replacements", "audience", "format", "target_duration_seconds", "aspect_ratio", "platform", "concept", "cast", "settings", "palette", "visual_style", "dialogue", "narration", "music", "sound_intent", "shots", "continuity", "author"],
+      "properties": {
+        "schema_version": {"type": "string", "const": "1.0"},
+        "creative_mode": {"type": "string", "enum": ["authorized_replication", "original_redesign"]},
+        "machine_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "preserve": {"type": "array", "uniqueItems": true, "items": {"type": "string", "enum": ["timing", "shot_sizes", "camera_moves", "rhythm", "transitions", "audio_beats", "likeness", "voice", "dialogue", "music", "brand", "artwork", "distinctive_props"]}},
+        "replacements": {"type": "object", "additionalProperties": false, "required": ["likeness", "voice", "dialogue", "music", "brand", "artwork", "settings", "costume", "distinctive_props"], "properties": {"likeness": {"type": "string", "minLength": 1}, "voice": {"type": "string", "minLength": 1}, "dialogue": {"type": "string", "minLength": 1}, "music": {"type": "string", "minLength": 1}, "brand": {"type": "string", "minLength": 1}, "artwork": {"type": "string", "minLength": 1}, "settings": {"type": "string", "minLength": 1}, "costume": {"type": "string", "minLength": 1}, "distinctive_props": {"type": "string", "minLength": 1}}},
+        "audience": {"type": "string", "minLength": 1},
+        "format": {"type": "string", "minLength": 1},
+        "target_duration_seconds": {"type": "number", "minimum": 0.001},
+        "aspect_ratio": {"type": "string", "minLength": 1},
+        "platform": {"type": "string", "minLength": 1},
+        "concept": {"type": "string", "minLength": 1},
+        "cast": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "settings": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "palette": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "visual_style": {"type": "string", "minLength": 1},
+        "dialogue": {"type": "array", "items": {"type": "string"}},
+        "narration": {"type": "array", "items": {"type": "string"}},
+        "music": {"type": "string", "minLength": 1},
+        "sound_intent": {"type": "string", "minLength": 1},
+        "shots": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["id", "prompt"], "properties": {"id": {"type": "string", "pattern": "^S[0-9]{2,}$"}, "prompt": {"type": "string", "minLength": 1}}}},
+        "continuity": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "author": {"type": "string", "minLength": 1}
+      }
+    },
+    "similarity_audit": {"type": "object", "additionalProperties": false, "required": ["preserved", "replaced"], "properties": {"preserved": {"type": "array", "uniqueItems": true, "items": {"type": "string", "enum": ["timing", "shot_sizes", "camera_moves", "rhythm", "transitions", "audio_beats", "likeness", "voice", "dialogue", "music", "brand", "artwork", "distinctive_props"]}}, "replaced": {"type": "array", "uniqueItems": true, "items": {"type": "string", "enum": ["timing", "shot_sizes", "camera_moves", "rhythm", "transitions", "audio_beats", "likeness", "voice", "dialogue", "music", "brand", "artwork", "distinctive_props"]}}}},
     "committed_at": {"type": "string", "minLength": 1}
   }
 }

@@ -8,6 +8,10 @@ from typing import Any, Callable, Mapping
 
 from scripts.json_contracts import ContractValidationError, canonical_fingerprint, validate_contract
 from scripts.video_project_store import VideoProjectStore
+from scripts.video_project_store import (
+    VersionCommitIndeterminateError,
+    VersionReconciliationError,
+)
 
 
 REUSE_DIMENSIONS = frozenset({
@@ -48,7 +52,15 @@ class VideoRightsService:
         self._confirmer = native_confirmer
         self._now = now
 
-    def record_assertion(self, project_id: str, source_receipt: Mapping[str, Any], design_candidate: Mapping[str, Any], assertion: Mapping[str, Any]) -> dict[str, Any]:
+    def record_assertion(
+        self,
+        project_id: str,
+        source_receipt: Mapping[str, Any],
+        design_candidate: Mapping[str, Any],
+        assertion: Mapping[str, Any],
+        *,
+        indeterminate_commit: VersionCommitIndeterminateError | None = None,
+    ) -> dict[str, Any]:
         project = self._store.get(project_id)
         source_sha256 = source_receipt.get("source_sha256")
         fingerprint = design_candidate.get("design_fingerprint")
@@ -61,6 +73,11 @@ class VideoRightsService:
             raise ContractValidationError("rights assertion is not bound to this replication project")
         if design_candidate.get("creative_mode") != "authorized_replication":
             raise ContractValidationError("rights assertion requires an authorized replication candidate")
+        candidate_core = {
+            key: value for key, value in design_candidate.items() if key != "design_fingerprint"
+        }
+        if canonical_fingerprint(candidate_core) != fingerprint:
+            raise ContractValidationError("design candidate changed after fingerprinting")
         if re.fullmatch(r"[a-f0-9]{64}", str(source_sha256)) is None or re.fullmatch(r"[a-f0-9]{64}", str(fingerprint)) is None:
             raise ContractValidationError("rights assertion requires exact source and candidate fingerprints")
         required = {"declarant", "rights_basis", "evidence", "allowed_media", "allowed_reuse", "purpose", "audience", "territory", "expires_at"}
@@ -73,6 +90,10 @@ class VideoRightsService:
             "source_sha256": source_sha256, "creative_mode": "authorized_replication",
             "design_fingerprint": fingerprint, **dict(assertion), "disclaimer": DISCLAIMER,
         }
+        if indeterminate_commit is not None:
+            return self._reconcile_indeterminate(
+                project_id, indeterminate_commit, confirmation_request
+            )
         # Validate before showing or persisting by supplying only the storage-generated fields.
         provisional = {
             "schema_version": "1.0", "version": "v001",
@@ -86,6 +107,47 @@ class VideoRightsService:
             raise RightsScopeError("native rights confirmation was not granted")
         provisional["native_confirmation"] = confirmation
         return self._store.write_version(project_id, "rights_receipt", {key: value for key, value in provisional.items() if key != "version"}, schema_name="video_rights_receipt.schema.json")
+
+    def _reconcile_indeterminate(
+        self,
+        project_id: str,
+        commit: VersionCommitIndeterminateError,
+        confirmation_request: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        expected_path = (
+            self._store.project_root(project_id)
+            / "rights_receipt"
+            / f"{commit.version}.json"
+        )
+        if (
+            commit.project_id != project_id
+            or commit.family != "rights_receipt"
+            or commit.path != expected_path
+        ):
+            raise VersionReconciliationError(
+                project_id=project_id,
+                family="rights_receipt",
+                version=commit.version,
+                path=expected_path,
+                reason="retry does not identify the exact indeterminate rights commit",
+            )
+        receipt = self._store.reconcile_version(
+            project_id,
+            "rights_receipt",
+            commit.version,
+            commit.payload_fingerprint,
+            "video_rights_receipt.schema.json",
+        )
+        expected = {key: value for key, value in confirmation_request.items() if key != "action"}
+        if any(receipt.get(key) != value for key, value in expected.items()):
+            raise VersionReconciliationError(
+                project_id=project_id,
+                family="rights_receipt",
+                version=commit.version,
+                path=expected_path,
+                reason="retry assertion does not match the committed rights receipt",
+            )
+        return receipt
 
     def assert_scope(self, receipt: Mapping[str, Any], *, required: set[str], binding: Mapping[str, Any]) -> None:
         try:

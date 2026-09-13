@@ -6,7 +6,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.video_project_store import VideoProjectStore
+from scripts.json_contracts import ContractValidationError
+from scripts.video_project_store import (
+    VersionCommitIndeterminateError,
+    VersionReconciliationError,
+    VideoProjectStore,
+)
 from scripts.video_rights_service import VideoRightsService
 from scripts.video_redesign_service import (
     REUSE_DIMENSIONS,
@@ -87,6 +92,12 @@ class VideoRedesignServiceTests(unittest.TestCase):
         with self.assertRaises(RedesignBindingError):
             self.redesign.prepare_candidate(self.project_id, "v001", self.payload(machine_fingerprint="0" * 64))
 
+    def test_candidate_payload_is_closed_before_rights_confirmation(self):
+        with self.assertRaises(ContractValidationError):
+            self.redesign.prepare_candidate(
+                self.project_id, "v001", self.payload(unreviewed_extension=True)
+            )
+
     def test_candidate_is_not_persisted_and_mutation_invalidates_commit(self):
         candidate = self.redesign.prepare_candidate(self.project_id, "v001", self.payload())
         self.assertFalse((self.store.project_root(self.project_id) / "redesign").exists())
@@ -102,6 +113,61 @@ class VideoRedesignServiceTests(unittest.TestCase):
         self.assertEqual(set(preserved) | set(replaced), REUSE_DIMENSIONS)
         self.assertFalse(set(preserved) & set(replaced))
         self.assertEqual(len(preserved) + len(replaced), len(REUSE_DIMENSIONS))
+
+    def test_indeterminate_redesign_commit_reconciles_without_allocating_v002(self):
+        candidate = self.redesign.prepare_candidate(self.project_id, "v001", self.payload())
+        original = self.store._atomic_write
+        captured = None
+
+        def fail_after_publish(path, payload, *, indeterminate_error=None):
+            nonlocal captured
+            original(path, payload, indeterminate_error=None)
+            captured = indeterminate_error
+            raise indeterminate_error
+
+        self.store._atomic_write = fail_after_publish
+        with self.assertRaises(VersionCommitIndeterminateError):
+            self.redesign.commit_version(candidate, rights_receipt_id=None)
+        self.store._atomic_write = original
+        design = self.redesign.commit_version(
+            candidate, rights_receipt_id=None, indeterminate_commit=captured
+        )
+        self.assertEqual(design["version"], "v001")
+        versions = self.store.project_root(self.project_id) / "redesign"
+        self.assertEqual([path.name for path in versions.glob("v*.json")], ["v001.json"])
+
+    def test_indeterminate_redesign_retry_rejects_tampered_candidate_and_metadata(self):
+        candidate = self.redesign.prepare_candidate(self.project_id, "v001", self.payload())
+        original = self.store._atomic_write
+        captured = None
+
+        def fail_after_publish(path, payload, *, indeterminate_error=None):
+            nonlocal captured
+            original(path, payload, indeterminate_error=None)
+            captured = indeterminate_error
+            raise indeterminate_error
+
+        self.store._atomic_write = fail_after_publish
+        with self.assertRaises(VersionCommitIndeterminateError):
+            self.redesign.commit_version(candidate, rights_receipt_id=None)
+        self.store._atomic_write = original
+
+        tampered = copy.deepcopy(candidate)
+        tampered["payload"]["concept"] = "changed after the uncertain commit"
+        with self.assertRaises(RedesignBindingError):
+            self.redesign.commit_version(
+                tampered, rights_receipt_id=None, indeterminate_commit=captured
+            )
+        wrong = VersionCommitIndeterminateError(
+            project_id=self.project_id, family="rights_receipt", version=captured.version,
+            path=captured.path, payload_fingerprint=captured.payload_fingerprint,
+        )
+        with self.assertRaises(VersionReconciliationError):
+            self.redesign.commit_version(
+                candidate, rights_receipt_id=None, indeterminate_commit=wrong
+            )
+        versions = self.store.project_root(self.project_id) / "redesign"
+        self.assertEqual([path.name for path in versions.glob("v*.json")], ["v001.json"])
 
     def test_replication_cannot_commit_without_exact_bound_receipt(self):
         project = self.store.create(title="replica", creative_mode="authorized_replication", audio_policy="silent")

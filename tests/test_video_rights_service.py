@@ -5,8 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.json_contracts import ContractValidationError
-from scripts.video_project_store import VideoProjectStore
+from scripts.json_contracts import ContractValidationError, canonical_fingerprint
+from scripts.video_project_store import (
+    VersionCommitIndeterminateError,
+    VersionReconciliationError,
+    VideoProjectStore,
+)
 from scripts.video_rights_service import RightsScopeError, VideoRightsService
 
 
@@ -24,8 +28,17 @@ class VideoRightsServiceTests(unittest.TestCase):
         project = self.store.create(title="replica", creative_mode="authorized_replication", audio_policy="silent")
         self.project_id = project["project_id"]
         self.source_receipt = {"project_id": self.project_id, "source_sha256": "a" * 64}
-        self.design_candidate = {"project_id": self.project_id, "source_sha256": "a" * 64, "creative_mode": "authorized_replication", "design_fingerprint": "b" * 64}
-        self.binding = {"project_id": self.project_id, "source_sha256": "a" * 64, "creative_mode": "authorized_replication", "design_fingerprint": "b" * 64}
+        candidate_core = {
+            "schema_version": "1.0", "project_id": self.project_id,
+            "analysis_version": "v001", "source_sha256": "a" * 64,
+            "machine_fingerprint": "e" * 64,
+            "creative_mode": "authorized_replication", "payload": {},
+            "similarity_audit": {"preserved": [], "replaced": []},
+        }
+        self.design_candidate = {
+            **candidate_core, "design_fingerprint": canonical_fingerprint(candidate_core)
+        }
+        self.binding = {"project_id": self.project_id, "source_sha256": "a" * 64, "creative_mode": "authorized_replication", "design_fingerprint": self.design_candidate["design_fingerprint"]}
         self.valid_assertion = {
             "declarant": "rights-holder@example.test", "rights_basis": "written license",
             "evidence": [{"reference": "license-2026-09", "sha256": "c" * 64}],
@@ -55,6 +68,14 @@ class VideoRightsServiceTests(unittest.TestCase):
         with self.assertRaises(ContractValidationError):
             self.rights.record_assertion(self.project_id, source, self.design_candidate, self.valid_assertion)
 
+    def test_assertion_rejects_candidate_changed_after_fingerprinting(self):
+        candidate = copy.deepcopy(self.design_candidate)
+        candidate["payload"]["concept"] = "changed after fingerprinting"
+        with self.assertRaises(ContractValidationError):
+            self.rights.record_assertion(
+                self.project_id, self.source_receipt, candidate, self.valid_assertion
+            )
+
     def test_expired_or_narrower_audio_scope_fails_closed(self):
         expired = dict(self.valid_assertion); expired["expires_at"] = "2026-09-13T23:59:59Z"
         expired_receipt = self.rights.record_assertion(self.project_id, self.source_receipt, self.design_candidate, expired)
@@ -79,7 +100,7 @@ class VideoRightsServiceTests(unittest.TestCase):
 
     def test_native_confirmation_binds_assertion_and_candidate_before_persistence(self):
         receipt = self.rights.record_assertion(self.project_id, self.source_receipt, self.design_candidate, self.valid_assertion)
-        self.assertEqual(self.confirmer.requests[0]["design_fingerprint"], "b" * 64)
+        self.assertEqual(self.confirmer.requests[0]["design_fingerprint"], self.design_candidate["design_fingerprint"])
         self.assertEqual(receipt["native_confirmation"], "native-video-rights-confirmed")
         self.assertEqual(receipt["evidence"], self.valid_assertion["evidence"])
         self.assertNotIn("verified", receipt)
@@ -88,6 +109,68 @@ class VideoRightsServiceTests(unittest.TestCase):
     def test_boolean_or_unbound_rights_claim_is_rejected(self):
         with self.assertRaises(ContractValidationError):
             self.rights.record_assertion(self.project_id, self.source_receipt, self.design_candidate, {"authorized": True})
+
+    def test_indeterminate_rights_commit_reconciles_without_allocating_v002(self):
+        original = self.store._atomic_write
+        captured = None
+
+        def fail_after_publish(path, payload, *, indeterminate_error=None):
+            nonlocal captured
+            original(path, payload, indeterminate_error=None)
+            captured = indeterminate_error
+            raise indeterminate_error
+
+        self.store._atomic_write = fail_after_publish
+        with self.assertRaises(VersionCommitIndeterminateError):
+            self.rights.record_assertion(
+                self.project_id, self.source_receipt, self.design_candidate, self.valid_assertion
+            )
+        self.assertEqual(len(self.confirmer.requests), 1)
+        self.store._atomic_write = original
+        receipt = self.rights.record_assertion(
+            self.project_id, self.source_receipt, self.design_candidate,
+            self.valid_assertion, indeterminate_commit=captured,
+        )
+        self.assertEqual(receipt["version"], "v001")
+        self.assertEqual(len(self.confirmer.requests), 1)
+        versions = self.store.project_root(self.project_id) / "rights_receipt"
+        self.assertEqual([path.name for path in versions.glob("v*.json")], ["v001.json"])
+
+    def test_indeterminate_rights_retry_rejects_changed_assertion_and_metadata(self):
+        original = self.store._atomic_write
+        captured = None
+
+        def fail_after_publish(path, payload, *, indeterminate_error=None):
+            nonlocal captured
+            original(path, payload, indeterminate_error=None)
+            captured = indeterminate_error
+            raise indeterminate_error
+
+        self.store._atomic_write = fail_after_publish
+        with self.assertRaises(VersionCommitIndeterminateError):
+            self.rights.record_assertion(
+                self.project_id, self.source_receipt, self.design_candidate, self.valid_assertion
+            )
+        self.store._atomic_write = original
+
+        changed = {**self.valid_assertion, "purpose": "different purpose"}
+        with self.assertRaises(VersionReconciliationError):
+            self.rights.record_assertion(
+                self.project_id, self.source_receipt, self.design_candidate, changed,
+                indeterminate_commit=captured,
+            )
+        wrong = VersionCommitIndeterminateError(
+            project_id=self.project_id, family="redesign", version=captured.version,
+            path=captured.path, payload_fingerprint=captured.payload_fingerprint,
+        )
+        with self.assertRaises(VersionReconciliationError):
+            self.rights.record_assertion(
+                self.project_id, self.source_receipt, self.design_candidate,
+                self.valid_assertion, indeterminate_commit=wrong,
+            )
+        self.assertEqual(len(self.confirmer.requests), 1)
+        versions = self.store.project_root(self.project_id) / "rights_receipt"
+        self.assertEqual([path.name for path in versions.glob("v*.json")], ["v001.json"])
 
 
 if __name__ == "__main__":

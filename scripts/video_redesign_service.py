@@ -9,6 +9,10 @@ from typing import Any, Mapping, TypedDict
 
 from scripts.json_contracts import ContractValidationError, canonical_fingerprint, validate_contract
 from scripts.video_project_store import VideoProjectStore
+from scripts.video_project_store import (
+    VersionCommitIndeterminateError,
+    VersionReconciliationError,
+)
 from scripts.video_rights_service import REUSE_DIMENSIONS, RightsScopeError, VideoRightsService
 
 
@@ -67,9 +71,29 @@ class VideoRedesignService:
             "payload": candidate_payload,
             "similarity_audit": self._audit(preserve),
         }
-        return {**core, "design_fingerprint": canonical_fingerprint(core)}
+        fingerprint = canonical_fingerprint(core)
+        # Reuse the committed contract to close every candidate payload field before
+        # its fingerprint can be presented for a rights assertion.
+        validate_contract(
+            {
+                **core,
+                "version": "v001",
+                "parent_version": None,
+                "rights_receipt_id": None,
+                "design_fingerprint": fingerprint,
+                "committed_at": "candidate-validation",
+            },
+            "video_redesign.schema.json",
+        )
+        return {**core, "design_fingerprint": fingerprint}
 
-    def commit_version(self, candidate: Mapping[str, Any], rights_receipt_id: str | None) -> dict[str, Any]:
+    def commit_version(
+        self,
+        candidate: Mapping[str, Any],
+        rights_receipt_id: str | None,
+        *,
+        indeterminate_commit: VersionCommitIndeterminateError | None = None,
+    ) -> dict[str, Any]:
         project_id = candidate.get("project_id")
         if not isinstance(project_id, str):
             raise RedesignBindingError("candidate project binding is absent")
@@ -90,6 +114,10 @@ class VideoRedesignService:
                 raise RedesignBindingError("rights receipt does not authorize this candidate") from exc
         elif rights_receipt_id is not None:
             raise RedesignBindingError("original redesign must not attach a replication receipt")
+        if indeterminate_commit is not None:
+            return self._reconcile_indeterminate(
+                candidate, rights_receipt_id, indeterminate_commit
+            )
         family_root = self._store.project_root(project_id) / "redesign"
         versions = sorted(path.stem for path in family_root.glob("v*.json")) if family_root.exists() else []
         document = {
@@ -98,6 +126,50 @@ class VideoRedesignService:
             "committed_at": _now(),
         }
         return self._store.write_version(project_id, "redesign", document, schema_name="video_redesign.schema.json")
+
+    def _reconcile_indeterminate(
+        self,
+        candidate: Mapping[str, Any],
+        rights_receipt_id: str | None,
+        commit: VersionCommitIndeterminateError,
+    ) -> dict[str, Any]:
+        project_id = candidate["project_id"]
+        expected_path = (
+            self._store.project_root(project_id) / "redesign" / f"{commit.version}.json"
+        )
+        if (
+            commit.project_id != project_id
+            or commit.family != "redesign"
+            or commit.path != expected_path
+        ):
+            raise VersionReconciliationError(
+                project_id=project_id,
+                family="redesign",
+                version=commit.version,
+                path=expected_path,
+                reason="retry does not identify the exact indeterminate redesign commit",
+            )
+        design = self._store.reconcile_version(
+            project_id,
+            "redesign",
+            commit.version,
+            commit.payload_fingerprint,
+            "video_redesign.schema.json",
+        )
+        expected = {
+            **{key: value for key, value in candidate.items() if key != "design_fingerprint"},
+            "design_fingerprint": candidate["design_fingerprint"],
+            "rights_receipt_id": rights_receipt_id,
+        }
+        if any(design.get(key) != value for key, value in expected.items()):
+            raise VersionReconciliationError(
+                project_id=project_id,
+                family="redesign",
+                version=commit.version,
+                path=expected_path,
+                reason="retry candidate does not match the committed redesign",
+            )
+        return design
 
     def _validate_candidate_against_current_evidence(self, candidate: Mapping[str, Any]) -> None:
         analysis = self._read(candidate["project_id"], "analysis", candidate["analysis_version"], "shot_analysis.schema.json")

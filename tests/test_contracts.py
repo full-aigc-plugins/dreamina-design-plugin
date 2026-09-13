@@ -98,6 +98,22 @@ class SchemaPresenceTests(unittest.TestCase):
 
 
 class ClosedSchemaTests(unittest.TestCase):
+    def test_rights_and_redesign_reuse_dimensions_are_exact_and_closed(self) -> None:
+        expected = [
+            "timing", "shot_sizes", "camera_moves", "rhythm", "transitions",
+            "audio_beats", "likeness", "voice", "dialogue", "music", "brand",
+            "artwork", "distinctive_props",
+        ]
+        rights = load_json(SCHEMAS_DIR / "video_rights_receipt.schema.json")
+        redesign = load_json(SCHEMAS_DIR / "video_redesign.schema.json")
+        self.assertEqual(rights["properties"]["allowed_reuse"]["items"]["enum"], expected)
+        for key in ("preserved", "replaced"):
+            self.assertEqual(
+                redesign["properties"]["similarity_audit"]["properties"][key]["items"]["enum"],
+                expected,
+            )
+        self.assertFalse(redesign["properties"]["payload"]["additionalProperties"])
+
     def test_video_project_policy_enums_are_exact(self) -> None:
         schema = load_json(SCHEMAS_DIR / "video_project.schema.json")
         self.assertEqual(
