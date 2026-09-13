@@ -157,6 +157,11 @@ class FingerprintTests(unittest.TestCase):
         b = dict(a, duration_seconds=10)
         self.assertNotEqual(build_video_request_fingerprint(a), build_video_request_fingerprint(b))
 
+    def test_fingerprint_matches_shared_canonical_contract_fingerprint(self) -> None:
+        from scripts.json_contracts import canonical_fingerprint
+        request = {"mode": "text2video", "prompt": "p", "model": "seedance-2.5", "video_resolution": "720P", "ratio": "16:9", "duration_seconds": 8}
+        self.assertEqual(build_video_request_fingerprint(request), canonical_fingerprint(request))
+
 
 class TextToVideoTests(unittest.TestCase):
     def setUp(self) -> None:

@@ -1,0 +1,142 @@
+from __future__ import annotations
+
+import copy
+import unittest
+
+from scripts.json_contracts import canonical_fingerprint, validate_contract
+
+try:
+    from scripts.video_generation_planner import (
+        CostBasisError,
+        PlanningError,
+        VideoGenerationPlanner,
+    )
+    from scripts.video_service import UnsupportedCapabilityError
+except ModuleNotFoundError:  # RED: Task 7 module does not exist yet.
+    VideoGenerationPlanner = None  # type: ignore[assignment]
+
+
+def snapshot() -> dict:
+    return {
+        "cli_version": "1.4.18",
+        "captured_at": "2026-09-14T00:00:00Z",
+        "modes": ["text2video", "image2video", "frames2video", "multiframe2video", "multimodal2video"],
+        "models": [{
+            "name": "seedance-2.5",
+            "modes": ["text2video", "image2video", "frames2video", "multimodal2video"],
+            "resolutions": ["720P"], "ratios": ["16:9"],
+            "duration_min_seconds": 4, "duration_max_seconds": 30,
+            "max_references": 8, "audio_reference_max_seconds": 30,
+        }],
+        "resolutions": {"video": ["720P"]}, "ratios": ["16:9"],
+    }
+
+
+def ref(name: str, role: str, **extra) -> dict:
+    return {"path": f"/validated/{name}", "role": role, "sha256": name[0] * 64, **extra}
+
+
+def shot(**overrides) -> dict:
+    value = {
+        "id": "S01", "kind": "subject", "prompt": "A new presenter in a blue studio",
+        "duration_seconds": 4, "model": "seedance-2.5", "video_resolution": "720P",
+        "ratio": "16:9", "references": [], "max_attempts": 2,
+        "repair_directives": ["temporal_stability"],
+    }
+    value.update(overrides)
+    return value
+
+
+def design(shots=None, **overrides) -> dict:
+    value = {
+        "schema_version": "1.0", "version": "v001", "project_id": "vp_" + "1" * 24,
+        "source_sha256": "2" * 64, "design_fingerprint": "3" * 64,
+        "rights_receipt_id": "rr_" + "4" * 24, "creative_mode": "authorized_replication",
+        "analysis_version": "v001", "machine_fingerprint": "5" * 64,
+        "audio_policy": "silent", "output_destination": "/exports/final.mp4",
+        "output_profile": {"container": "mp4", "codec": "h264"},
+        "shots": shots or [shot()],
+    }
+    value.update(overrides)
+    return value
+
+
+class _ReferencePolicy:
+    def validate(self, reference):
+        return dict(reference)
+
+
+class VideoGenerationPlannerTests(unittest.TestCase):
+    def setUp(self):
+        self.planner = VideoGenerationPlanner(reference_policy=_ReferencePolicy())
+        self.snapshot = snapshot()
+        self.cost = {"kind": "operator_ceiling", "credit_ceiling": 7, "currency": "credits", "source": "operator:launch-budget", "recorded_at": "2026-09-14T01:00:00Z"}
+
+    def test_modes_are_selected_deterministically(self):
+        cases = [
+            (shot(kind="establishing", references=[]), "text2video"),
+            (shot(references=[ref("subject.png", "subject")]), "image2video"),
+            (shot(references=[ref("first.png", "frame"), ref("last.png", "frame")]), "frames2video"),
+            (shot(storyboard=[ref("a.png", "frame"), ref("b.png", "frame"), ref("c.png", "frame")], references=[]), "multiframe2video"),
+            (shot(references=[ref("clip.mp4", "reference"), ref("audio.wav", "audio", duration_seconds=4)]), "multimodal2video"),
+        ]
+        for candidate, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(self.planner.plan_shot(candidate, self.snapshot)["mode"], expected)
+
+    def test_quote_has_literal_fingerprints_and_total_for_every_enumerated_attempt(self):
+        quote = self.planner.plan(design(), self.snapshot, self.cost)
+        self.assertEqual(quote["items"][0]["request_fingerprints"], [
+            "213655663daf0b749b0c05832c6a9e9a9ee6df240ececc8101ca7b91b8dfd5e6",
+            "be80d8b1ee18282cff980f0b99579e6b48189fdacd07fc8c17866ce06047257f",
+        ])
+        self.assertEqual(quote["total_credit_ceiling"], 14)
+        self.assertEqual(len(quote["items"][0]["attempts"]), 2)
+        for attempt in quote["items"][0]["attempts"]:
+            self.assertEqual(attempt["request_fingerprint"], canonical_fingerprint(attempt["request"]))
+        validate_contract(quote, "video_batch_quote.schema.json")
+
+    def test_unknown_price_blocks_instead_of_inventing_cost(self):
+        with self.assertRaisesRegex(CostBasisError, "explicit operator ceiling"):
+            self.planner.plan(design(), self.snapshot, None)
+
+    def test_operator_cost_requires_source_and_timestamp(self):
+        for missing in ("source", "recorded_at"):
+            bad = dict(self.cost)
+            del bad[missing]
+            with self.subTest(missing=missing), self.assertRaises(CostBasisError):
+                self.planner.plan(design(), self.snapshot, bad)
+
+    def test_unadvertised_capabilities_fail_closed(self):
+        for change in (
+            {"model": "unknown"}, {"video_resolution": "4K"},
+            {"duration_seconds": 31}, {"ratio": "21:9"},
+        ):
+            with self.subTest(change=change), self.assertRaises(UnsupportedCapabilityError):
+                self.planner.plan(design([shot(**change)]), self.snapshot, self.cost)
+
+    def test_max_attempts_and_retry_vocabulary_are_closed(self):
+        for attempts in (0, 4):
+            with self.subTest(attempts=attempts), self.assertRaises(PlanningError):
+                self.planner.plan(design([shot(max_attempts=attempts)]), self.snapshot, self.cost)
+        with self.assertRaisesRegex(PlanningError, "closed repair directive"):
+            self.planner.plan(design([shot(repair_directives=["make it nicer"])]), self.snapshot, self.cost)
+        with self.assertRaisesRegex(PlanningError, "free-form retry prompt"):
+            self.planner.plan(design([shot(retry_prompt="make it nicer")]), self.snapshot, self.cost)
+
+    def test_quote_is_detached_from_mutable_inputs_and_binds_context(self):
+        source = design()
+        quote = self.planner.plan(source, self.snapshot, self.cost)
+        source["shots"][0]["prompt"] = "tampered"
+        self.assertEqual(quote["project_id"], "vp_" + "1" * 24)
+        self.assertEqual(quote["design_fingerprint"], "3" * 64)
+        self.assertEqual(quote["rights_receipt_id"], "rr_" + "4" * 24)
+        self.assertEqual(quote["source_sha256"], "2" * 64)
+        self.assertEqual(quote["audio_policy"], "silent")
+        self.assertEqual(quote["output_destination"], "/exports/final.mp4")
+        self.assertEqual(quote["output_profile"], {"container": "mp4", "codec": "h264"})
+        self.assertNotEqual(quote["items"][0]["attempts"][0]["request"]["prompt"], "tampered")
+
+
+if __name__ == "__main__":
+    unittest.main()

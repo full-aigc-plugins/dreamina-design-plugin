@@ -113,7 +113,7 @@ def build_video_request_fingerprint(payload: Mapping[str, Any]) -> str:
 class VideoService:
     """Build and submit Dreamina video requests against a capability snapshot."""
 
-    def __init__(self, snapshot: Mapping[str, Any], ledger_dir: Path, reference_policy: Any | None = None) -> None:
+    def __init__(self, snapshot: Mapping[str, Any], ledger_dir: Path | None, reference_policy: Any | None = None) -> None:
         if "modes" not in snapshot:
             raise UnsupportedCapabilityError("snapshot missing modes")
         self._snapshot = snapshot
@@ -125,11 +125,12 @@ class VideoService:
             for entry in snapshot.get("models", [])
             if isinstance(entry, Mapping) and "name" in entry
         }
-        self._ledger_dir = Path(ledger_dir)
-        self._ledger_dir.mkdir(parents=True, exist_ok=True)
+        self._ledger_dir = Path(ledger_dir) if ledger_dir is not None else None
+        if self._ledger_dir is not None:
+            self._ledger_dir.mkdir(parents=True, exist_ok=True)
         self._reference_policy = reference_policy
         from scripts.operation_ledger import OperationLedger
-        self._operation_ledger = OperationLedger(root=self._ledger_dir)
+        self._operation_ledger = OperationLedger(root=self._ledger_dir) if self._ledger_dir is not None else None
         self._web_prerequisite_acknowledged = False
 
     # ------------------------------------------------------------------
@@ -143,6 +144,8 @@ class VideoService:
         Dreamina web console.
         """
         self._web_prerequisite_acknowledged = True
+        if self._ledger_dir is None:
+            raise VideoServiceError("ledger_dir is required to record acknowledgement")
         flag_path = self._ledger_dir / "web_prerequisite.ack"
         flag_path.write_text("acknowledged\n", encoding="utf-8")
 
@@ -259,6 +262,9 @@ class VideoService:
             size = ref.get("size_bytes")
             if size is not None:
                 entry["size_bytes"] = int(size)
+            sha256 = ref.get("sha256")
+            if sha256 is not None:
+                entry["sha256"] = str(sha256)
             audio_seconds = ref.get("duration_seconds")
             if role == "audio" and audio_seconds is not None:
                 entry["duration_seconds"] = int(audio_seconds)
