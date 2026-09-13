@@ -49,6 +49,10 @@ class TaskService:
     @staticmethod
     def _verified_artifacts(directory_fd: int, before: set[str], target: Path) -> list[dict[str, object]]:
         artifacts = []
+        pinned_directory = os.fstat(directory_fd)
+        current_directory = target.stat(follow_symlinks=False)
+        if (pinned_directory.st_dev, pinned_directory.st_ino) != (current_directory.st_dev, current_directory.st_ino):
+            raise ValueError("download directory changed during verification")
         for name in sorted(set(os.listdir(directory_fd)) - before):
             if "/" in name or name in {".", ".."}: raise ValueError("unsafe downloaded artifact name")
             descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
@@ -66,6 +70,9 @@ class TaskService:
                 mime = "image/png" if prefix.startswith(b"\x89PNG\r\n\x1a\n") else "image/jpeg" if prefix.startswith(b"\xff\xd8\xff") else "video/mp4" if len(prefix) >= 12 and prefix[4:8] == b"ftyp" else None
                 if mime is None: raise ValueError("downloaded artifact type is unsupported")
                 os.fchmod(descriptor, 0o400)
+                current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                if (metadata.st_dev, metadata.st_ino) != (current.st_dev, current.st_ino):
+                    raise ValueError("downloaded artifact changed during verification")
                 artifacts.append({"path": str((target / name).resolve()), "mime_type": mime, "size_bytes": size,
                                   "sha256": digest.hexdigest(), "provenance": "externally-queried"})
             finally: os.close(descriptor)

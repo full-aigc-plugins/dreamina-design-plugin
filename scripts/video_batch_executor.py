@@ -34,8 +34,17 @@ class VideoBatchExecutor:
         if download_root is not None and Path(download_root).resolve() != default_downloads.resolve():
             raise ValueError("download_root must remain inside the project-scoped executor root")
         self._downloads = default_downloads
+        existed = self._downloads.exists()
+        if self._downloads.is_symlink():
+            raise ValueError("project download root must not be a symlink")
         self._downloads.mkdir(mode=0o700, parents=True, exist_ok=True)
+        metadata = self._downloads.stat()
+        if metadata.st_uid != os.getuid() or not self._downloads.is_dir():
+            raise ValueError("project download root has unsafe ownership or type")
+        if existed and metadata.st_mode & 0o077:
+            raise ValueError("existing project download root must be private")
         os.chmod(self._downloads, 0o700)
+        self._downloads_resolved = self._downloads.resolve(strict=True)
 
     @contextmanager
     def _transaction(self):
@@ -207,13 +216,25 @@ class VideoBatchExecutor:
             if status != "success":
                 task["state"] = "queued" if status == "querying" else "manual_review"
                 self._persist_aggregate(state, quote); continue
-            attempt_root = self._downloads / task["shot_id"] / f"attempt-{task['attempt']}"
+            shot_root = self._downloads / task["shot_id"]
+            attempt_root = shot_root / f"attempt-{task['attempt']}"
             sequence = len(list(attempt_root.glob("download-*"))) + 1 if attempt_root.exists() else 1
             target = attempt_root / f"download-{sequence:03d}"
             task["state"] = "downloading"; task["download_dir"] = str(target); self._persist_aggregate(state, quote)
-            attempt_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if shot_root.is_symlink(): raise ValueError("shot download root must not be a symlink")
+            shot_root.mkdir(mode=0o700, exist_ok=True)
+            shot_metadata = shot_root.stat()
+            if shot_metadata.st_uid != os.getuid() or shot_metadata.st_mode & 0o077: raise ValueError("shot download root must be private")
+            if attempt_root.is_symlink():
+                raise ValueError("attempt download root must not be a symlink")
+            attempt_root.mkdir(mode=0o700, exist_ok=True)
+            attempt_metadata = attempt_root.stat()
+            if attempt_metadata.st_uid != os.getuid() or attempt_metadata.st_mode & 0o077:
+                raise ValueError("attempt download root must be private")
             os.chmod(attempt_root, 0o700)
             target.mkdir(mode=0o700, exist_ok=False)
+            if not target.resolve(strict=True).is_relative_to(self._downloads_resolved):
+                raise ValueError("download destination escaped the project root")
             try:
                 downloaded = self._tasks.query(task["submit_id"], download_dir=str(target))
             except (OSError, ValueError):
