@@ -12,6 +12,7 @@ import re
 import secrets
 import stat
 import tempfile
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -67,42 +68,56 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _write_all(descriptor: int, payload: bytes) -> None:
+    offset = 0
+    while offset < len(payload):
+        written = os.write(descriptor, payload[offset:])
+        if not isinstance(written, int) or written <= 0:
+            raise OSError("durable write made no progress")
+        offset += written
+
+
 class FileSealKeyStore:
     """Load one stable 256-bit HMAC key from an owner-only no-follow file."""
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = Path(path) if path is not None else Path.home() / ".config" / "codex-dreamina-design" / "allowance-seal.key"
+        parent = self.path.parent
+        parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            self._parent_fd = os.open(parent, flags)
+            metadata = os.fstat(self._parent_fd)
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid():
+                raise SealKeyUnavailableError("seal key directory ownership or type is unsafe")
+            os.fchmod(self._parent_fd, 0o700)
+            self._parent_identity = os.fstat(self._parent_fd)
+        except Exception:
+            descriptor = getattr(self, "_parent_fd", None)
+            if descriptor is not None:
+                os.close(descriptor)
+                self._parent_fd = None
+            raise
 
     def load(self, *, allow_create: bool) -> bytes:
-        parent = self.path.parent
-        if parent.is_symlink():
-            raise SealKeyUnavailableError("seal key directory must not be a symlink")
-        parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        metadata = parent.stat()
-        if metadata.st_uid != os.getuid() or not stat.S_ISDIR(metadata.st_mode):
-            raise SealKeyUnavailableError("seal key directory ownership or type is unsafe")
-        os.chmod(parent, 0o700)
+        self._assert_parent()
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         try:
-            descriptor = os.open(self.path, flags)
+            descriptor = os.open(self.path.name, flags, dir_fd=self._parent_fd)
         except FileNotFoundError:
             if not allow_create:
                 raise SealKeyUnavailableError("seal key is missing while allowances exist")
             key = secrets.token_bytes(32)
             try:
-                descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                descriptor = os.open(self.path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=self._parent_fd)
                 try:
-                    os.write(descriptor, key)
+                    _write_all(descriptor, key)
                     os.fsync(descriptor)
                 finally:
                     os.close(descriptor)
             except FileExistsError:
                 return self.load(allow_create=False)
-            parent_fd = os.open(parent, os.O_RDONLY)
-            try:
-                os.fsync(parent_fd)
-            finally:
-                os.close(parent_fd)
+            os.fsync(self._parent_fd)
             return key
         except OSError as exc:
             raise SealKeyUnavailableError("seal key cannot be safely opened") from exc
@@ -113,7 +128,7 @@ class FileSealKeyStore:
         finally:
             os.close(descriptor)
         try:
-            current = self.path.lstat()
+            current = os.stat(self.path.name, dir_fd=self._parent_fd, follow_symlinks=False)
         except OSError as exc:
             raise SealKeyUnavailableError("seal key path changed during read") from exc
         if (
@@ -125,19 +140,57 @@ class FileSealKeyStore:
             raise SealKeyUnavailableError("seal key ownership, mode, identity, or length is unsafe")
         return key
 
+    def close(self) -> None:
+        descriptor = getattr(self, "_parent_fd", None)
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            self._parent_fd = None
+
+    def _assert_parent(self) -> None:
+        current = self.path.parent.lstat()
+        pinned = os.fstat(self._parent_fd)
+        if (
+            not stat.S_ISDIR(current.st_mode)
+            or current.st_uid != os.getuid()
+            or stat.S_IMODE(current.st_mode) != 0o700
+            or (current.st_dev, current.st_ino) != (pinned.st_dev, pinned.st_ino)
+            or (pinned.st_dev, pinned.st_ino) != (self._parent_identity.st_dev, self._parent_identity.st_ino)
+        ):
+            raise SealKeyUnavailableError("seal key directory identity changed")
+
 
 class LocalQuoteResolver:
     """Persist and resolve the exact immutable quote when no project-store resolver is injected."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, parent_fd: int | None = None) -> None:
         self._root = Path(root) / "quotes"
-        if self._root.is_symlink():
-            raise BatchScopeError("quote directory must not be a symlink")
-        self._root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self._root, 0o700)
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        self._root_fd = os.open(self._root, flags)
-        self._identity = os.fstat(self._root_fd)
+        self._parent_fd = None
+        self._owns_parent = parent_fd is None
+        try:
+            if parent_fd is None:
+                base = Path(root)
+                base.mkdir(parents=True, exist_ok=True, mode=0o700)
+                self._parent_fd = os.open(base, flags)
+                os.fchmod(self._parent_fd, 0o700)
+                parent_fd = self._parent_fd
+            try:
+                os.mkdir("quotes", 0o700, dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+            self._root_fd = os.open("quotes", flags, dir_fd=parent_fd)
+            metadata = os.fstat(self._root_fd)
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid():
+                raise BatchScopeError("quote directory ownership or type is unsafe")
+            os.fchmod(self._root_fd, 0o700)
+            self._identity = os.fstat(self._root_fd)
+            self._pinned_parent_fd = parent_fd
+        except Exception:
+            self.close()
+            raise
 
     @staticmethod
     def identity(quote: Mapping[str, Any]) -> dict[str, Any]:
@@ -172,6 +225,7 @@ class LocalQuoteResolver:
             descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=self._root_fd)
             metadata = os.fstat(descriptor)
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600:
+                os.close(descriptor)
                 raise BatchScopeError("persisted quote file is unsafe")
             with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
                 quote = json.load(handle)
@@ -190,9 +244,17 @@ class LocalQuoteResolver:
             except OSError:
                 pass
             self._root_fd = None
+        if self._owns_parent:
+            descriptor = getattr(self, "_parent_fd", None)
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+                self._parent_fd = None
 
     def _assert_identity(self) -> None:
-        current = self._root.lstat()
+        current = os.stat("quotes", dir_fd=self._pinned_parent_fd, follow_symlinks=False)
         pinned = os.fstat(self._root_fd)
         if (
             not stat.S_ISDIR(current.st_mode)
@@ -219,10 +281,11 @@ class VideoBatchAllowance:
         self._root = Path(root)
         self._allowances = self._root / "allowances"
         self._activations = self._root / "activations"
-        self._seal_key_store = seal_key_store or FileSealKeyStore()
-        self._quote_resolver = quote_resolver or LocalQuoteResolver(self._root)
+        self._seal_key_store = seal_key_store
+        self._quote_resolver = quote_resolver
         self._project_store = project_store
         self._rights_service = rights_service
+        self._thread_lock = threading.RLock()
         for directory in (self._root, self._allowances, self._activations):
             if directory.is_symlink():
                 raise BatchScopeError("allowance directory must not be a symlink")
@@ -240,6 +303,10 @@ class VideoBatchAllowance:
             self._root_identity = os.fstat(self._root_fd)
             self._allowances_identity = os.fstat(self._allowances_fd)
             self._activations_identity = os.fstat(self._activations_fd)
+            if self._seal_key_store is None:
+                self._seal_key_store = FileSealKeyStore()
+            if self._quote_resolver is None:
+                self._quote_resolver = LocalQuoteResolver(self._root, parent_fd=self._root_fd)
         except Exception:
             self.close()
             raise
@@ -310,6 +377,8 @@ class VideoBatchAllowance:
             try:
                 # Revalidate immediately before publication: the native dialog may have
                 # remained open across expiry or a receipt/design replacement.
+                if self._copy_json(self._quote_resolver.resolve(copy.deepcopy(quote_identity))) != quote_copy:
+                    raise BatchScopeError("persisted exact quote changed during native confirmation")
                 self._revalidate_rights(quote_copy)
                 self._atomic_write_at(self._allowances_fd, f"{allowance_id}.json", allowance, allowance_id=allowance_id, operation="activation")
                 self._atomic_write_at(self._activations_fd, activation_path.name, {"allowance_id": allowance_id, "quote_fingerprint": quote_fingerprint}, allowance_id=allowance_id, operation="activation-index")
@@ -347,11 +416,9 @@ class VideoBatchAllowance:
                 raise BatchScopeError("request is outside the approved batch envelope")
             if any(
                 reservation["request_fingerprint"] == request_fingerprint
+                or (reservation["shot_id"], reservation["attempt"]) == (shot_id, attempt)
                 for other in self._all_allowances(key)
                 for reservation in other["reservations"]
-            ) or any(
-                (reservation["shot_id"], reservation["attempt"]) == (shot_id, attempt)
-                for reservation in allowance["reservations"]
             ):
                 raise ReservationConsumedError("the exact request reservation is already consumed")
             new_total = allowance["consumed_credits"] + item["credit_ceiling"]
@@ -385,7 +452,10 @@ class VideoBatchAllowance:
             raise BatchScopeError("invalid reservation or ambiguity code")
         if submit_id is not None and (not isinstance(submit_id, str) or _SUBMIT_ID.fullmatch(submit_id) is None):
             raise BatchScopeError("invalid ambiguous submit identifier")
-        details = {"error_code": error_code, "required_action": "query"}
+        details = {
+            "error_code": error_code,
+            "required_action": "query" if submit_id is not None else "manual_review",
+        }
         if submit_id is not None:
             details["submit_id"] = submit_id
         return self._transition_reservation(reservation_id, "ambiguous", **details)
@@ -502,6 +572,7 @@ class VideoBatchAllowance:
             descriptor = os.open(name, flags, dir_fd=self._allowances_fd)
             before = os.fstat(descriptor)
             if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or stat.S_IMODE(before.st_mode) != 0o600:
+                os.close(descriptor)
                 raise BatchScopeError("allowance file ownership, type, or mode is unsafe")
             with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
@@ -548,6 +619,7 @@ class VideoBatchAllowance:
             raise BatchScopeError("allowance consumed credits are corrupt")
         if payload["consumed_credits"] > payload["total_credit_ceiling"]:
             raise BudgetExceededError("allowance exceeds its approved ceiling")
+        self._validate_history(payload)
         self._validate_against_quote(payload)
         return payload
 
@@ -616,7 +688,7 @@ class VideoBatchAllowance:
         try:
             os.fchmod(descriptor, 0o600)
             encoded = self._canonical_bytes(payload)
-            os.write(descriptor, encoded)
+            _write_all(descriptor, encoded)
             os.fsync(descriptor)
             os.close(descriptor)
             descriptor = -1
@@ -721,19 +793,53 @@ class VideoBatchAllowance:
                 raise BatchScopeError(f"allowance {name} directory identity changed")
 
     @staticmethod
+    def _validate_history(allowance: Mapping[str, Any]) -> None:
+        reservation_ids: set[str] = set()
+        fingerprints: set[str] = set()
+        tuples: set[tuple[str, int]] = set()
+        for reservation in allowance["reservations"]:
+            reservation_id = reservation["reservation_id"]
+            fingerprint = reservation["request_fingerprint"]
+            identity = (reservation["shot_id"], reservation["attempt"])
+            if reservation_id in reservation_ids or fingerprint in fingerprints or identity in tuples:
+                raise BatchScopeError("reservation history contains duplicate identities")
+            reservation_ids.add(reservation_id)
+            fingerprints.add(fingerprint)
+            tuples.add(identity)
+            history = reservation["history"]
+            if not history or history[0].get("state") != "reserved":
+                raise BatchScopeError("reservation history must begin at reserved")
+            terminal = [event for event in history[1:] if event.get("state") in {"committed", "ambiguous"}]
+            if reservation["state"] == "reserved" and terminal:
+                raise BatchScopeError("reserved entry has terminal history")
+            if reservation["state"] in {"committed", "ambiguous"} and (
+                len(terminal) != 1 or terminal[0].get("state") != reservation["state"]
+            ):
+                raise BatchScopeError("terminal reservation history is inconsistent")
+            if reservation["state"] == "ambiguous":
+                expected_action = "query" if reservation.get("submit_id") else "manual_review"
+                if reservation.get("required_action") != expected_action:
+                    raise BatchScopeError("ambiguous recovery action is inconsistent")
+        for event in allowance["history"]:
+            linked = event.get("reservation_id")
+            if linked is not None and linked not in reservation_ids:
+                raise BatchScopeError("allowance history references an unknown reservation")
+
+    @staticmethod
     def _canonical_bytes(payload: Mapping[str, Any]) -> bytes:
         return json.dumps(dict(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
     @contextmanager
     def _exclusive_lock(self) -> Iterator[None]:
-        self._assert_root_identity()
-        fcntl.flock(self._root_fd, fcntl.LOCK_EX)
-        try:
+        with self._thread_lock:
             self._assert_root_identity()
-            yield
-            self._assert_root_identity()
-        finally:
-            fcntl.flock(self._root_fd, fcntl.LOCK_UN)
+            fcntl.flock(self._root_fd, fcntl.LOCK_EX)
+            try:
+                self._assert_root_identity()
+                yield
+                self._assert_root_identity()
+            finally:
+                fcntl.flock(self._root_fd, fcntl.LOCK_UN)
 
 
 __all__ = [
