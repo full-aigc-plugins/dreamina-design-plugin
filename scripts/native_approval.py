@@ -60,6 +60,15 @@ class NativeApprovalProvider:
         )
         return "native-video-rights-confirmed"
 
+    def confirm_video_batch(self, request: Mapping[str, Any]) -> str:
+        """Confirm one exact, non-expandable batch and its literal credit ceiling."""
+        summary = json.dumps(dict(request), ensure_ascii=False, sort_keys=True, indent=2)
+        self._confirm_dialog(
+            "批准不可扩展的 Dreamina 整批额度（每个镜头与重试均已固定）\n\n" + summary,
+            "批准整批",
+        )
+        return "native-video-batch-confirmed"
+
     @staticmethod
     def _confirm_dialog(message: str, approve_button: str) -> None:
         if platform.system() != "Darwin":

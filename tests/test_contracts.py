@@ -39,6 +39,7 @@ EXPECTED_SCHEMAS = (
     "video_rights_receipt.schema.json",
     "video_redesign.schema.json",
     "video_batch_quote.schema.json",
+    "video_batch_allowance.schema.json",
 )
 
 CREDENTIAL_KEYS = (

@@ -8,6 +8,17 @@ from scripts.native_approval import ApprovalDeniedError, NativeApprovalProvider
 
 
 class NativeApprovalProviderTests(unittest.TestCase):
+    def test_video_batch_confirmation_uses_specific_whole_batch_warning(self) -> None:
+        provider = NativeApprovalProvider()
+        request = {"action": "activate-video-batch-allowance", "total_credit_ceiling": 14}
+        with patch.object(provider, "_confirm_dialog") as confirm:
+            token = provider.confirm_video_batch(request)
+        self.assertEqual(token, "native-video-batch-confirmed")
+        message, button = confirm.call_args.args
+        self.assertEqual(button, "批准整批")
+        self.assertEqual(json.loads(message.split("\n\n", 1)[1]), request)
+        self.assertIn("不可扩展", message)
+
     def test_video_rights_confirmation_displays_exact_binding_and_disclaimer(self) -> None:
         provider = NativeApprovalProvider()
         request = {
