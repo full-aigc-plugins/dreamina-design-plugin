@@ -80,7 +80,12 @@ class VideoRedesignService:
             },
             "video_redesign.schema.json",
         )
-        return {**core, "design_fingerprint": fingerprint}
+        candidate = {**core, "design_fingerprint": fingerprint}
+        try:
+            self._store.publish_prepared_candidate(project_id, fingerprint, candidate)
+        except VersionReconciliationError as exc:
+            raise RedesignBindingError("prepared candidate publication was not safe") from exc
+        return candidate
 
     def commit_version(
         self,

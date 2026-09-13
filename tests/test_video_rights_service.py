@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import copy
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.json_contracts import ContractValidationError, canonical_fingerprint
 from scripts.video_project_store import (
@@ -133,6 +136,36 @@ class VideoRightsServiceTests(unittest.TestCase):
             )
         self.assertEqual(self.confirmer.requests, [])
         self.assertFalse((self.store.project_root(self.project_id) / "rights_receipt").exists())
+
+    def test_authorization_read_rejects_prepared_directory_swap_without_confirmation(self):
+        root = self.store.project_root(self.project_id)
+        family = root / "prepared_candidate"
+        detached = root / "prepared_candidate.detached"
+        target = family / f"{self.design_candidate['design_fingerprint']}.json"
+        encoded = target.read_bytes()
+        real_load = json.load
+        calls = 0
+
+        def replace_family_after_read(handle):
+            nonlocal calls
+            document = real_load(handle)
+            calls += 1
+            if calls == 2:
+                os.rename(family, detached)
+                family.mkdir(mode=0o700)
+                replacement = family / target.name
+                replacement.write_bytes(encoded)
+                replacement.chmod(0o600)
+            return document
+
+        with patch("scripts.video_project_store.json.load", side_effect=replace_family_after_read):
+            with self.assertRaises(ContractValidationError):
+                self.rights.record_assertion(
+                    self.project_id, self.source_receipt,
+                    self.design_candidate, self.valid_assertion,
+                )
+        self.assertEqual(self.confirmer.requests, [])
+        self.assertFalse((root / "rights_receipt").exists())
 
     def test_expired_or_narrower_audio_scope_fails_closed(self):
         expired = dict(self.valid_assertion); expired["expires_at"] = "2026-09-13T23:59:59Z"

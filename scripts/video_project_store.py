@@ -378,6 +378,138 @@ class VideoProjectStore:
             schema_name=schema_name,
         )
 
+    def publish_prepared_candidate(
+        self, project_id: str, fingerprint: str, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Publish one content-addressed candidate through pinned private directories."""
+        if re.fullmatch(r"[a-f0-9]{64}", fingerprint) is None:
+            raise ValueError("invalid prepared candidate fingerprint")
+        self._validate_project_id(project_id)
+        encoded = (json.dumps(dict(payload), sort_keys=True, ensure_ascii=False) + "\n").encode()
+        filename = f"{fingerprint}.json"
+        temporary = f".{filename}.{secrets.token_hex(12)}"
+        descriptors: list[int] = []
+        temporary_created = False
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            root_fd = os.open(self._root, flags); descriptors.append(root_fd)
+            root_meta = self._require_owned_directory(root_fd, 0o700, "store root")
+            project_fd = os.open(project_id, flags, dir_fd=root_fd); descriptors.append(project_fd)
+            project_meta = self._require_owned_directory(project_fd, 0o700, "project directory")
+            try:
+                os.mkdir("prepared_candidate", 0o700, dir_fd=project_fd)
+            except FileExistsError:
+                pass
+            family_fd = os.open("prepared_candidate", flags, dir_fd=project_fd); descriptors.append(family_fd)
+            family_meta = self._require_owned_directory(family_fd, 0o700, "prepared candidate directory")
+            # Directory creation is an intentional mutation; pin its post-create identity.
+            project_meta = os.fstat(project_fd)
+
+            temp_fd = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=family_fd,
+            )
+            descriptors.append(temp_fd); temporary_created = True
+            os.fchmod(temp_fd, 0o600)
+            written = 0
+            while written < len(encoded):
+                written += os.write(temp_fd, encoded[written:])
+            os.fsync(temp_fd)
+            try:
+                os.link(
+                    temporary, filename,
+                    src_dir_fd=family_fd, dst_dir_fd=family_fd,
+                    follow_symlinks=False,
+                )
+            except FileExistsError:
+                pass
+            os.unlink(temporary, dir_fd=family_fd); temporary_created = False
+            os.fsync(family_fd)
+            # Publishing changes directory size/mtime; pin the post-publication identity.
+            family_meta = os.fstat(family_fd)
+
+            document, file_meta = self._read_prepared_from_fd(family_fd, filename)
+            if document != payload:
+                raise ValueError("prepared candidate fingerprint collision")
+            self._require_same_identity(os.stat(self._root, follow_symlinks=False), root_meta, "store root")
+            self._require_same_identity(os.stat(project_id, dir_fd=root_fd, follow_symlinks=False), project_meta, "project directory")
+            self._require_same_identity(os.stat("prepared_candidate", dir_fd=project_fd, follow_symlinks=False), family_meta, "prepared candidate directory")
+            self._require_same_identity(os.stat(filename, dir_fd=family_fd, follow_symlinks=False), file_meta, "prepared candidate")
+            return document
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise VersionReconciliationError(
+                project_id=project_id, family="prepared_candidate", version=fingerprint,
+                path=self._root / project_id / "prepared_candidate" / filename,
+                reason=str(exc),
+            ) from exc
+        finally:
+            if temporary_created and descriptors:
+                try:
+                    os.unlink(temporary, dir_fd=descriptors[-2])
+                except OSError:
+                    pass
+            for descriptor in reversed(descriptors):
+                try: os.close(descriptor)
+                except OSError: pass
+
+    def read_prepared_candidate(self, project_id: str, fingerprint: str) -> dict[str, Any]:
+        """Read one exact content-addressed candidate through pinned descriptors."""
+        if re.fullmatch(r"[a-f0-9]{64}", fingerprint) is None:
+            raise ValueError("invalid prepared candidate fingerprint")
+        self._validate_project_id(project_id)
+        filename = f"{fingerprint}.json"
+        descriptors: list[int] = []
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            root_fd = os.open(self._root, flags); descriptors.append(root_fd)
+            root_meta = self._require_owned_directory(root_fd, 0o700, "store root")
+            project_fd = os.open(project_id, flags, dir_fd=root_fd); descriptors.append(project_fd)
+            project_meta = self._require_owned_directory(project_fd, 0o700, "project directory")
+            family_fd = os.open("prepared_candidate", flags, dir_fd=project_fd); descriptors.append(family_fd)
+            family_meta = self._require_owned_directory(family_fd, 0o700, "prepared candidate directory")
+            document, file_meta = self._read_prepared_from_fd(family_fd, filename)
+            self._require_same_identity(os.stat(self._root, follow_symlinks=False), root_meta, "store root")
+            self._require_same_identity(os.stat(project_id, dir_fd=root_fd, follow_symlinks=False), project_meta, "project directory")
+            self._require_same_identity(os.stat("prepared_candidate", dir_fd=project_fd, follow_symlinks=False), family_meta, "prepared candidate directory")
+            self._require_same_identity(os.stat(filename, dir_fd=family_fd, follow_symlinks=False), file_meta, "prepared candidate")
+            return document
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise VersionReconciliationError(
+                project_id=project_id, family="prepared_candidate", version=fingerprint,
+                path=self._root / project_id / "prepared_candidate" / filename,
+                reason=str(exc),
+            ) from exc
+        finally:
+            for descriptor in reversed(descriptors):
+                try: os.close(descriptor)
+                except OSError: pass
+
+    @classmethod
+    def _require_owned_directory(cls, descriptor: int, mode: int, label: str) -> os.stat_result:
+        metadata = cls._require_directory(descriptor, mode, label)
+        if metadata.st_uid != os.geteuid():
+            raise OSError(f"{label} has a foreign owner")
+        return metadata
+
+    @staticmethod
+    def _read_prepared_from_fd(directory_fd: int, filename: str) -> tuple[dict[str, Any], os.stat_result]:
+        file_fd = os.open(filename, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
+        try:
+            before = os.fstat(file_fd)
+            if not stat.S_ISREG(before.st_mode) or before.st_mode & 0o777 != 0o600 or before.st_uid != os.geteuid():
+                raise OSError("prepared candidate is not a private owned regular file")
+            with os.fdopen(os.dup(file_fd), "r", encoding="utf-8") as handle:
+                document = json.load(handle)
+            after = os.fstat(file_fd)
+            VideoProjectStore._require_same_identity(after, before, "prepared candidate descriptor")
+            if not isinstance(document, dict):
+                raise ValueError("prepared candidate is not an object")
+            return document, before
+        finally:
+            os.close(file_fd)
+
     @staticmethod
     def _require_directory(descriptor: int, mode: int, label: str) -> os.stat_result:
         metadata = os.fstat(descriptor)
