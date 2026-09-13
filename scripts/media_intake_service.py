@@ -271,8 +271,13 @@ class MediaIntakeService:
     @staticmethod
     def _require_probe_agreement(mime_type: str, format_name: str) -> None:
         formats = {item.strip().lower() for item in format_name.split(",")}
-        expected = {"webm"} if mime_type == "video/webm" else {"mov", "mp4"}
-        if not formats.intersection(expected):
+        if mime_type == "video/webm":
+            agrees = "webm" in formats
+        else:
+            iso_bmff_formats = formats.intersection({"mov", "mp4"})
+            expected = "mov" if mime_type == "video/quicktime" else "mp4"
+            agrees = iso_bmff_formats == {"mov", "mp4"} or expected in iso_bmff_formats
+        if not agrees:
             raise MediaIntakeError("source bytes and ffprobe format disagree")
 
     def _publish_approved(
@@ -329,24 +334,39 @@ class MediaIntakeService:
 
     @staticmethod
     def _verify_staged(path: Path, digest: str, expected_size: int) -> None:
-        info = path.lstat()
-        if path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_size != expected_size:
-            raise MediaIntakeError("staged source is missing or changed")
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         try:
-            opened = os.fstat(descriptor)
-            actual = hashlib.sha256()
-            while True:
-                chunk = os.read(descriptor, 1024 * 1024)
-                if not chunk:
-                    break
-                actual.update(chunk)
-            if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
-                raise MediaIntakeError("staged source inode changed")
-            if actual.hexdigest() != digest:
-                raise MediaIntakeError("staged source digest changed")
-        finally:
-            os.close(descriptor)
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                raise MediaIntakeError("staged source is missing or changed")
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                opened = os.fstat(descriptor)
+                actual = hashlib.sha256()
+                bytes_read = 0
+                while True:
+                    chunk = os.read(descriptor, 1024 * 1024)
+                    if not chunk:
+                        break
+                    bytes_read += len(chunk)
+                    actual.update(chunk)
+                opened_after = os.fstat(descriptor)
+                path_after = path.lstat()
+                expected_identity = (opened.st_dev, opened.st_ino, expected_size)
+                if (
+                    (info.st_dev, info.st_ino, info.st_size) != expected_identity
+                    or (opened_after.st_dev, opened_after.st_ino, opened_after.st_size)
+                    != expected_identity
+                    or (path_after.st_dev, path_after.st_ino, path_after.st_size)
+                    != expected_identity
+                    or bytes_read != expected_size
+                ):
+                    raise MediaIntakeError("staged source inode or size changed")
+                if actual.hexdigest() != digest:
+                    raise MediaIntakeError("staged source digest changed")
+            finally:
+                os.close(descriptor)
+        except OSError as exc:
+            raise MediaIntakeError("staged source is missing or changed") from exc
 
     @staticmethod
     def _probe_metadata(probe: dict[str, object]) -> dict[str, Any]:

@@ -175,3 +175,44 @@ Result: `Ran 310 tests in 13.940s`, `OK`.
 ### Remaining concerns
 
 - The trusted adapter's `format_name` for ISO BMFF commonly reports the combined `mov,mp4,...` demuxer identity, so MOV versus MP4 is derived from the `ftyp` major brand while the probe cross-check validates the shared trusted demuxer family.
+
+## Fix Round 2 — ISO BMFF Exactness and Durable-Path TOCTOU
+
+### RED
+
+```bash
+python3 -m unittest tests.test_media_intake_service.MediaIntakeServiceTests.test_iso_bmff_probe_agreement_is_exact_unless_probe_reports_combined_family tests.test_media_intake_service.MediaIntakeServiceTests.test_staged_path_replacement_after_hash_is_rejected_before_receipt -v
+```
+
+Result: exit 1, `Ran 2 tests in 0.017s`, `FAILED (failures=3)`. QuickTime bytes with an `mp4`-only probe and MP4 bytes with a `mov`-only probe were both incorrectly accepted; replacing the final staged pathname at hash EOF also escaped detection and allowed receipt persistence.
+
+### GREEN
+
+The exact same targeted command returned exit 0, `Ran 2 tests in 0.009s`, `OK`.
+
+Task 3 focused verification:
+
+```bash
+python3 -m unittest tests.test_video_project_store tests.test_media_intake_service tests.test_contracts tests.test_reference_policy tests.test_json_contracts -v
+```
+
+Result: exit 0, `Ran 44 tests in 0.133s`, `OK`.
+
+Full suite:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Result: exit 0, `Ran 312 tests in 10.013s`, `OK`.
+
+### Changes and self-review
+
+- Byte-level `ftyp` identity remains authoritative. A normal combined `mov,mp4,...` probe family accepts either byte-identified MOV or MP4, while a single `mov` or `mp4` token must exactly match the byte identity. WebM still requires the `webm` probe token.
+- Durable-file verification now counts hashed bytes, performs a second descriptor `fstat`, then re-`lstat`s the pathname and requires the initial path stat, opened descriptor, final descriptor stat, and final pathname to agree on device, inode, and expected size before any receipt write.
+- The injected pathname-replacement regression swaps the final path immediately after hash EOF and proves failure occurs while the receipt directory is still absent.
+- No Task 1/2 behavior or contract was modified.
+
+### Concerns
+
+- None specific to Round 2. The existing project-local publish lock remains necessary so the durable path cannot be legitimately replaced by a competing intake during this final verification window.

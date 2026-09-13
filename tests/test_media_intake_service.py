@@ -195,6 +195,68 @@ class MediaIntakeServiceTests(unittest.TestCase):
         with self.assertRaises(MediaIntakeError):
             service.intake(self.project_id, spoofed, [self.approved_root])
 
+    def test_iso_bmff_probe_agreement_is_exact_unless_probe_reports_combined_family(self) -> None:
+        quicktime = self.approved_root / "source.mov"
+        quicktime.write_bytes(b"\x00\x00\x00\x18ftypqt  " + b"x" * 128)
+
+        for source, probe_format in ((quicktime, "mp4"), (self.source, "mov")):
+            with self.subTest(rejected=(source.name, probe_format)):
+                service = MediaIntakeService(
+                    self.store,
+                    FakeMediaAdapter(format_name=probe_format),
+                    self.approval,
+                )
+                with self.assertRaises(MediaIntakeError):
+                    service.intake(self.project_id, source, [self.approved_root])
+
+        for source in (quicktime, self.source):
+            with self.subTest(combined_family=source.name):
+                service = MediaIntakeService(
+                    self.store,
+                    FakeMediaAdapter(format_name="mov,mp4,m4a,3gp,3g2,mj2"),
+                    self.approval,
+                )
+                receipt = service.intake(self.project_id, source, [self.approved_root])
+                self.assertEqual(
+                    receipt["mime_type"],
+                    "video/quicktime" if source == quicktime else "video/mp4",
+                )
+
+    def test_staged_path_replacement_after_hash_is_rejected_before_receipt(self) -> None:
+        digest = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        final = self.store.project_root(self.project_id) / "source" / f"{digest}.mp4"
+        original_read = os.read
+        approved = False
+        replaced = False
+
+        class MarkingApprovalProvider:
+            def confirm(inner_self, request):
+                nonlocal approved
+                approved = True
+                return "native-user-confirmed"
+
+        def replacing_read(descriptor: int, count: int) -> bytes:
+            nonlocal replaced
+            chunk = original_read(descriptor, count)
+            if approved and not replaced and chunk == b"":
+                replacement = final.with_name("replacement.mp4")
+                replacement.write_bytes(b"z" * self.source.stat().st_size)
+                os.replace(replacement, final)
+                replaced = True
+            return chunk
+
+        service = MediaIntakeService(
+            self.store,
+            FakeMediaAdapter(),
+            MarkingApprovalProvider(),
+        )
+        with patch("scripts.media_intake_service.os.read", side_effect=replacing_read):
+            with self.assertRaises(MediaIntakeError):
+                service.intake(self.project_id, self.source, [self.approved_root])
+        self.assertTrue(replaced)
+        receipt_root = self.store.project_root(self.project_id) / "source_receipt"
+        self.assertFalse(receipt_root.exists())
+
     def test_same_inode_growth_during_probe_is_rejected(self) -> None:
         def append_source() -> None:
             with self.source.open("ab") as handle:
