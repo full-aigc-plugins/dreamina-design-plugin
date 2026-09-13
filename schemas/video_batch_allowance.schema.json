@@ -4,7 +4,7 @@
   "title": "Durable Dreamina Video Batch Allowance",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "allowance_id", "state", "project_id", "quote_version", "quote_fingerprint", "source_sha256", "analysis_version", "design_version", "design_fingerprint", "rights_receipt_id", "rights_binding_fingerprint", "creative_mode", "audio_policy", "destination", "output_profile", "capability_snapshot_fingerprint", "total_credit_ceiling", "consumed_credits", "requests", "reservations", "activated_at", "history", "state_fingerprint"],
+  "required": ["schema_version", "allowance_id", "state", "project_id", "quote_version", "quote_fingerprint", "quote_identity", "source_sha256", "analysis_version", "design_version", "design_fingerprint", "rights_receipt_id", "rights_binding_fingerprint", "creative_mode", "audio_policy", "destination", "output_profile", "capability_snapshot_fingerprint", "cost_basis", "item_count", "task_count", "reserved_retry_count", "total_credit_ceiling", "consumed_credits", "requests", "reservations", "activated_at", "history", "seal_key_id", "seal"],
   "properties": {
     "schema_version": {"type": "string", "const": "1.0"},
     "allowance_id": {"type": "string", "pattern": "^ba_[a-f0-9]{32}$"},
@@ -12,6 +12,7 @@
     "project_id": {"type": "string", "pattern": "^vp_[a-f0-9]{24}$"},
     "quote_version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
     "quote_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "quote_identity": {"type": "object", "additionalProperties": false, "required": ["project_id", "family", "version", "path", "fingerprint"], "properties": {"project_id": {"type": "string", "pattern": "^vp_[a-f0-9]{24}$"}, "family": {"type": "string", "const": "video_batch_quote"}, "version": {"type": "string", "pattern": "^v[0-9]{3,}$"}, "path": {"type": "string", "pattern": "^vp_[a-f0-9]{24}/video_batch_quote/v[0-9]{3,}\\.json$"}, "fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
     "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "analysis_version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
     "design_version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
@@ -23,13 +24,18 @@
     "destination": {"type": "string", "minLength": 1},
     "output_profile": {"type": "object", "additionalProperties": false, "required": ["container", "codec"], "properties": {"container": {"type": "string", "const": "mp4"}, "codec": {"type": "string", "const": "h264"}, "width": {"type": "integer", "minimum": 1}, "height": {"type": "integer", "minimum": 1}, "fps": {"type": "number", "minimum": 1}}},
     "capability_snapshot_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "cost_basis": {"type": "object", "additionalProperties": false, "required": ["kind", "credit_ceiling", "currency", "source", "recorded_at"], "properties": {"kind": {"type": "string", "enum": ["operator_ceiling", "live_snapshot"]}, "credit_ceiling": {"type": "integer", "minimum": 1}, "currency": {"type": "string", "const": "credits"}, "source": {"type": "string", "minLength": 1}, "recorded_at": {"type": "string", "minLength": 1}}},
+    "item_count": {"type": "integer", "minimum": 1},
+    "task_count": {"type": "integer", "minimum": 1},
+    "reserved_retry_count": {"type": "integer", "minimum": 0},
     "total_credit_ceiling": {"type": "integer", "minimum": 1},
     "consumed_credits": {"type": "integer", "minimum": 0},
     "requests": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/request"}},
     "reservations": {"type": "array", "items": {"$ref": "#/$defs/reservation"}},
     "activated_at": {"type": "string", "minLength": 1},
     "history": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/history"}},
-    "state_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+    "seal_key_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "seal": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
   },
   "$defs": {
     "request": {"type": "object", "additionalProperties": false, "required": ["shot_id", "attempt", "mode", "model", "video_resolution", "duration_seconds", "request_fingerprint", "credit_ceiling"], "properties": {"shot_id": {"type": "string", "pattern": "^S[0-9]{2,}$"}, "attempt": {"type": "integer", "minimum": 1, "maximum": 3}, "mode": {"type": "string", "enum": ["text2video", "image2video", "frames2video", "multiframe2video", "multimodal2video"]}, "model": {"type": ["string", "null"]}, "video_resolution": {"type": "string", "minLength": 1}, "duration_seconds": {"type": "integer", "minimum": 1}, "request_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "credit_ceiling": {"type": "integer", "minimum": 1}}},

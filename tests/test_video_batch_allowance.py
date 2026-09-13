@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import multiprocessing
 import os
@@ -17,6 +16,8 @@ from scripts.video_batch_allowance import (
     BatchScopeError,
     BudgetExceededError,
     ReservationConsumedError,
+    FileSealKeyStore,
+    SealKeyUnavailableError,
     VideoBatchAllowance,
 )
 from scripts.video_service import build_video_request_fingerprint
@@ -47,6 +48,7 @@ def make_quote() -> dict:
         "schema_version": "1.0", "quote_version": "v001",
         "project_id": "vp_" + "1" * 24, "design_version": "v001",
         "design_fingerprint": "2" * 64, "rights_receipt_id": "rr_" + "3" * 24,
+        "rights_receipt_fingerprint": "7" * 64,
         "source_sha256": "4" * 64, "analysis_version": "v001",
         "machine_fingerprint": "5" * 64, "creative_mode": "authorized_replication",
         "audio_policy": "silent", "output_destination": "/approved/output/final.mp4",
@@ -63,10 +65,10 @@ def make_quote() -> dict:
     return quote
 
 
-def reserve_worker(root: str, allowance_id: str, fingerprint: str, start, queue) -> None:
+def reserve_worker(root: str, key_path: str, allowance_id: str, fingerprint: str, start, queue) -> None:
     start.wait()
     try:
-        result = VideoBatchAllowance(Path(root)).reserve(
+        result = VideoBatchAllowance(Path(root), seal_key_store=FileSealKeyStore(Path(key_path))).reserve(
             allowance_id, shot_id="S01", attempt=1, request_fingerprint=fingerprint
         )
         queue.put(("reserved", result["reservation_id"]))
@@ -78,9 +80,12 @@ class VideoBatchAllowanceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "allowances"
+        self.key_path = Path(self.temp.name) / "config" / "allowance-seal.key"
         self.quote = make_quote()
         self.approver = RecordingApprover()
-        self.allowances = VideoBatchAllowance(self.root)
+        self.allowances = VideoBatchAllowance(
+            self.root, seal_key_store=FileSealKeyStore(self.key_path)
+        )
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -95,19 +100,14 @@ class VideoBatchAllowanceTests(unittest.TestCase):
         self.assertEqual(displayed["source_sha256"], self.quote["source_sha256"])
         self.assertEqual(displayed["design_version"], "v001")
         self.assertEqual(displayed["rights_receipt_id"], self.quote["rights_receipt_id"])
-        rights_bytes = json.dumps(
-            {"creative_mode": "authorized_replication", "design_fingerprint": "2" * 64,
-             "project_id": "vp_" + "1" * 24, "rights_receipt_id": "rr_" + "3" * 24,
-             "source_sha256": "4" * 64},
-            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-        ).encode("utf-8")
-        self.assertEqual(displayed["rights_binding_fingerprint"], hashlib.sha256(rights_bytes).hexdigest())
+        self.assertEqual(displayed["rights_binding_fingerprint"], "7" * 64)
         self.assertEqual(displayed["quote_fingerprint"], self.quote["quote_fingerprint"])
         self.assertEqual(displayed["total_credit_ceiling"], 14)
         self.assertEqual(displayed["shot_count"], 1)
         self.assertEqual(displayed["destination"], self.quote["output_destination"])
         self.assertEqual(displayed["audio_policy"], "silent")
         self.assertEqual(displayed["output_profile"], self.quote["output_profile"])
+        self.assertEqual(displayed["cost_basis"], self.quote["cost_basis"])
         self.assertEqual(displayed["items"][0]["attempts"], self.quote["items"][0]["attempts"])
         self.assertTrue(allowance_id.startswith("ba_"))
 
@@ -147,7 +147,7 @@ class VideoBatchAllowanceTests(unittest.TestCase):
         ctx = multiprocessing.get_context("spawn")
         start, queue = ctx.Event(), ctx.Queue()
         fingerprint = self.quote["items"][0]["request_fingerprints"][0]
-        processes = [ctx.Process(target=reserve_worker, args=(str(self.root), allowance_id, fingerprint, start, queue)) for _ in range(2)]
+        processes = [ctx.Process(target=reserve_worker, args=(str(self.root), str(self.key_path), allowance_id, fingerprint, start, queue)) for _ in range(2)]
         for process in processes:
             process.start()
         start.set()
@@ -185,7 +185,7 @@ class VideoBatchAllowanceTests(unittest.TestCase):
 
     def test_allowance_survives_restart_but_quote_cannot_be_reactivated(self) -> None:
         allowance_id = self.activate()
-        restarted = VideoBatchAllowance(self.root)
+        restarted = VideoBatchAllowance(self.root, seal_key_store=FileSealKeyStore(self.key_path))
         self.assertEqual(restarted.get(allowance_id)["state"], "active")
         with self.assertRaises(AllowanceAlreadyActivatedError):
             restarted.activate(self.quote, self.approver)
@@ -199,6 +199,10 @@ class VideoBatchAllowanceTests(unittest.TestCase):
             for attempt in item["attempts"]:
                 self.allowances.reserve(allowance_id, shot_id=item["shot_id"], attempt=attempt["attempt_number"], request_fingerprint=attempt["request_fingerprint"])
         state = self.allowances.get(allowance_id)
+        self.assertEqual(state["cost_basis"], self.quote["cost_basis"])
+        self.assertEqual(state["quote_identity"]["project_id"], self.quote["project_id"])
+        self.assertNotIn("state_fingerprint", state)
+        self.assertEqual(len(state["seal"]), 64)
         self.assertEqual(state["consumed_credits"], 14)
         self.assertLessEqual(state["consumed_credits"], state["total_credit_ceiling"])
 
@@ -283,11 +287,79 @@ class VideoBatchAllowanceTests(unittest.TestCase):
                     request_fingerprint=attempt["request_fingerprint"],
                 )
         self.assertEqual(raised.exception.allowance_id, allowance_id)
-        restarted = VideoBatchAllowance(self.root)
+        restarted = VideoBatchAllowance(self.root, seal_key_store=FileSealKeyStore(self.key_path))
         with self.assertRaises(ReservationConsumedError):
             restarted.reserve(
                 allowance_id, shot_id="S01", attempt=1,
                 request_fingerprint=attempt["request_fingerprint"],
+            )
+
+    def test_allowance_tamper_cannot_be_forged_with_old_unkeyed_fingerprint(self) -> None:
+        allowance_id = self.activate()
+        path = self.root / "allowances" / f"{allowance_id}.json"
+        stored = json.loads(path.read_text())
+        stored["requests"][0]["credit_ceiling"] = 1
+        stored["total_credit_ceiling"] = 1
+        stored["cost_basis"]["credit_ceiling"] = 1
+        stored["state_fingerprint"] = canonical_fingerprint(
+            {key: value for key, value in stored.items() if key not in {"seal", "state_fingerprint"}}
+        )
+        path.write_text(json.dumps(stored))
+        path.chmod(0o600)
+        with self.assertRaises(BatchScopeError):
+            self.allowances.get(allowance_id)
+
+    def test_correctly_sealed_state_is_rejected_when_trusted_quote_mismatches(self) -> None:
+        class MutableResolver:
+            def __init__(inner, quote):
+                inner.quote = copy.deepcopy(quote)
+
+            def persist(inner, quote):
+                inner.quote = copy.deepcopy(quote)
+
+            def resolve(inner, identity):
+                return copy.deepcopy(inner.quote)
+
+        resolver = MutableResolver(self.quote)
+        allowances = VideoBatchAllowance(
+            self.root, seal_key_store=FileSealKeyStore(self.key_path), quote_resolver=resolver
+        )
+        allowance_id = allowances.activate(self.quote, self.approver)
+        resolver.quote["cost_basis"]["credit_ceiling"] = 8
+        resolver.quote["total_credit_ceiling"] = 16
+        resolver.quote["items"][0]["credit_ceiling"] = 8
+        for attempt in resolver.quote["items"][0]["attempts"]:
+            attempt["credit_ceiling"] = 8
+        resolver.quote["quote_fingerprint"] = canonical_fingerprint(
+            {key: value for key, value in resolver.quote.items() if key != "quote_fingerprint"}
+        )
+        with self.assertRaises(BatchScopeError):
+            allowances.get(allowance_id)
+
+    def test_missing_or_changed_seal_key_blocks_recovery_and_reactivation(self) -> None:
+        allowance_id = self.activate()
+        self.key_path.unlink()
+        restarted = VideoBatchAllowance(self.root, seal_key_store=FileSealKeyStore(self.key_path))
+        with self.assertRaises(SealKeyUnavailableError):
+            restarted.get(allowance_id)
+        with self.assertRaises(SealKeyUnavailableError):
+            restarted.activate(self.quote, self.approver)
+        self.key_path.write_bytes(b"x" * 32)
+        self.key_path.chmod(0o600)
+        with self.assertRaises(SealKeyUnavailableError):
+            restarted.get(allowance_id)
+
+    def test_cost_basis_tamper_is_rejected_and_exact_quote_is_rechecked_on_reserve(self) -> None:
+        allowance_id = self.activate()
+        path = self.root / "allowances" / f"{allowance_id}.json"
+        stored = json.loads(path.read_text())
+        stored["cost_basis"]["source"] = "attacker"
+        path.write_text(json.dumps(stored))
+        path.chmod(0o600)
+        with self.assertRaises(BatchScopeError):
+            self.allowances.reserve(
+                allowance_id, shot_id="S01", attempt=1,
+                request_fingerprint=self.quote["items"][0]["request_fingerprints"][0],
             )
 
 

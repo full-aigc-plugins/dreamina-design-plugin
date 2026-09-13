@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import fcntl
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -48,6 +50,13 @@ class AllowanceCommitIndeterminateError(BatchScopeError):
         self.operation = operation
 
 
+class SealKeyUnavailableError(BatchScopeError):
+    """The stable private allowance seal key is missing, changed, or unsafe."""
+
+
+_SEAL_DOMAIN = b"codex-dreamina-design/video-batch-allowance/v1\x00"
+
+
 _ALLOWANCE_ID = re.compile(r"^ba_[a-f0-9]{32}$")
 _RESERVATION_ID = re.compile(r"^br_[a-f0-9]{32}$")
 _SUBMIT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -58,13 +67,127 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+class FileSealKeyStore:
+    """Load one stable 256-bit HMAC key from an owner-only no-follow file."""
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = Path(path) if path is not None else Path.home() / ".config" / "codex-dreamina-design" / "allowance-seal.key"
+
+    def load(self, *, allow_create: bool) -> bytes:
+        parent = self.path.parent
+        if parent.is_symlink():
+            raise SealKeyUnavailableError("seal key directory must not be a symlink")
+        parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        metadata = parent.stat()
+        if metadata.st_uid != os.getuid() or not stat.S_ISDIR(metadata.st_mode):
+            raise SealKeyUnavailableError("seal key directory ownership or type is unsafe")
+        os.chmod(parent, 0o700)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(self.path, flags)
+        except FileNotFoundError:
+            if not allow_create:
+                raise SealKeyUnavailableError("seal key is missing while allowances exist")
+            key = secrets.token_bytes(32)
+            try:
+                descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                try:
+                    os.write(descriptor, key)
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            except FileExistsError:
+                return self.load(allow_create=False)
+            parent_fd = os.open(parent, os.O_RDONLY)
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+            return key
+        except OSError as exc:
+            raise SealKeyUnavailableError("seal key cannot be safely opened") from exc
+        try:
+            before = os.fstat(descriptor)
+            key = os.read(descriptor, 33)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            current = self.path.lstat()
+        except OSError as exc:
+            raise SealKeyUnavailableError("seal key path changed during read") from exc
+        if (
+            not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+            or stat.S_IMODE(before.st_mode) != 0o600 or before.st_ino != after.st_ino
+            or before.st_dev != after.st_dev or before.st_size != after.st_size or len(key) != 32
+            or current.st_ino != after.st_ino or current.st_dev != after.st_dev
+        ):
+            raise SealKeyUnavailableError("seal key ownership, mode, identity, or length is unsafe")
+        return key
+
+
+class LocalQuoteResolver:
+    """Persist and resolve the exact immutable quote when no project-store resolver is injected."""
+
+    def __init__(self, root: Path) -> None:
+        self._root = Path(root) / "quotes"
+        self._root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self._root, 0o700)
+
+    @staticmethod
+    def identity(quote: Mapping[str, Any]) -> dict[str, Any]:
+        relative = f"{quote['project_id']}/video_batch_quote/{quote['quote_version']}.json"
+        return {"project_id": quote["project_id"], "family": "video_batch_quote", "version": quote["quote_version"], "path": relative, "fingerprint": quote["quote_fingerprint"]}
+
+    def persist(self, quote: Mapping[str, Any]) -> dict[str, Any]:
+        identity = self.identity(quote)
+        path = self._root / identity["path"]
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(path.parent, 0o700)
+        encoded = json.dumps(dict(quote), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        except FileExistsError:
+            if self.resolve(identity) != dict(quote):
+                raise BatchScopeError("persisted quote identity collides with different content")
+            return identity
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return identity
+
+    def resolve(self, identity: Mapping[str, Any]) -> dict[str, Any]:
+        path = self._root / str(identity["path"])
+        try:
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600:
+                raise BatchScopeError("persisted quote file is unsafe")
+            quote = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, KeyError) as exc:
+            raise BatchScopeError("persisted quote cannot be resolved") from exc
+        return quote
+
+
 class VideoBatchAllowance:
     """Activate and irreversibly consume an exact, non-expandable quote."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        seal_key_store: Any | None = None,
+        quote_resolver: Any | None = None,
+        project_store: Any | None = None,
+        rights_service: Any | None = None,
+    ) -> None:
         self._root = Path(root)
         self._allowances = self._root / "allowances"
         self._activations = self._root / "activations"
+        self._seal_key_store = seal_key_store or FileSealKeyStore()
+        self._quote_resolver = quote_resolver or LocalQuoteResolver(self._root)
+        self._project_store = project_store
+        self._rights_service = rights_service
         for directory in (self._root, self._allowances, self._activations):
             if directory.is_symlink():
                 raise BatchScopeError("allowance directory must not be a symlink")
@@ -73,19 +196,42 @@ class VideoBatchAllowance:
             if metadata.st_uid != os.getuid() or not stat.S_ISDIR(metadata.st_mode):
                 raise BatchScopeError("allowance directory ownership or type is unsafe")
             os.chmod(directory, 0o700)
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        self._root_fd = os.open(self._root, directory_flags)
+        self._allowances_fd = os.open("allowances", directory_flags, dir_fd=self._root_fd)
+        self._activations_fd = os.open("activations", directory_flags, dir_fd=self._root_fd)
+        self._root_identity = os.fstat(self._root_fd)
+        self._lock_fd = os.open(".allowance.lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=self._root_fd)
+        os.fchmod(self._lock_fd, 0o600)
+
+    def close(self) -> None:
+        """Close every pinned descriptor owned by this allowance store."""
+        for field in ("_lock_fd", "_activations_fd", "_allowances_fd", "_root_fd"):
+            descriptor = getattr(self, field, None)
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+                setattr(self, field, None)
 
     def activate(self, quote: Mapping[str, Any], approver: Any) -> str:
         """Obtain native approval once and persist the exact batch allowance."""
         quote_copy = self._copy_json(quote)
         self._validate_quote_for_activation(quote_copy)
+        self._revalidate_rights(quote_copy)
         quote_fingerprint = quote_copy["quote_fingerprint"]
         with self._exclusive_lock():
+            key = self._seal_key_store.load(allow_create=not self._allowance_names())
             activation_path = self._activations / f"{quote_fingerprint}.json"
-            if activation_path.exists() or any(
-                self._load_path(path)["quote_fingerprint"] == quote_fingerprint
-                for path in self._allowances.glob("ba_*.json")
+            if self._exists_at(self._activations_fd, activation_path.name) or any(
+                self._load_name(name, key=key)["quote_fingerprint"] == quote_fingerprint
+                for name in self._allowance_names()
             ):
                 raise AllowanceAlreadyActivatedError("quote approval was already activated")
+            quote_identity = self._persist_quote(quote_copy)
+            if self._copy_json(self._quote_resolver.resolve(copy.deepcopy(quote_identity))) != quote_copy:
+                raise BatchScopeError("persisted exact quote changed before native confirmation")
             approval_request = self._approval_request(quote_copy)
             confirmation_request = copy.deepcopy(approval_request)
             approval_bytes = self._canonical_bytes(confirmation_request)
@@ -99,23 +245,29 @@ class VideoBatchAllowance:
             allowance: dict[str, Any] = {
                 "schema_version": "1.0", "allowance_id": allowance_id, "state": "active",
                 "project_id": quote_copy["project_id"], "quote_version": quote_copy["quote_version"],
-                "quote_fingerprint": quote_fingerprint, "source_sha256": quote_copy["source_sha256"],
+                "quote_fingerprint": quote_fingerprint, "quote_identity": quote_identity,
+                "source_sha256": quote_copy["source_sha256"],
                 "analysis_version": quote_copy["analysis_version"], "design_version": quote_copy["design_version"],
                 "design_fingerprint": quote_copy["design_fingerprint"],
-                "rights_receipt_id": quote_copy["rights_receipt_id"],
-                "rights_binding_fingerprint": self._rights_binding(quote_copy),
                 "creative_mode": quote_copy["creative_mode"], "audio_policy": quote_copy["audio_policy"],
                 "destination": quote_copy["output_destination"],
                 "output_profile": copy.deepcopy(quote_copy["output_profile"]),
                 "capability_snapshot_fingerprint": quote_copy["capability_snapshot_fingerprint"],
+                "cost_basis": copy.deepcopy(quote_copy["cost_basis"]),
+                "item_count": quote_copy["item_count"], "task_count": quote_copy["task_count"],
+                "reserved_retry_count": quote_copy["reserved_retry_count"],
                 "total_credit_ceiling": quote_copy["total_credit_ceiling"], "consumed_credits": 0,
                 "requests": requests, "reservations": [], "activated_at": timestamp,
                 "history": [{"state": "active", "at": timestamp}],
+                "seal_key_id": hashlib.sha256(key).hexdigest(),
             }
-            self._seal(allowance)
+            if quote_copy["creative_mode"] == "authorized_replication":
+                allowance["rights_receipt_id"] = quote_copy["rights_receipt_id"]
+                allowance["rights_receipt_fingerprint"] = quote_copy["rights_receipt_fingerprint"]
+            self._seal(allowance, key)
             try:
-                self._atomic_write(self._allowance_path(allowance_id), allowance, allowance_id=allowance_id, operation="activation")
-                self._atomic_write(activation_path, {"allowance_id": allowance_id, "quote_fingerprint": quote_fingerprint}, allowance_id=allowance_id, operation="activation-index")
+                self._atomic_write_at(self._allowances_fd, f"{allowance_id}.json", allowance, allowance_id=allowance_id, operation="activation")
+                self._atomic_write_at(self._activations_fd, activation_path.name, {"allowance_id": allowance_id, "quote_fingerprint": quote_fingerprint}, allowance_id=allowance_id, operation="activation-index")
             except BatchScopeError:
                 raise
             except Exception as exc:
@@ -130,7 +282,7 @@ class VideoBatchAllowance:
             validate_batch_quote(quote_copy)
         except (ContractValidationError, PlanningError, TypeError, ValueError) as exc:
             raise BatchScopeError("quote is invalid or outside the approved batch envelope") from exc
-        if quote_copy["quote_fingerprint"] != allowance["quote_fingerprint"]:
+        if quote_copy != self._resolve_quote(allowance) or quote_copy["quote_fingerprint"] != allowance["quote_fingerprint"]:
             raise BatchScopeError("quote is outside the approved batch envelope")
 
     def reserve(self, allowance_id: str, *, shot_id: str, attempt: int, request_fingerprint: str) -> dict[str, Any]:
@@ -143,18 +295,24 @@ class VideoBatchAllowance:
         ):
             raise BatchScopeError("reservation tuple has invalid types")
         with self._exclusive_lock():
-            allowance = self._load_allowance(allowance_id)
+            key = self._seal_key_store.load(allow_create=False)
+            allowance = self._load_allowance(allowance_id, key=key)
             item = next((entry for entry in allowance["requests"] if entry["request_fingerprint"] == request_fingerprint), None)
             if item is None or item["shot_id"] != shot_id or item["attempt"] != attempt:
                 raise BatchScopeError("request is outside the approved batch envelope")
-            if any(entry["request_fingerprint"] == request_fingerprint for entry in allowance["reservations"]):
+            if any(
+                reservation["request_fingerprint"] == request_fingerprint
+                or (reservation["shot_id"], reservation["attempt"]) == (shot_id, attempt)
+                for other in self._all_allowances(key)
+                for reservation in other["reservations"]
+            ):
                 raise ReservationConsumedError("the exact request reservation is already consumed")
             new_total = allowance["consumed_credits"] + item["credit_ceiling"]
             if new_total > allowance["total_credit_ceiling"]:
                 raise BudgetExceededError("reservation exceeds the approved credit ceiling")
             timestamp = _now_iso()
             reservation = {
-                "reservation_id": "br_" + secrets.token_hex(16), "shot_id": shot_id,
+                "reservation_id": "br_" + secrets.token_hex(16), "allowance_id": allowance_id, "shot_id": shot_id,
                 "attempt": attempt, "request_fingerprint": request_fingerprint,
                 "credit_ceiling": item["credit_ceiling"], "state": "reserved", "reserved_at": timestamp,
                 "history": [{"state": "reserved", "at": timestamp}],
@@ -164,8 +322,8 @@ class VideoBatchAllowance:
             if len(allowance["reservations"]) == len(allowance["requests"]):
                 allowance["state"] = "exhausted"
             allowance["history"].append({"state": "reserved", "at": timestamp, "reservation_id": reservation["reservation_id"]})
-            self._seal(allowance)
-            self._atomic_write(self._allowance_path(allowance_id), allowance, allowance_id=allowance_id, operation="reservation")
+            self._seal(allowance, key)
+            self._atomic_write_at(self._allowances_fd, f"{allowance_id}.json", allowance, allowance_id=allowance_id, operation="reservation")
             return copy.deepcopy(reservation)
 
     def commit(self, reservation_id: str, submit_id: str) -> dict[str, Any]:
@@ -174,21 +332,28 @@ class VideoBatchAllowance:
             raise BatchScopeError("invalid reservation or submit identifier")
         return self._transition_reservation(reservation_id, "committed", submit_id=submit_id)
 
-    def mark_ambiguous(self, reservation_id: str, error_code: str) -> dict[str, Any]:
+    def mark_ambiguous(self, reservation_id: str, error_code: str, *, submit_id: str | None = None) -> dict[str, Any]:
         """Irreversibly record an unknown result after the invocation boundary."""
         if not _RESERVATION_ID.fullmatch(reservation_id) or not isinstance(error_code, str) or _ERROR_CODE.fullmatch(error_code) is None:
             raise BatchScopeError("invalid reservation or ambiguity code")
-        return self._transition_reservation(reservation_id, "ambiguous", error_code=error_code)
+        if submit_id is not None and (not isinstance(submit_id, str) or _SUBMIT_ID.fullmatch(submit_id) is None):
+            raise BatchScopeError("invalid ambiguous submit identifier")
+        details = {"error_code": error_code, "required_action": "query"}
+        if submit_id is not None:
+            details["submit_id"] = submit_id
+        return self._transition_reservation(reservation_id, "ambiguous", **details)
 
     def get(self, allowance_id: str) -> dict[str, Any]:
         """Return a validated copy of one durable allowance."""
         with self._exclusive_lock():
-            return copy.deepcopy(self._load_allowance(allowance_id))
+            key = self._seal_key_store.load(allow_create=False)
+            return copy.deepcopy(self._load_allowance(allowance_id, key=key))
 
     def _transition_reservation(self, reservation_id: str, state: str, **details: str) -> dict[str, Any]:
         with self._exclusive_lock():
-            for path in self._allowances.glob("ba_*.json"):
-                allowance = self._load_path(path)
+            key = self._seal_key_store.load(allow_create=False)
+            for name in self._allowance_names():
+                allowance = self._load_name(name, key=key)
                 reservation = next((item for item in allowance["reservations"] if item["reservation_id"] == reservation_id), None)
                 if reservation is None:
                     continue
@@ -204,8 +369,8 @@ class VideoBatchAllowance:
                     raise ReservationConsumedError("reservation already crossed its terminal boundary")
                 if state == "committed" and any(
                     other.get("submit_id") == details["submit_id"]
-                    for candidate in self._allowances.glob("ba_*.json")
-                    for other in self._load_path(candidate)["reservations"]
+                    for candidate in self._allowance_names()
+                    for other in self._load_name(candidate, key=key)["reservations"]
                     if other["reservation_id"] != reservation_id
                 ):
                     raise ReservationConsumedError("submit identifier is already bound to another reservation")
@@ -215,8 +380,8 @@ class VideoBatchAllowance:
                 event = {"state": state, "at": timestamp, **details}
                 reservation["history"].append(event)
                 allowance["history"].append({"state": state, "at": timestamp, "reservation_id": reservation_id, **details})
-                self._seal(allowance)
-                self._atomic_write(path, allowance, allowance_id=allowance["allowance_id"], operation=state)
+                self._seal(allowance, key)
+                self._atomic_write_at(self._allowances_fd, name, allowance, allowance_id=allowance["allowance_id"], operation=state)
                 return copy.deepcopy(reservation)
         raise AllowanceNotFoundError("reservation does not exist")
 
@@ -265,6 +430,7 @@ class VideoBatchAllowance:
             "shot_count": quote["item_count"], "task_count": quote["task_count"],
             "reserved_retry_count": quote["reserved_retry_count"],
             "total_credit_ceiling": quote["total_credit_ceiling"], "destination": quote["output_destination"],
+            "cost_basis": copy.deepcopy(quote["cost_basis"]),
             "output_profile": copy.deepcopy(quote["output_profile"]), "items": copy.deepcopy(quote["items"]),
         }
 
@@ -281,10 +447,10 @@ class VideoBatchAllowance:
             "source_sha256": quote.get("source_sha256"),
         })
 
-    def _load_allowance(self, allowance_id: str) -> dict[str, Any]:
-        return self._load_path(self._allowance_path(allowance_id))
+    def _load_allowance(self, allowance_id: str, *, key: bytes) -> dict[str, Any]:
+        return self._load_path(self._allowance_path(allowance_id), key=key)
 
-    def _load_path(self, path: Path) -> dict[str, Any]:
+    def _load_path(self, path: Path, *, key: bytes) -> dict[str, Any]:
         try:
             metadata = path.lstat()
             if (
@@ -300,10 +466,13 @@ class VideoBatchAllowance:
             raise BatchScopeError("allowance durable state is missing or corrupt") from exc
         if not isinstance(payload, dict):
             raise BatchScopeError("allowance durable state is corrupt")
-        fingerprint = payload.get("state_fingerprint")
-        core = {key: value for key, value in payload.items() if key != "state_fingerprint"}
-        if fingerprint != canonical_fingerprint(core):
-            raise BatchScopeError("allowance durable state fingerprint mismatch")
+        seal = payload.get("seal")
+        core = {field: value for field, value in payload.items() if field != "seal"}
+        if payload.get("seal_key_id") != hashlib.sha256(key).hexdigest():
+            raise SealKeyUnavailableError("allowance was sealed with a different key")
+        expected = hmac.new(key, _SEAL_DOMAIN + self._canonical_bytes(core), "sha256").hexdigest()
+        if not isinstance(seal, str) or not hmac.compare_digest(seal, expected):
+            raise BatchScopeError("allowance HMAC seal verification failed")
         try:
             validate_contract(payload, "video_batch_allowance.schema.json")
         except ContractValidationError as exc:
@@ -312,6 +481,7 @@ class VideoBatchAllowance:
             raise BatchScopeError("allowance consumed credits are corrupt")
         if payload["consumed_credits"] > payload["total_credit_ceiling"]:
             raise BudgetExceededError("allowance exceeds its approved ceiling")
+        self._validate_against_quote(payload)
         return payload
 
     def _allowance_path(self, allowance_id: str) -> Path:
@@ -327,10 +497,46 @@ class VideoBatchAllowance:
             raise BatchScopeError("batch quote is not canonical JSON") from exc
         return copied
 
-    @staticmethod
-    def _seal(payload: dict[str, Any]) -> None:
-        payload.pop("state_fingerprint", None)
-        payload["state_fingerprint"] = canonical_fingerprint(payload)
+    @classmethod
+    def _seal(cls, payload: dict[str, Any], key: bytes) -> None:
+        payload.pop("seal", None)
+        payload["seal"] = hmac.new(key, _SEAL_DOMAIN + cls._canonical_bytes(payload), "sha256").hexdigest()
+
+    def _persist_quote(self, quote: Mapping[str, Any]) -> dict[str, Any]:
+        result = self._quote_resolver.persist(copy.deepcopy(dict(quote)))
+        identity = LocalQuoteResolver.identity(quote)
+        if result is not None and result != identity:
+            raise BatchScopeError("quote resolver returned a mismatched immutable identity")
+        return identity
+
+    def _resolve_quote(self, allowance: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            quote = self._copy_json(self._quote_resolver.resolve(copy.deepcopy(allowance["quote_identity"])))
+            validate_batch_quote(quote)
+        except (AttributeError, ContractValidationError, PlanningError, TypeError, ValueError, KeyError) as exc:
+            raise BatchScopeError("trusted exact quote resolution failed") from exc
+        identity = LocalQuoteResolver.identity(quote)
+        if identity != allowance["quote_identity"]:
+            raise BatchScopeError("resolved quote identity or fingerprint changed")
+        return quote
+
+    def _validate_against_quote(self, allowance: Mapping[str, Any]) -> None:
+        quote = self._resolve_quote(allowance)
+        expected = {
+            "project_id": quote["project_id"], "quote_version": quote["quote_version"],
+            "quote_fingerprint": quote["quote_fingerprint"], "source_sha256": quote["source_sha256"],
+            "analysis_version": quote["analysis_version"], "design_version": quote["design_version"],
+            "design_fingerprint": quote["design_fingerprint"], "rights_receipt_id": quote["rights_receipt_id"],
+            "rights_binding_fingerprint": self._rights_binding(quote), "creative_mode": quote["creative_mode"],
+            "audio_policy": quote["audio_policy"], "destination": quote["output_destination"],
+            "output_profile": quote["output_profile"], "capability_snapshot_fingerprint": quote["capability_snapshot_fingerprint"],
+            "cost_basis": quote["cost_basis"], "total_credit_ceiling": quote["total_credit_ceiling"],
+            "item_count": quote["item_count"], "task_count": quote["task_count"],
+            "reserved_retry_count": quote["reserved_retry_count"],
+            "requests": self._flatten_requests(quote),
+        }
+        if any(allowance.get(field) != value for field, value in expected.items()):
+            raise BatchScopeError("allowance differs from the trusted immutable quote")
 
     def _atomic_write(self, path: Path, payload: Mapping[str, Any], *, allowance_id: str, operation: str) -> None:
         descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
@@ -375,6 +581,7 @@ class VideoBatchAllowance:
 
 
 __all__ = [
-    "AllowanceAlreadyActivatedError", "AllowanceCommitIndeterminateError", "AllowanceNotFoundError", "BatchScopeError",
+    "AllowanceAlreadyActivatedError", "AllowanceCommitIndeterminateError", "AllowanceNotFoundError", "BatchScopeError", "FileSealKeyStore",
     "BudgetExceededError", "ReservationConsumedError", "VideoBatchAllowance",
+    "SealKeyUnavailableError",
 ]
