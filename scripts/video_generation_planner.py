@@ -207,7 +207,6 @@ class VideoGenerationPlanner:
             "schema_version": "1.0", "quote_version": "v001",
             "project_id": design.get("project_id"), "design_version": design.get("version"),
             "design_fingerprint": design.get("design_fingerprint"),
-            "rights_receipt_id": design.get("rights_receipt_id"),
             "source_sha256": design.get("source_sha256"),
             "analysis_version": design.get("analysis_version"),
             "machine_fingerprint": design.get("machine_fingerprint"),
@@ -226,6 +225,11 @@ class VideoGenerationPlanner:
             "total_credit_ceiling": quote_total(items),
             "quoted_at": normalized_cost["recorded_at"],
         }
+        if design.get("creative_mode") == "authorized_replication":
+            quote["rights_receipt_id"] = design.get("rights_receipt_id")
+            quote["rights_receipt_fingerprint"] = design.get("rights_receipt_fingerprint")
+        elif design.get("rights_receipt_id") is not None or design.get("rights_receipt_fingerprint") is not None:
+            raise PlanningError("original redesign must not carry rights receipt fields")
         quote["quote_fingerprint"] = canonical_fingerprint(quote)
         validate_batch_quote(quote)
         return copy.deepcopy(quote)
@@ -296,6 +300,7 @@ class VideoGenerationPlanner:
                     "required_media": payload["required_media"], "purpose": payload["purpose"],
                     "audience": payload["audience"], "territory": payload["territory"],
                 })
+            rights_receipt_fingerprint = canonical_fingerprint(receipt)
         elif design.get("rights_receipt_id") is not None:
             raise PlanningError("original redesign must not carry a replication receipt")
         shots = []
@@ -305,10 +310,13 @@ class VideoGenerationPlanner:
                 raise PlanningError(f"generation options missing for {source_shot['id']}")
             shots.append({**copy.deepcopy(dict(options)), "id": source_shot["id"], "prompt": source_shot["prompt"]})
         materialized = {
-            **{key: copy.deepcopy(design[key]) for key in ("project_id", "version", "design_fingerprint", "rights_receipt_id", "source_sha256", "analysis_version", "machine_fingerprint", "creative_mode")},
+            **{key: copy.deepcopy(design[key]) for key in ("project_id", "version", "design_fingerprint", "source_sha256", "analysis_version", "machine_fingerprint", "creative_mode")},
             "audio_policy": project["audio_policy"], "output_destination": output_destination,
             "output_profile": copy.deepcopy(dict(output_profile)), "shots": shots,
         }
+        if design["creative_mode"] == "authorized_replication":
+            materialized["rights_receipt_id"] = receipt_id
+            materialized["rights_receipt_fingerprint"] = rights_receipt_fingerprint
         return self._plan_materialized(materialized, snapshot, cost_basis)
 
     def _validate_snapshot(self, snapshot: Mapping[str, Any]) -> None:

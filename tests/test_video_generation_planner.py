@@ -54,7 +54,9 @@ def design(shots=None, **overrides) -> dict:
     value = {
         "schema_version": "1.0", "version": "v001", "project_id": "vp_" + "1" * 24,
         "source_sha256": "2" * 64, "design_fingerprint": "3" * 64,
-        "rights_receipt_id": "rr_" + "4" * 24, "creative_mode": "authorized_replication",
+        "rights_receipt_id": "rr_" + "4" * 24,
+        "rights_receipt_fingerprint": "7" * 64,
+        "creative_mode": "authorized_replication",
         "analysis_version": "v001", "machine_fingerprint": "5" * 64,
         "audio_policy": "silent", "output_destination": "/exports/final.mp4",
         "output_profile": {"container": "mp4", "codec": "h264"},
@@ -165,6 +167,43 @@ class VideoGenerationPlannerTests(unittest.TestCase):
         for attempt in quote["items"][0]["attempts"]:
             self.assertEqual(attempt["request_fingerprint"], build_video_request_fingerprint(attempt["request"]))
         validate_contract(quote, "video_batch_quote.schema.json")
+
+    def test_original_quote_omits_rights_fields_and_replication_binds_receipt_bytes(self):
+        replication = self.planner._plan_materialized(design(), self.snapshot, self.cost)
+        self.assertEqual(replication["rights_receipt_fingerprint"], "7" * 64)
+        original_design = design(
+            creative_mode="original_redesign",
+            rights_receipt_id=None,
+            rights_receipt_fingerprint=None,
+        )
+        original = self.planner._plan_materialized(original_design, self.snapshot, self.cost)
+        self.assertNotIn("rights_receipt_id", original)
+        self.assertNotIn("rights_receipt_fingerprint", original)
+        validate_contract(original, "video_batch_quote.schema.json")
+
+        missing = copy.deepcopy(replication)
+        del missing["rights_receipt_fingerprint"]
+        with self.assertRaises(Exception):
+            validate_contract(missing, "video_batch_quote.schema.json")
+
+        forbidden = copy.deepcopy(original)
+        forbidden["rights_receipt_id"] = "rr_" + "4" * 24
+        with self.assertRaises(Exception):
+            validate_contract(forbidden, "video_batch_quote.schema.json")
+
+    def test_rights_receipt_tamper_invalidates_quote_fingerprint(self):
+        quote = self.planner._plan_materialized(design(), self.snapshot, self.cost)
+        quote["rights_receipt_fingerprint"] = "8" * 64
+        with self.assertRaisesRegex(PlanningError, "quote_fingerprint"):
+            self.planner.validate_quote(quote)
+
+    def test_original_materialized_quote_rejects_caller_rights_fingerprint(self):
+        original_design = design(
+            creative_mode="original_redesign", rights_receipt_id=None,
+            rights_receipt_fingerprint="9" * 64,
+        )
+        with self.assertRaisesRegex(PlanningError, "must not carry rights"):
+            self.planner._plan_materialized(original_design, self.snapshot, self.cost)
 
     def test_unknown_price_blocks_instead_of_inventing_cost(self):
         with self.assertRaisesRegex(CostBasisError, "explicit operator ceiling"):
