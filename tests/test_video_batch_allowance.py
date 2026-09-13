@@ -6,7 +6,6 @@ import multiprocessing
 import os
 import tempfile
 import threading
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -622,6 +621,51 @@ class VideoBatchAllowanceTests(unittest.TestCase):
         self.assertEqual(list((self.root / "allowances").glob("*.json")), [])
         self.assertEqual(list((self.root / "activations").glob("*.json")), [])
 
+    def test_quote_replacement_during_native_dialog_prevents_activation(self) -> None:
+        class MutableResolver:
+            def __init__(inner):
+                inner.quote = None
+
+            def persist(inner, quote):
+                inner.quote = copy.deepcopy(quote)
+
+            def resolve(inner, identity):
+                return copy.deepcopy(inner.quote)
+
+        resolver = MutableResolver()
+
+        class ReplacingApprover(RecordingApprover):
+            def confirm_video_batch(inner, request):
+                token = super().confirm_video_batch(request)
+                resolver.quote["total_credit_ceiling"] = 1
+                return token
+
+        allowances = make_allowances(self.root, self.key_path, quote_resolver=resolver)
+        with self.assertRaises(BatchScopeError):
+            allowances.activate(self.quote, ReplacingApprover())
+        self.assertEqual(list((self.root / "allowances").glob("*.json")), [])
+
+    def test_exact_shot_attempt_tuple_is_globally_single_use_even_with_distinct_fingerprint(self) -> None:
+        first_id = self.activate()
+        self.reserve_first(first_id, self.quote)
+        second_quote = copy.deepcopy(self.quote)
+        second_quote["project_id"] = "vp_" + "7" * 24
+        second_quote["creative_mode"] = "original_redesign"
+        second_quote.pop("rights_receipt_id")
+        second_quote.pop("rights_receipt_fingerprint")
+        for index, attempt in enumerate(second_quote["items"][0]["attempts"], start=1):
+            attempt["request"]["prompt"] += f" tuple-{index}"
+            attempt["request_fingerprint"] = build_video_request_fingerprint(attempt["request"])
+        second_quote["items"][0]["request_fingerprints"] = [
+            attempt["request_fingerprint"] for attempt in second_quote["items"][0]["attempts"]
+        ]
+        second_quote["quote_fingerprint"] = canonical_fingerprint(
+            {key: value for key, value in second_quote.items() if key != "quote_fingerprint"}
+        )
+        second_id = self.allowances.activate(second_quote, self.approver)
+        with self.assertRaises(ReservationConsumedError):
+            self.reserve_first(second_id, second_quote)
+
     def test_symlink_root_and_replaced_allowances_directory_fail_closed(self) -> None:
         target = Path(self.temp.name) / "symlink-target"
         target.mkdir(mode=0o700)
@@ -642,12 +686,16 @@ class VideoBatchAllowanceTests(unittest.TestCase):
         allowance_id = self.activate()
         attempt = self.quote["items"][0]["attempts"][0]
         start = threading.Barrier(3)
+        scan_gate = threading.Barrier(2)
         results: list[str] = []
-        original_load = self.allowances._load_allowance
+        original_scan = self.allowances._all_allowances
 
-        def slow_load(*args, **kwargs):
-            value = original_load(*args, **kwargs)
-            time.sleep(0.03)
+        def synchronized_scan(*args, **kwargs):
+            value = original_scan(*args, **kwargs)
+            try:
+                scan_gate.wait(timeout=0.1)
+            except threading.BrokenBarrierError:
+                pass
             return value
 
         def worker():
@@ -661,7 +709,7 @@ class VideoBatchAllowanceTests(unittest.TestCase):
             except ReservationConsumedError:
                 results.append("rejected")
 
-        with patch.object(self.allowances, "_load_allowance", side_effect=slow_load), patch(
+        with patch.object(self.allowances, "_all_allowances", side_effect=synchronized_scan), patch(
             "scripts.video_batch_allowance.fcntl.flock", return_value=None
         ):
             threads = [threading.Thread(target=worker) for _ in range(2)]
