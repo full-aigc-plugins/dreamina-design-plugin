@@ -136,7 +136,7 @@ Expected: FAIL because `scripts.json_contracts` and the new schema are absent; e
 
 ```python
 class ContractValidationError(ValueError):
-    pass
+    """A versioned public JSON artifact violates its closed schema."""
 
 def load_schema(name: str) -> dict[str, Any]:
     target = (SCHEMAS_ROOT / name).resolve(strict=True)
@@ -1023,13 +1023,19 @@ Expected: FAIL because the three services and audio schema are absent.
 - [ ] **Step 3: Implement explicit local provider contracts**
 
 ```python
-class TranscriptionProvider(Protocol):
+class WhisperCliProvider:
     def transcribe(self, audio_path: Path, *, language: str | None) -> list[dict[str, Any]]:
-        raise NotImplementedError
+        argv = ["--model", str(self._model), "--output_format", "json", "--output_dir", str(self._output_root)]
+        if language is not None:
+            argv.extend(["--language", language])
+        result = self._adapter.run("whisper", [*argv, str(audio_path)], timeout_seconds=1800)
+        return self._parse_segments(result.stdout)
 
-class NarrationProvider(Protocol):
+class MacOSSayProvider:
     def synthesize(self, cues: Sequence[Mapping[str, Any]], *, voice: str, output_path: Path) -> dict[str, Any]:
-        raise NotImplementedError
+        script_path = self._write_private_script(cues)
+        self._adapter.run("narration", ["-v", voice, "-f", str(script_path), "-o", str(output_path)], timeout_seconds=300)
+        return self._artifact_receipt(output_path, provider="macos-say", voice=voice)
 
 AUDIO_POLICIES = frozenset({"full_redesign", "preserve_authorized_audio", "subtitles_only", "silent"})
 ```
@@ -1551,6 +1557,28 @@ git commit -m "test: record Dreamina video production acceptance"
 ```
 
 ---
+
+## Specification Coverage Matrix
+
+| Approved design section | Implementing tasks | Acceptance evidence |
+|---|---|---|
+| Product definition; additive compatibility | 1, 14, 15, 16 | frozen 0.3 tool schemas, direct-route regression, installed 21-tool inventory |
+| Goals, non-goals, and no arbitrary execution | 1–3, 6–14 | closed-schema, trust-boundary, rights, and raw-argument rejection tests |
+| Original redesign and authorized replication | 6, 11, 13 | two-mode rights fixtures, audio reuse gates, export confirmation |
+| Complete output loop | 3–13 | one project reaches verified MP4 and comparison report |
+| Four audio policies | 6, 11–13 | provider, rights, subtitle, mix, and final-stream tests |
+| Whole-batch budget approval | 7–10 | exact request enumeration, native envelope, concurrency, no-expansion tests |
+| Responsibility split | 2, 4, 5, 7, 10–12, 15 | machine/model separation and independent evaluator tests |
+| Python-native analysis | 2–5 | synthetic source, cuts, motion, frames, sheets, recut, fifteen gates |
+| Redesign and preservation policy | 6, 7 | version binding and complete similarity audit |
+| Generation, evaluation, and retry | 7–10 | live-capability plan, durable allowance, query-first recovery, prequoted retry |
+| Local audio, subtitles, and composition | 11–13 | trusted ASR/narration, SRT/ASS, exact ffmpeg argv, final media receipt |
+| Ten additive MCP tools | 14 | exact 21-tool stdio inventory and handler tests |
+| Additive Skill surface | 15 | seventeen-Skill discovery, routing separation, TRACE, upstream parity |
+| Authorization, privacy, and security | 2, 3, 6, 8, 9, 11–14 | native confirmations, private storage, digest binding, redaction, no secrets |
+| Artifacts and schemas | 1, 3–13 | closed contract tests, fingerprints, parent versions, provenance |
+| ReelBench disposition | 4, 16 | fixed commit attribution, independent selftest, third-party notice |
+| Testing, runtime acceptance, rollout, definition of done | 16, 17 | offline suite, real host, fresh paid approval, installed cache, CI, SHA equality |
 
 ## Phase Gates and Execution Order
 
