@@ -201,6 +201,39 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
         with self.assertRaises(TrustedMediaToolError):
             self.store.load_required({"ffmpeg"})
 
+    def test_temp_open_failure_closes_directory_fd_without_mutation(self) -> None:
+        real_open = os.open
+        opened_directory_fds: list[int] = []
+
+        def fail_temp_open(path, flags, mode=0o777, *, dir_fd=None):
+            if dir_fd is not None:
+                raise OSError("injected temp open failure")
+            descriptor = real_open(path, flags, mode)
+            if Path(path) == self.store.path.parent:
+                opened_directory_fds.append(descriptor)
+            return descriptor
+
+        with (
+            patch("scripts.trusted_media_tools.os.open", side_effect=fail_temp_open),
+            patch("scripts.trusted_media_tools.os.replace") as replace,
+            patch("scripts.trusted_media_tools.os.unlink") as unlink,
+        ):
+            with self.assertRaisesRegex(OSError, "injected temp open failure"):
+                self.store.enroll("ffmpeg", self.ffmpeg, approval_provider=self.approver)
+
+        self.assertEqual(len(opened_directory_fds), 1)
+        directory_fd = opened_directory_fds[0]
+        try:
+            with self.assertRaises(OSError):
+                os.fstat(directory_fd)
+        finally:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                pass
+        replace.assert_not_called()
+        unlink.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

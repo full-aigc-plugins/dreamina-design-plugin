@@ -221,10 +221,15 @@ class TrustedMediaToolStore:
         directory_fd = self._open_private_config_directory(create=True)
         tmp_name = f".trusted-media-tools.{secrets.token_hex(12)}"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(tmp_name, flags, 0o600, dir_fd=directory_fd)
+        fd: int | None = None
+        temp_created = False
         try:
+            fd = os.open(tmp_name, flags, 0o600, dir_fd=directory_fd)
+            temp_created = True
             os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle = os.fdopen(fd, "w", encoding="utf-8")
+            fd = None  # Ownership transferred to the file object.
+            with handle:
                 json.dump(payload, handle, indent=2, sort_keys=True)
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -236,12 +241,15 @@ class TrustedMediaToolStore:
             )
             os.fsync(directory_fd)
         except Exception:
-            try:
-                os.unlink(tmp_name, dir_fd=directory_fd)
-            except FileNotFoundError:
-                pass
+            if temp_created:
+                try:
+                    os.unlink(tmp_name, dir_fd=directory_fd)
+                except FileNotFoundError:
+                    pass
             raise
         finally:
+            if fd is not None:
+                os.close(fd)
             os.close(directory_fd)
 
     def _ensure_private_config_directory(self, *, create: bool) -> os.stat_result:
