@@ -65,6 +65,8 @@ class DreaminaAdapterConstructionTests(unittest.TestCase):
         with self.assertRaises(CLINotFoundError) as ctx:
             adapter.run(["--help"])
         self.assertNotIn("credential", str(ctx.exception).lower())
+        self.assertFalse(ctx.exception.invocation_started)
+        self.assertFalse(ctx.exception.outcome_ambiguous)
 
     def test_argv_is_passed_without_shell(self) -> None:
         """Subprocess must be invoked with a list, not a shell string."""
@@ -156,8 +158,10 @@ class DreaminaAdapterRunTests(unittest.TestCase):
             """
         )
         adapter.timeout_seconds = 0.2
-        with self.assertRaises(AdapterTimeoutError):
+        with self.assertRaises(AdapterTimeoutError) as caught:
             adapter.run(["slow"])
+        self.assertTrue(caught.exception.invocation_started)
+        self.assertTrue(caught.exception.outcome_ambiguous)
 
     def test_stdout_and_stderr_are_separated(self) -> None:
         adapter = self._make_adapter(
