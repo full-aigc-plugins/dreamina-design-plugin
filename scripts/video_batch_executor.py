@@ -32,6 +32,7 @@ class VideoBatchExecutor:
             if not create:
                 raise
             os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+            os.fsync(parent_fd)
             entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
         metadata = os.fstat(descriptor)
@@ -337,6 +338,14 @@ class VideoBatchExecutor:
             raise ValueError("evaluation identity does not match the generated task")
         artifacts = task.get("artifacts", [])
         if re.fullmatch(r"[a-f0-9]{64}", artifact_sha256) is None or not any(item.get("sha256") == artifact_sha256 for item in artifacts):
+            raise ValueError("evaluation artifact digest is stale")
+        bound_artifact = next(item for item in artifacts if item.get("sha256") == artifact_sha256)
+        try:
+            current_artifacts = self._tasks.verify_download_dir(str(Path(bound_artifact["path"]).parent))
+        except (OSError, ValueError) as exc:
+            raise ValueError("evaluation artifact is no longer safely readable") from exc
+        if not any(item.get("sha256") == artifact_sha256 and item.get("path") == bound_artifact.get("path")
+                   for item in current_artifacts):
             raise ValueError("evaluation artifact digest is stale")
         binding = {"project_id": project_id, "batch_version": batch_version,
                    "design_version": design_version, "shot_id": shot_id, "attempt": attempt,
