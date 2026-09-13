@@ -497,8 +497,11 @@ class VideoService:
                     pass
             if not begin_intent:
                 raise
+            evidence_bytes = getattr(exc, "result_bytes", None)
+            if not isinstance(evidence_bytes, bytes):
+                evidence_bytes = str(exc).encode("utf-8", "replace")
             raise PostInvokePersistenceError(
-                submit_id=known_submit_id, result_bytes=str(exc).encode("utf-8", "replace"),
+                submit_id=known_submit_id, result_bytes=evidence_bytes,
                 allowance_id=allowance_id, reservation_id=reservation_id,
                 request_fingerprint=request_fingerprint, cause=exc) from exc
         if not result.submit_id:

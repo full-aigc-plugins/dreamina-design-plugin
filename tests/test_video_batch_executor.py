@@ -83,6 +83,7 @@ class TimeoutWithSubmitId(TimeoutError):
     def __init__(self, submit_id: str):
         super().__init__("timeout after provider accepted request")
         self.submit_id = submit_id
+        self.result_bytes = b'{"submit_id":"submit_known"}'
 
 
 class VideoBatchExecutorTests(unittest.TestCase):
@@ -138,6 +139,7 @@ class VideoBatchExecutorTests(unittest.TestCase):
         self.assertEqual(first["state"], "manual_review")
         self.assertEqual(first["required_action"], "manual_review")
         self.assertEqual(first["tasks"][0]["submit_id"], "submit_known")
+        self.assertEqual(first["tasks"][0]["result_bytes_hex"], self.adapter.raise_after_invoke.result_bytes.hex())
         self.assertEqual(self.allowance.ambiguous[0][2], "submit_known")
         receipt = self.executor._ledger.get(submit_id="submit_known")
         self.assertEqual(receipt["allowance_id"], "ba_" + "2" * 32)

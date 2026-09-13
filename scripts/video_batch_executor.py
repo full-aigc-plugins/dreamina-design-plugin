@@ -165,6 +165,9 @@ class VideoBatchExecutor:
                     value = getattr(exc, field, None)
                     if value is not None:
                         task[field] = value
+                result_bytes = getattr(exc, "result_bytes", None)
+                if isinstance(result_bytes, bytes):
+                    task["result_bytes_hex"] = result_bytes[:65536].hex()
                 self._persist_aggregate(state, quote); break
             task.update(state="queued", submit_id=result["submit_id"],
                         reservation_id=result["reservation"]["reservation_id"])
