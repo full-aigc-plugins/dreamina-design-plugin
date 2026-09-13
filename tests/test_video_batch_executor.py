@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import copy
+import os
 import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.dreamina_adapter import DreaminaResult
 from scripts.video_batch_executor import VideoBatchExecutor
@@ -181,6 +183,11 @@ class VideoBatchExecutorTests(unittest.TestCase):
         self.assertEqual(result["state"], "awaiting_evaluation")
         artifact = result["tasks"][0]["artifacts"][0]
         self.assertEqual(artifact["provenance"], "externally-queried"); self.assertEqual(len(artifact["sha256"]), 64)
+        self.assertEqual(Path(artifact["path"]).stat().st_mode & 0o777, 0o400)
+        for parent in Path(artifact["path"]).parents:
+            if parent == Path(self.tmp.name): break
+            if parent.name in {"downloads", "S01", "attempt-1", "download-001"}:
+                self.assertEqual(parent.stat().st_mode & 0o777, 0o700)
         self.adapter.calls.clear()
         blocked = self.executor.run_next(PROJECT_ID, "v001", 1)
         self.assertEqual(blocked["new_submissions"], 0)
@@ -290,6 +297,46 @@ class VideoBatchExecutorTests(unittest.TestCase):
 
     def test_evaluation_mutator_is_not_public_task9_api(self):
         self.assertFalse(hasattr(self.executor, "record_evaluation_decision"))
+
+    def test_existing_symlink_broad_or_foreign_download_root_fails_without_mutation(self):
+        for kind in ("symlink", "broad", "foreign"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
+                store = Store(Path(tmp)); project = store.project_root(PROJECT_ID)
+                execution = project / "video_batch_execution"; execution.mkdir(mode=0o700)
+                downloads = execution / "downloads"
+                if kind == "symlink":
+                    outside = Path(tmp) / "outside"; outside.mkdir(mode=0o700)
+                    downloads.symlink_to(outside, target_is_directory=True)
+                else:
+                    downloads.mkdir(mode=0o755 if kind == "broad" else 0o700)
+                context = patch("scripts.video_batch_executor.os.getuid", return_value=os.getuid() + 1) if kind == "foreign" else patch("scripts.video_batch_executor.os.getuid", wraps=os.getuid)
+                with context, self.assertRaises((OSError, ValueError)):
+                    VideoBatchExecutor(project_store=store, allowance=Allowance(), allowance_id="ba_" + "2" * 32,
+                                       video_service=None, adapter=Adapter())
+                if kind == "broad": self.assertEqual(downloads.stat().st_mode & 0o777, 0o755)
+
+    def test_download_hierarchy_replacement_fails_closed_at_every_level(self):
+        for level in range(4):
+            with self.subTest(level=level):
+                self.setUp()
+                self.executor.run_next(PROJECT_ID, "v001", 1)
+                self.adapter.status = "success"
+
+                original_run = self.adapter.run
+                def swapping_run(args, *, selected=level):
+                    result = original_run(args)
+                    if "--download_dir" in args:
+                        target = Path(args[args.index("--download_dir") + 1])
+                        (target / "clip.mp4").write_bytes(b"\0\0\0\x18ftypisom" + b"x" * 20)
+                        victim = (target, target.parent, target.parent.parent, target.parent.parent.parent)[selected]
+                        moved = victim.with_name(victim.name + "-moved")
+                        victim.rename(moved)
+                        victim.mkdir(mode=0o700, parents=True)
+                    return result
+                self.adapter.run = swapping_run
+                result = self.executor.reconcile(PROJECT_ID, "v001")
+                self.assertEqual(result["tasks"][0]["state"], "manual_review")
+                self.assertEqual(result["tasks"][0]["error_code"], "INVALID_DOWNLOADED_ARTIFACT")
 
 
 if __name__ == "__main__": unittest.main()

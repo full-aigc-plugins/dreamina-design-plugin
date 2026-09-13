@@ -18,19 +18,46 @@ MAX_ARTIFACT_BYTES = 512 * 1024 * 1024
 
 class TaskService:
     def __init__(self, adapter): self.adapter = adapter
+
+    @staticmethod
+    def _open_download_directory(target: Path) -> tuple[int, int, str]:
+        if not target.is_absolute() or target.name in {"", ".", ".."}:
+            raise ValueError("download directory must be an absolute child path")
+        parent_fd = os.open(target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            entry = os.stat(target.name, dir_fd=parent_fd, follow_symlinks=False)
+            directory_fd = os.open(target.name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+        except Exception:
+            os.close(parent_fd)
+            raise
+        pinned = os.fstat(directory_fd)
+        if ((entry.st_dev, entry.st_ino) != (pinned.st_dev, pinned.st_ino)
+                or not stat.S_ISDIR(pinned.st_mode) or pinned.st_uid != os.getuid()
+                or stat.S_IMODE(pinned.st_mode) != 0o700):
+            os.close(directory_fd); os.close(parent_fd)
+            raise ValueError("download directory must be user-owned mode 0700")
+        return parent_fd, directory_fd, target.name
+
+    @staticmethod
+    def _assert_directory_entry(parent_fd: int, name: str, directory_fd: int) -> None:
+        pinned = os.fstat(directory_fd)
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if ((pinned.st_dev, pinned.st_ino) != (current.st_dev, current.st_ino)
+                or not stat.S_ISDIR(current.st_mode) or current.st_uid != os.getuid()
+                or stat.S_IMODE(current.st_mode) != 0o700):
+            raise ValueError("download directory changed during verification")
+
     def query(self, submit_id: str, *, poll_seconds: int = 0, download_dir: str | None = None) -> dict[str, object]:
         if not IDENTIFIER.fullmatch(str(submit_id)): raise ValueError("unsafe submit_id")
         if isinstance(poll_seconds, bool) or not isinstance(poll_seconds, int) or not 0 <= poll_seconds <= 300: raise ValueError("poll_seconds must be between 0 and 300")
         argv = ["query_result", "--submit_id", submit_id]
         if poll_seconds: argv += ["--poll", str(poll_seconds)]
-        directory_fd = None
+        parent_fd = directory_fd = None
+        directory_name = None
         before: set[str] = set()
         if download_dir:
             target = Path(download_dir)
-            if not target.is_absolute() or target.is_symlink(): raise ValueError("download directory must be absolute and non-symlink")
-            metadata = target.stat()
-            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700: raise ValueError("download directory must be user-owned mode 0700")
-            directory_fd = os.open(target, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+            parent_fd, directory_fd, directory_name = self._open_download_directory(target)
             before = set(os.listdir(directory_fd)); argv += ["--download_dir", str(target)]
         try:
             result = self.adapter.run(argv)
@@ -40,20 +67,20 @@ class TaskService:
             status_value = STATUS_MAP.get(str(raw_status).strip().lower()) if isinstance(raw_status, str) else None
             if status_value is None: raise ValueError("query_result returned unknown external status")
             payload = dict(payload); payload["gen_status"] = status_value
-            artifacts = self._verified_artifacts(directory_fd, before, Path(download_dir)) if directory_fd is not None else []
+            artifacts = self._verified_artifacts(directory_fd, before, Path(download_dir), parent_fd, directory_name) if directory_fd is not None else []
             return {"submit_id": submit_id, "provenance": "externally-queried", "exit_code": 0,
                     "status": status_value, "result": payload, "artifacts": artifacts}
         finally:
             if directory_fd is not None: os.close(directory_fd)
+            if parent_fd is not None: os.close(parent_fd)
 
     @staticmethod
-    def _verified_artifacts(directory_fd: int, before: set[str], target: Path) -> list[dict[str, object]]:
+    def _verified_artifacts(directory_fd: int, before: set[str], target: Path,
+                            parent_fd: int, directory_name: str) -> list[dict[str, object]]:
         artifacts = []
-        pinned_directory = os.fstat(directory_fd)
+        TaskService._assert_directory_entry(parent_fd, directory_name, directory_fd)
         names = sorted(set(os.listdir(directory_fd)) - before)
-        current_directory = target.stat(follow_symlinks=False)
-        if (pinned_directory.st_dev, pinned_directory.st_ino) != (current_directory.st_dev, current_directory.st_ino):
-            raise ValueError("download directory changed during verification")
+        TaskService._assert_directory_entry(parent_fd, directory_name, directory_fd)
         for name in names:
             if "/" in name or name in {".", ".."}: raise ValueError("unsafe downloaded artifact name")
             descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
@@ -67,27 +94,32 @@ class TaskService:
                     prefix += chunk[:max(0, 16-len(prefix))]; size += len(chunk)
                     if size > MAX_ARTIFACT_BYTES: raise ValueError("downloaded artifact size is invalid")
                     digest.update(chunk)
+                after_read = os.fstat(descriptor)
+                stable_fields = ("st_dev", "st_ino", "st_size", "st_uid", "st_nlink", "st_mtime_ns", "st_ctime_ns")
+                if any(getattr(metadata, field) != getattr(after_read, field) for field in stable_fields):
+                    raise ValueError("downloaded artifact changed during verification")
                 if size == 0: raise ValueError("downloaded artifact size is invalid")
                 mime = "image/png" if prefix.startswith(b"\x89PNG\r\n\x1a\n") else "image/jpeg" if prefix.startswith(b"\xff\xd8\xff") else "video/mp4" if len(prefix) >= 12 and prefix[4:8] == b"ftyp" else None
                 if mime is None: raise ValueError("downloaded artifact type is unsupported")
                 os.fchmod(descriptor, 0o400)
                 current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-                if (metadata.st_dev, metadata.st_ino) != (current.st_dev, current.st_ino):
+                final = os.fstat(descriptor)
+                if ((final.st_dev, final.st_ino, final.st_size) != (current.st_dev, current.st_ino, current.st_size)
+                        or final.st_size != size or final.st_uid != os.getuid() or final.st_nlink != 1
+                        or stat.S_IMODE(final.st_mode) != 0o400 or stat.S_IMODE(current.st_mode) != 0o400):
                     raise ValueError("downloaded artifact changed during verification")
-                artifacts.append({"path": str((target / name).resolve()), "mime_type": mime, "size_bytes": size,
+                artifacts.append({"path": str(target / name), "mime_type": mime, "size_bytes": size,
                                   "sha256": digest.hexdigest(), "provenance": "externally-queried"})
             finally: os.close(descriptor)
+        TaskService._assert_directory_entry(parent_fd, directory_name, directory_fd)
         return artifacts
 
     def verify_download_dir(self, download_dir: str) -> list[dict[str, object]]:
         """Reconcile artifacts left after a crash at the download boundary."""
         target = Path(download_dir)
-        if not target.is_absolute() or target.is_symlink(): raise ValueError("unsafe download directory")
-        metadata = target.stat()
-        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700: raise ValueError("unsafe download directory")
-        descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
-        try: return self._verified_artifacts(descriptor, set(), target)
-        finally: os.close(descriptor)
+        parent_fd, descriptor, name = self._open_download_directory(target)
+        try: return self._verified_artifacts(descriptor, set(), target, parent_fd, name)
+        finally: os.close(descriptor); os.close(parent_fd)
 
     def list_tasks(self, filters: Mapping[str, object], *, limit: int = 20) -> dict[str, object]:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100: raise ValueError("limit must be between 1 and 100")

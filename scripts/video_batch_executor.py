@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import stat
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -18,6 +19,35 @@ class VideoBatchExecutor:
     _locks_guard = threading.Lock()
     _thread_locks: dict[str, threading.RLock] = {}
 
+    @staticmethod
+    def _open_private_child(parent_fd: int, name: str, *, create: bool) -> int:
+        if not name or name in {".", ".."} or "/" in name:
+            raise ValueError("download directory component is unsafe")
+        try:
+            entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            if not create:
+                raise
+            os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+            entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+        metadata = os.fstat(descriptor)
+        if ((entry.st_dev, entry.st_ino) != (metadata.st_dev, metadata.st_ino)
+                or not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o700):
+            os.close(descriptor)
+            raise ValueError("existing download directory must be user-owned mode 0700")
+        return descriptor
+
+    @staticmethod
+    def _assert_private_child(parent_fd: int, name: str, descriptor: int) -> None:
+        entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        metadata = os.fstat(descriptor)
+        if ((entry.st_dev, entry.st_ino) != (metadata.st_dev, metadata.st_ino)
+                or not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o700):
+            raise ValueError("download directory changed during use")
+
     def __init__(self, *, project_store: Any, allowance: Any, allowance_id: str,
                  video_service: VideoService | None, adapter: Any,
                  download_root: Path | None = None) -> None:
@@ -25,8 +55,13 @@ class VideoBatchExecutor:
         self._allowance = allowance
         self._allowance_id = allowance_id
         self._adapter = adapter
-        self._root = project_store.project_root(self._project_id_from_allowance()) / "video_batch_execution"
-        self._root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        project_root = project_store.project_root(self._project_id_from_allowance())
+        project_fd = os.open(project_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            root_fd = self._open_private_child(project_fd, "video_batch_execution", create=True)
+        finally:
+            os.close(project_fd)
+        self._root = project_root / "video_batch_execution"
         self._ledger = OperationLedger(self._root)
         self._service = video_service or VideoService({"modes": []}, self._root)
         self._tasks = TaskService(adapter)
@@ -34,17 +69,25 @@ class VideoBatchExecutor:
         if download_root is not None and Path(download_root).resolve() != default_downloads.resolve():
             raise ValueError("download_root must remain inside the project-scoped executor root")
         self._downloads = default_downloads
-        existed = self._downloads.exists()
-        if self._downloads.is_symlink():
-            raise ValueError("project download root must not be a symlink")
-        self._downloads.mkdir(mode=0o700, parents=True, exist_ok=True)
-        metadata = self._downloads.stat()
-        if metadata.st_uid != os.getuid() or not self._downloads.is_dir():
-            raise ValueError("project download root has unsafe ownership or type")
-        if existed and metadata.st_mode & 0o077:
-            raise ValueError("existing project download root must be private")
-        os.chmod(self._downloads, 0o700)
-        self._downloads_resolved = self._downloads.resolve(strict=True)
+        try:
+            self._downloads_fd = self._open_private_child(root_fd, "downloads", create=True)
+        except Exception:
+            os.close(root_fd)
+            raise
+        self._root_fd = root_fd
+
+    def close(self) -> None:
+        for attribute in ("_downloads_fd", "_root_fd"):
+            descriptor = getattr(self, attribute, None)
+            if descriptor is not None:
+                os.close(descriptor)
+                setattr(self, attribute, None)
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except OSError:
+            pass
 
     @contextmanager
     def _transaction(self):
@@ -221,30 +264,31 @@ class VideoBatchExecutor:
                 self._persist_aggregate(state, quote); continue
             shot_root = self._downloads / task["shot_id"]
             attempt_root = shot_root / f"attempt-{task['attempt']}"
-            sequence = len(list(attempt_root.glob("download-*"))) + 1 if attempt_root.exists() else 1
-            target = attempt_root / f"download-{sequence:03d}"
-            task["state"] = "downloading"; task["download_dir"] = str(target); self._persist_aggregate(state, quote)
-            if shot_root.is_symlink(): raise ValueError("shot download root must not be a symlink")
-            shot_root.mkdir(mode=0o700, exist_ok=True)
-            shot_metadata = shot_root.stat()
-            if shot_metadata.st_uid != os.getuid() or shot_metadata.st_mode & 0o077: raise ValueError("shot download root must be private")
-            if attempt_root.is_symlink():
-                raise ValueError("attempt download root must not be a symlink")
-            attempt_root.mkdir(mode=0o700, exist_ok=True)
-            attempt_metadata = attempt_root.stat()
-            if attempt_metadata.st_uid != os.getuid() or attempt_metadata.st_mode & 0o077:
-                raise ValueError("attempt download root must be private")
-            os.chmod(attempt_root, 0o700)
-            target.mkdir(mode=0o700, exist_ok=False)
-            if not target.resolve(strict=True).is_relative_to(self._downloads_resolved):
-                raise ValueError("download destination escaped the project root")
+            shot_fd = attempt_fd = target_fd = None
             try:
+                self._assert_private_child(self._root_fd, "downloads", self._downloads_fd)
+                shot_fd = self._open_private_child(self._downloads_fd, task["shot_id"], create=True)
+                attempt_name = f"attempt-{task['attempt']}"
+                attempt_fd = self._open_private_child(shot_fd, attempt_name, create=True)
+                sequence = len([name for name in os.listdir(attempt_fd) if name.startswith("download-")]) + 1
+                target_name = f"download-{sequence:03d}"
+                target_fd = self._open_private_child(attempt_fd, target_name, create=True)
+                target = attempt_root / target_name
+                task["state"] = "downloading"; task["download_dir"] = str(target); self._persist_aggregate(state, quote)
                 downloaded = self._tasks.query(task["submit_id"], download_dir=str(target))
+                self._assert_private_child(self._root_fd, "downloads", self._downloads_fd)
+                self._assert_private_child(self._downloads_fd, task["shot_id"], shot_fd)
+                self._assert_private_child(shot_fd, attempt_name, attempt_fd)
+                self._assert_private_child(attempt_fd, target_name, target_fd)
             except (OSError, ValueError):
                 task["state"] = "manual_review"
                 task["error_code"] = "INVALID_DOWNLOADED_ARTIFACT"
                 self._persist_aggregate(state, quote)
                 continue
+            finally:
+                for descriptor in (target_fd, attempt_fd, shot_fd):
+                    if descriptor is not None:
+                        os.close(descriptor)
             task["artifacts"] = downloaded["artifacts"]
             task["state"] = "awaiting_evaluation" if task["artifacts"] else "missing_artifact"
             self._persist_aggregate(state, quote)
