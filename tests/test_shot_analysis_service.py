@@ -4,11 +4,13 @@ import copy
 import json
 import tempfile
 import unittest
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.json_contracts import ContractValidationError
 from scripts.shot_analysis_service import REQUIRED_GATES, ShotAnalysisService
-from scripts.video_project_store import VideoProjectStore
+from scripts.video_project_store import VersionCommitIndeterminateError, VideoProjectStore
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "reference_video" / "valid-annotations.json"
@@ -191,6 +193,28 @@ class ShotAnalysisServiceTests(unittest.TestCase):
 
     def test_unknown_analysis_version_is_rejected_without_fallback(self):
         with self.assertRaises(KeyError): self.validate(version="v999")
+
+    def test_post_replace_annotation_failure_propagates_once_without_allocating_v002(self):
+        """Catches a downstream retry after an indeterminate committed annotation write."""
+        calls = 0
+        real_fsync = os.fsync
+
+        def fail_directory_fsync(descriptor: int) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("injected annotation directory fsync failure")
+            real_fsync(descriptor)
+
+        with patch("scripts.video_project_store.os.fsync", side_effect=fail_directory_fsync):
+            with self.assertRaises(VersionCommitIndeterminateError) as raised:
+                self.validate()
+
+        annotation_root = self.store.project_root(self.project_id) / "annotation"
+        self.assertEqual(raised.exception.family, "annotation")
+        self.assertEqual(raised.exception.version, "v001")
+        self.assertEqual([path.name for path in annotation_root.glob("v*.json")], ["v001.json"])
+        self.assertEqual(self.store.get(self.project_id)["state"], "analyzing")
 
 
 if __name__ == "__main__":

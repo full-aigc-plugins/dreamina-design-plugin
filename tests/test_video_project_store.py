@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from scripts.json_contracts import ContractValidationError
-from scripts.video_project_store import ProjectStateConflictError, VideoProjectStore
+from scripts.json_contracts import ContractValidationError, canonical_fingerprint
+from scripts.video_project_store import (
+    ProjectStateConflictError,
+    VersionCommitIndeterminateError,
+    VersionReconciliationError,
+    VideoProjectStore,
+)
 
 
 def _write_version(root: str, project_id: str, queue: multiprocessing.Queue) -> None:
@@ -125,6 +132,104 @@ class VideoProjectStoreTests(unittest.TestCase):
         self.assertIn(listed[0]["project_id"], {first["project_id"], second["project_id"]})
         with self.assertRaises(ValueError):
             self.store.list_projects(0)
+
+    def test_post_replace_durability_failure_reports_visible_version_as_indeterminate(self) -> None:
+        """Catches treating a post-replace fsync failure as a generic safe-to-retry write."""
+        project = self.store.create(
+            title="indeterminate", creative_mode="original_redesign", audio_policy="silent"
+        )
+        payload = {"schema_version": "1.0", "value": "committed"}
+        calls = 0
+        real_fsync = os.fsync
+
+        def fail_directory_fsync(descriptor: int) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("injected directory fsync failure")
+            real_fsync(descriptor)
+
+        with patch("scripts.video_project_store.os.fsync", side_effect=fail_directory_fsync):
+            with self.assertRaises(VersionCommitIndeterminateError) as raised:
+                self.store.write_version(project["project_id"], "analysis", payload)
+
+        exact_path = self.root.resolve() / project["project_id"] / "analysis" / "v001.json"
+        expected_document = {"schema_version": "1.0", "value": "committed", "version": "v001"}
+        self.assertEqual(raised.exception.project_id, project["project_id"])
+        self.assertEqual(raised.exception.family, "analysis")
+        self.assertEqual(raised.exception.version, "v001")
+        self.assertEqual(raised.exception.path, exact_path)
+        self.assertEqual(raised.exception.payload_fingerprint, canonical_fingerprint(expected_document))
+        self.assertEqual(json.loads(exact_path.read_text(encoding="utf-8")), expected_document)
+        self.assertEqual([path.name for path in exact_path.parent.glob("v*.json")], ["v001.json"])
+
+    def test_reconcile_version_returns_only_exact_private_valid_committed_document(self) -> None:
+        """Catches reconciliation allocating a replacement or accepting the wrong receipt."""
+        project = self.store.create(
+            title="reconcile", creative_mode="original_redesign", audio_policy="silent"
+        )
+        document = self.store.write_version(
+            project["project_id"], "analysis", {"schema_version": "1.0"}
+        )
+        fingerprint = canonical_fingerprint(document)
+        lock_path = self.root / project["project_id"] / ".lock"
+        lock_path.unlink()
+
+        reconciled = self.store.reconcile_version(
+            project["project_id"], "analysis", "v001", fingerprint, None
+        )
+
+        self.assertEqual(reconciled, {"schema_version": "1.0", "version": "v001"})
+        self.assertEqual(
+            [path.name for path in (self.root / project["project_id"] / "analysis").glob("v*.json")],
+            ["v001.json"],
+        )
+        self.assertFalse(lock_path.exists())
+
+    def test_reconcile_version_blocks_missing_mismatch_corruption_symlink_and_public_mode(self) -> None:
+        """Catches reconciliation trusting an absent, altered, redirected, or exposed receipt."""
+        project = self.store.create(
+            title="blocked", creative_mode="original_redesign", audio_policy="silent"
+        )
+        document = self.store.write_version(
+            project["project_id"], "analysis", {"schema_version": "1.0"}
+        )
+        family_root = self.root / project["project_id"] / "analysis"
+        target = family_root / "v001.json"
+        fingerprint = canonical_fingerprint(document)
+        with self.assertRaises(VersionReconciliationError):
+            self.store.reconcile_version(project["project_id"], "analysis", "v002", fingerprint, None)
+        with self.assertRaises(VersionReconciliationError):
+            self.store.reconcile_version(project["project_id"], "analysis", "v001", "0" * 64, None)
+        target.write_text("not json", encoding="utf-8")
+        with self.assertRaises(VersionReconciliationError):
+            self.store.reconcile_version(project["project_id"], "analysis", "v001", fingerprint, None)
+        target.unlink()
+        wrong_version = {"schema_version": "1.0", "version": "v009"}
+        target.write_text(json.dumps(wrong_version), encoding="utf-8")
+        target.chmod(0o600)
+        with self.assertRaises(VersionReconciliationError):
+            self.store.reconcile_version(
+                project["project_id"], "analysis", "v001", canonical_fingerprint(wrong_version), None
+            )
+        invalid_schema = {"schema_version": "1.0", "version": "v001"}
+        target.write_text(json.dumps(invalid_schema), encoding="utf-8")
+        with self.assertRaises(VersionReconciliationError):
+            self.store.reconcile_version(
+                project["project_id"], "analysis", "v001",
+                canonical_fingerprint(invalid_schema), "shot_analysis.schema.json",
+            )
+        target.unlink()
+        outside = Path(self.tmp.name) / "outside.json"
+        outside.write_text(json.dumps(document), encoding="utf-8")
+        target.symlink_to(outside)
+        with self.assertRaises(VersionReconciliationError):
+            self.store.reconcile_version(project["project_id"], "analysis", "v001", fingerprint, None)
+        target.unlink()
+        target.write_text(json.dumps(document), encoding="utf-8")
+        target.chmod(0o644)
+        with self.assertRaises(VersionReconciliationError):
+            self.store.reconcile_version(project["project_id"], "analysis", "v001", fingerprint, None)
 
 
 if __name__ == "__main__":

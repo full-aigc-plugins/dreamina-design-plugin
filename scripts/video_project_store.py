@@ -7,13 +7,14 @@ import json
 import os
 import re
 import secrets
+import stat
 import tempfile
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
-from scripts.json_contracts import validate_contract
+from scripts.json_contracts import canonical_fingerprint, validate_contract
 
 
 PROJECT_ID = re.compile(r"^vp_[a-f0-9]{24}$")
@@ -46,6 +47,40 @@ class ProjectNotFoundError(VideoProjectStoreError):
 
 class ProjectStateConflictError(VideoProjectStoreError):
     """A compare-and-swap state transition did not match exactly."""
+
+
+class VersionCommitIndeterminateError(VideoProjectStoreError):
+    """A version became visible but a later durability operation failed."""
+
+    def __init__(
+        self,
+        *,
+        project_id: str,
+        family: str,
+        version: str,
+        path: Path,
+        payload_fingerprint: str,
+    ) -> None:
+        self.project_id = project_id
+        self.family = family
+        self.version = version
+        self.path = path
+        self.payload_fingerprint = payload_fingerprint
+        super().__init__(
+            f"version commit is indeterminate after publication: {project_id}/{family}/{version}"
+        )
+
+
+class VersionReconciliationError(VideoProjectStoreError):
+    """An exact committed version cannot be safely reconciled."""
+
+    def __init__(self, *, project_id: str, family: str, version: str, path: Path, reason: str) -> None:
+        self.project_id = project_id
+        self.family = family
+        self.version = version
+        self.path = path
+        self.reason = reason
+        super().__init__(f"version reconciliation blocked: {reason}")
 
 
 class VideoProjectStore:
@@ -143,8 +178,76 @@ class VideoProjectStore:
             document["version"] = version
             if schema_name is not None:
                 validate_contract(document, schema_name)
-            self._atomic_write(family_root / f"{version}.json", document)
+            target = family_root / f"{version}.json"
+            indeterminate = VersionCommitIndeterminateError(
+                project_id=project_id,
+                family=family,
+                version=version,
+                path=target,
+                payload_fingerprint=canonical_fingerprint(document),
+            )
+            self._atomic_write(target, document, indeterminate_error=indeterminate)
             return document
+
+    def reconcile_version(
+        self,
+        project_id: str,
+        family: str,
+        version: str,
+        expected_fingerprint: str,
+        schema_name: str | None,
+    ) -> dict[str, Any]:
+        """Read and validate one exact version without allocating or mutating storage."""
+        if FAMILY.fullmatch(family) is None or re.fullmatch(r"v[0-9]{3,}", version) is None:
+            raise ValueError("invalid version identity")
+        if re.fullmatch(r"[a-f0-9]{64}", expected_fingerprint) is None:
+            raise ValueError("invalid expected fingerprint")
+        # Inode checks below detect races without creating a lock file or
+        # mutating the version directory.
+        with nullcontext():
+            family_root = self.project_root(project_id) / family
+            target = family_root / f"{version}.json"
+            try:
+                family_metadata = family_root.lstat()
+                target_metadata = target.lstat()
+                if not stat.S_ISDIR(family_metadata.st_mode) or family_root.is_symlink():
+                    raise OSError("version family is not a regular directory")
+                if family_metadata.st_mode & 0o777 != 0o700:
+                    raise OSError("version family is not private")
+                if not stat.S_ISREG(target_metadata.st_mode) or target.is_symlink():
+                    raise OSError("version is not a regular file")
+                if target_metadata.st_mode & 0o777 != 0o600:
+                    raise OSError("version is not private")
+                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                descriptor = os.open(target, flags)
+                try:
+                    opened = os.fstat(descriptor)
+                    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
+                        target_metadata.st_dev,
+                        target_metadata.st_ino,
+                    ):
+                        raise OSError("version changed while opening")
+                    with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+                        descriptor = -1
+                        document = json.load(handle)
+                finally:
+                    if descriptor >= 0:
+                        os.close(descriptor)
+                if not isinstance(document, dict) or document.get("version") != version:
+                    raise ValueError("version token mismatch")
+                if schema_name is not None:
+                    validate_contract(document, schema_name)
+                if canonical_fingerprint(document) != expected_fingerprint:
+                    raise ValueError("payload fingerprint mismatch")
+                return document
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                raise VersionReconciliationError(
+                    project_id=project_id,
+                    family=family,
+                    version=version,
+                    path=target,
+                    reason=str(exc),
+                ) from exc
 
     def project_root(self, project_id: str) -> Path:
         self._validate_project_id(project_id)
@@ -174,9 +277,15 @@ class VideoProjectStore:
             os.close(descriptor)
 
     @staticmethod
-    def _atomic_write(path: Path, payload: Mapping[str, Any]) -> None:
+    def _atomic_write(
+        path: Path,
+        payload: Mapping[str, Any],
+        *,
+        indeterminate_error: VersionCommitIndeterminateError | None = None,
+    ) -> None:
         encoded = (json.dumps(dict(payload), sort_keys=True, ensure_ascii=False) + "\n").encode()
         descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        replaced = False
         try:
             os.fchmod(descriptor, 0o600)
             with os.fdopen(descriptor, "wb") as handle:
@@ -184,13 +293,14 @@ class VideoProjectStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, path)
+            replaced = True
             os.chmod(path, 0o600)
             directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             try:
                 os.fsync(directory)
             finally:
                 os.close(directory)
-        except BaseException:
+        except BaseException as exc:
             try:
                 os.close(descriptor)
             except OSError:
@@ -199,6 +309,8 @@ class VideoProjectStore:
                 os.unlink(temporary)
             except FileNotFoundError:
                 pass
+            if replaced and indeterminate_error is not None:
+                raise indeterminate_error from exc
             raise
 
 
@@ -211,6 +323,8 @@ __all__ = [
     "PROJECT_ID",
     "ProjectNotFoundError",
     "ProjectStateConflictError",
+    "VersionCommitIndeterminateError",
+    "VersionReconciliationError",
     "VideoProjectStore",
     "VideoProjectStoreError",
 ]
