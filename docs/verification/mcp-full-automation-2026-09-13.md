@@ -43,3 +43,12 @@ this automation release did not submit another paid task.
 - Logs are selected only from the fixed log root, opened with `O_NOFOLLOW`,
   bounded, and redacted before output.
 - No Critical, High, or production-blocking Medium issue remained after review.
+
+## Publication evidence
+
+- Release source commit: `ebfa1f58a7e9b9f4c216caefc89655c94b6a722c`.
+- GitHub Actions run `34749082365`: terminal `success`.
+- Public Marketplace plugin version: `0.3.0`.
+- Installed cache MCP configuration: 11 tools.
+- Installed cache runtime `tools/list`: 11 tools.
+- Installed cache `dreamina_cli_status`: trusted CLI, 8/8 generation modes.

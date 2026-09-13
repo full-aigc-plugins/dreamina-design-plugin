@@ -55,7 +55,7 @@
 - Produces: `redact_value(value: object) -> object` and `redact_text(text: str, *, max_bytes: int) -> str`.
 - Consumers: environment, auth, account, task, Session, and diagnostic services.
 
-- [ ] **Step 1: Write failing adapter and redaction tests**
+- [x] **Step 1: Write failing adapter and redaction tests**
 
 ```python
 def test_run_text_preserves_non_json_login_output(self):
@@ -72,13 +72,13 @@ def test_recursive_redaction_removes_sensitive_fields(self):
     )
 ```
 
-- [ ] **Step 2: Run RED tests**
+- [x] **Step 2: Run RED tests**
 
 Run: `python3 -m unittest tests.test_output_redactor tests.test_dreamina_adapter -v`
 
 Expected: fail because `DreaminaTextResult`, `run_text`, and redaction functions do not exist.
 
-- [ ] **Step 3: Implement the minimal bounded text seam and redactor**
+- [x] **Step 3: Implement the minimal bounded text seam and redactor**
 
 ```python
 @dataclass(frozen=True)
@@ -97,13 +97,13 @@ Implement recursive key matching for `token`, `cookie`, `authorization`,
 `device_code`, `user_code`, and `secret`; redact bearer/cookie/token patterns in
 text; UTF-8 truncate only after redaction.
 
-- [ ] **Step 4: Run GREEN tests and adapter regression**
+- [x] **Step 4: Run GREEN tests and adapter regression**
 
 Run: `python3 -m unittest tests.test_output_redactor tests.test_dreamina_adapter -v`
 
 Expected: all tests pass with zero warnings.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/output_redactor.py scripts/dreamina_adapter.py tests/test_output_redactor.py tests/test_dreamina_adapter.py
@@ -124,7 +124,7 @@ git commit -m "feat: add bounded Dreamina text execution"
 - Produces: `AccountService.user_credit() -> dict[str, object]`.
 - Later tasks extend `EnvironmentService` with installer execution.
 
-- [ ] **Step 1: Write failing status and account tests**
+- [x] **Step 1: Write failing status and account tests**
 
 ```python
 def test_status_reports_trusted_version_and_selected_help(self):
@@ -139,26 +139,26 @@ def test_account_returns_redacted_credit_payload(self):
     self.assertEqual(result["access_token"], "[REDACTED]")
 ```
 
-- [ ] **Step 2: Run RED tests**
+- [x] **Step 2: Run RED tests**
 
 Run: `python3 -m unittest tests.test_environment_service tests.test_account_service -v`
 
 Expected: fail because both service modules are missing.
 
-- [ ] **Step 3: Implement fixed status/help and account argv**
+- [x] **Step 3: Implement fixed status/help and account argv**
 
 Use only `--version`, `--help`, `<enum-command> --help`, and `user_credit`.
 Accept the documented command enum only. Parse JSON when present, otherwise
 return bounded redacted text with `installed`, `trusted`, `exit_code`, and
 `requires_user_action` fields.
 
-- [ ] **Step 4: Run GREEN tests**
+- [x] **Step 4: Run GREEN tests**
 
 Run: `python3 -m unittest tests.test_environment_service tests.test_account_service tests.test_dreamina_adapter -v`
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/environment_service.py scripts/account_service.py tests/test_environment_service.py tests/test_account_service.py
@@ -176,7 +176,7 @@ git commit -m "feat: automate Dreamina status and account checks"
 - Produces: `AuthFlowStore` with ten-minute, single-use, memory-only flow records.
 - Produces: `AuthService.execute(action: str, *, flow_id: str | None, poll_seconds: int) -> dict[str, object]`.
 
-- [ ] **Step 1: Write failing exact-argv and authorization tests**
+- [x] **Step 1: Write failing exact-argv and authorization tests**
 
 ```python
 def test_headless_login_uses_fixed_argv_and_does_not_persist_device_code(self):
@@ -193,13 +193,13 @@ def test_logout_denial_never_invokes_cli(self):
     self.assertEqual(adapter.calls, [])
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 Run: `python3 -m unittest tests.test_auth_service -v`
 
 Expected: fail because `AuthService` is missing.
 
-- [ ] **Step 3: Implement closed action dispatch**
+- [x] **Step 3: Implement closed action dispatch**
 
 Map actions exactly to fixed argv. `login_headless` extracts the CLI device code
 into `AuthFlowStore` and returns a random opaque flow ID; `check_login` consumes
@@ -221,13 +221,13 @@ native confirmation for `relogin` and `logout`. Verify successful
 login/relogin/check with `user_credit`. Redact sensitive fields before returning
 and never write them to disk.
 
-- [ ] **Step 4: Run GREEN and denial/timeout tests**
+- [x] **Step 4: Run GREEN and denial/timeout tests**
 
 Run: `python3 -m unittest tests.test_auth_service tests.test_account_service -v`
 
 Expected: success, denial, malformed output, and timeout tests all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/auth_service.py tests/test_auth_service.py
@@ -244,7 +244,7 @@ git commit -m "feat: add Dreamina authentication automation"
 - Consumes: `DreaminaAdapter.run_text`, `NativeApprovalProvider.confirm`, redaction functions.
 - Produces: `SessionService.execute(action: str, *, name: str | None, session_id: str | None, query: str | None) -> dict[str, object]`.
 
-- [ ] **Step 1: Write failing CRUD routing and default-delete tests**
+- [x] **Step 1: Write failing CRUD routing and default-delete tests**
 
 ```python
 def test_rename_uses_exact_arguments_after_confirmation(self):
@@ -257,25 +257,25 @@ def test_default_session_delete_is_rejected_before_approval(self):
     self.assertEqual(adapter.calls, [])
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 Run: `python3 -m unittest tests.test_session_service -v`
 
 Expected: fail because `SessionService` is missing.
 
-- [ ] **Step 3: Implement closed CRUD dispatch and validation**
+- [x] **Step 3: Implement closed CRUD dispatch and validation**
 
 Allow only create/list/search/rename/delete. Require names and queries to be
 1–200 UTF-8 characters, Session IDs to match `^[A-Za-z0-9_-]{1,128}$`, and
 native confirmation for create/rename/delete. Reject Session `0` deletion.
 
-- [ ] **Step 4: Run GREEN tests**
+- [x] **Step 4: Run GREEN tests**
 
 Run: `python3 -m unittest tests.test_session_service -v`
 
 Expected: exact argv, validation, approval, denial, and redaction tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/session_service.py tests/test_session_service.py
@@ -296,7 +296,7 @@ git commit -m "feat: automate Dreamina session management"
 - Produces: `TaskService.list_tasks(filters: Mapping[str, object], limit: int) -> dict[str, object]`.
 - Produces: external-query provenance receipts distinct from plugin-submitted receipts.
 
-- [ ] **Step 1: Write failing query/list/download tests**
+- [x] **Step 1: Write failing query/list/download tests**
 
 ```python
 def test_unknown_submit_id_queries_once_without_resubmission(self):
@@ -309,26 +309,26 @@ def test_list_tasks_applies_closed_filters_and_limit(self):
     self.assertEqual(adapter.calls, [["list_task", "--gen_status", "success", "--limit", "20"]])
 ```
 
-- [ ] **Step 2: Run RED tests**
+- [x] **Step 2: Run RED tests**
 
 Run: `python3 -m unittest tests.test_task_service tests.test_artifact_service -v`
 
 Expected: fail because `TaskService` and external-query provenance are missing.
 
-- [ ] **Step 3: Implement query-only polling, bounded lists, and downloads**
+- [x] **Step 3: Implement query-only polling, bounded lists, and downloads**
 
 Validate submit IDs, bound polling to 0–300 seconds, and limit results to
 1–100. Build only documented list filters confirmed by captured CLI help.
 Downloads require an approved root and reuse no-overwrite/symlink/MIME/size
 checks. Never call a generation command from this service.
 
-- [ ] **Step 4: Run GREEN and regression tests**
+- [x] **Step 4: Run GREEN and regression tests**
 
 Run: `python3 -m unittest tests.test_task_service tests.test_artifact_service tests.test_operation_ledger -v`
 
 Expected: all query, provenance, recovery, and artifact tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/task_service.py scripts/artifact_service.py tests/test_task_service.py tests/test_artifact_service.py
@@ -345,7 +345,7 @@ git commit -m "feat: automate Dreamina task recovery and downloads"
 - Consumes: existing capability snapshot, reference staging, approval guard, adapter, operation ledger.
 - Produces: `ImageService.build_request(mode="image_upscale", ...)` with an exact one-reference contract.
 
-- [ ] **Step 1: Write failing upscale request and argv tests**
+- [x] **Step 1: Write failing upscale request and argv tests**
 
 ```python
 def test_image_upscale_rejects_prompt_model_ratio_and_count(self):
@@ -357,25 +357,25 @@ def test_image_upscale_submits_exact_fixed_argv(self):
     self.assertEqual(adapter.calls[0][:3], ["image_upscale", "--image", request["references"][0]["staged_path"]])
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 Run: `python3 -m unittest tests.test_image_service -v`
 
 Expected: fail because `image_upscale` is unsupported.
 
-- [ ] **Step 3: Implement mode-specific request and fingerprint**
+- [x] **Step 3: Implement mode-specific request and fingerprint**
 
 Require exactly one staged image and `resolution_type`; forbid unrelated fields;
 append only `image_upscale --image <path> --resolution_type <value> --poll 0`.
 Bind reference digest, resolution, and destination to approval.
 
-- [ ] **Step 4: Run GREEN tests**
+- [x] **Step 4: Run GREEN tests**
 
 Run: `python3 -m unittest tests.test_image_service tests.test_reference_policy tests.test_approval_guard -v`
 
 Expected: all image and safety tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/image_service.py tests/test_image_service.py
@@ -394,7 +394,7 @@ git commit -m "feat: automate Dreamina image upscaling"
 - Consumes: live `multiframe2video --help`, ordered staged references, approval guard, operation ledger.
 - Produces: capability entry and request/argv support for `multiframe2video`.
 
-- [ ] **Step 1: Write failing capability, validation, fingerprint, and argv tests**
+- [x] **Step 1: Write failing capability, validation, fingerprint, and argv tests**
 
 ```python
 def test_multiframe_requires_two_to_twenty_ordered_images(self):
@@ -406,26 +406,26 @@ def test_multiframe_three_images_require_zero_or_two_transitions(self):
         service.build_request(mode="multiframe2video", prompt="story", model=None, video_resolution="720p", ratio=None, duration_seconds=3, references=three_images, transitions=[{"prompt": "only one", "duration_seconds": 3}])
 ```
 
-- [ ] **Step 2: Run RED tests**
+- [x] **Step 2: Run RED tests**
 
 Run: `python3 -m unittest tests.test_video_service tests.test_dreamina_adapter -v`
 
 Expected: fail because the mode and transitions are unsupported.
 
-- [ ] **Step 3: Implement runtime-discovered multi-frame support**
+- [x] **Step 3: Implement runtime-discovered multi-frame support**
 
 Add `multiframe2video` to capability discovery. Accept no model or ratio unless
 live help advertises them. Build ordered `--images` plus the exact repeated
 transition flags observed in help. Bind reference order and transitions into the
 request fingerprint and approval scope.
 
-- [ ] **Step 4: Run GREEN tests**
+- [x] **Step 4: Run GREEN tests**
 
 Run: `python3 -m unittest tests.test_video_service tests.test_dreamina_adapter tests.test_reference_policy -v`
 
 Expected: mode constraints, exact argv, approval mismatch, and no-resubmit tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/dreamina_adapter.py scripts/video_service.py tests/test_dreamina_adapter.py tests/test_video_service.py
@@ -442,7 +442,7 @@ git commit -m "feat: automate Dreamina multi-frame video"
 - Consumes: fixed `~/.dreamina_cli/logs/` root, `EnvironmentService.status`, redaction functions.
 - Produces: `DiagnosticService.diagnose(command: str, error: str, submit_id: str | None, since_minutes: int, max_files: int) -> dict[str, object]`.
 
-- [ ] **Step 1: Write failing fixed-root, symlink, redaction, and cap tests**
+- [x] **Step 1: Write failing fixed-root, symlink, redaction, and cap tests**
 
 ```python
 def test_diagnose_reads_only_recent_regular_logs_and_redacts_tokens(self):
@@ -457,26 +457,26 @@ def test_symlink_log_is_rejected(self):
     self.assertNotIn(outside_file.read_text(), json.dumps(result))
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 Run: `python3 -m unittest tests.test_diagnostic_service -v`
 
 Expected: fail because `DiagnosticService` is missing.
 
-- [ ] **Step 3: Implement bounded `O_NOFOLLOW` log reads**
+- [x] **Step 3: Implement bounded `O_NOFOLLOW` log reads**
 
 Accept no path input. Bound `since_minutes` to 1–1440, `max_files` to 1–10,
 per-file reads to 64 KiB, and total redacted output to 256 KiB. Sort by mtime,
 open regular files with `O_NOFOLLOW`, verify inode metadata after open, redact,
 then return exact command/error/version/submit context.
 
-- [ ] **Step 4: Run GREEN tests**
+- [x] **Step 4: Run GREEN tests**
 
 Run: `python3 -m unittest tests.test_diagnostic_service tests.test_output_redactor -v`
 
 Expected: traversal, symlink, replacement race, secret, and byte-cap tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/diagnostic_service.py tests/test_diagnostic_service.py
@@ -495,7 +495,7 @@ git commit -m "feat: add redacted Dreamina diagnostics"
 - Consumes: `NativeApprovalProvider.confirm`, HTTPS client from Python standard library, `TrustedCliStore.enroll`.
 - Produces: `EnvironmentService.install_or_upgrade(action: str) -> dict[str, object]`.
 
-- [ ] **Step 1: Write failing download-policy, denial, execution, and enrollment tests**
+- [x] **Step 1: Write failing download-policy, denial, execution, and enrollment tests**
 
 ```python
 def test_installer_rejects_redirect_to_unapproved_host(self):
@@ -510,13 +510,13 @@ def test_denial_does_not_execute_downloaded_installer(self):
     self.assertEqual(runner.calls, [])
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 Run: `python3 -m unittest tests.test_environment_service tests.test_trusted_cli -v`
 
 Expected: fail because installer execution is missing.
 
-- [ ] **Step 3: Implement fixed HTTPS installer workflow**
+- [x] **Step 3: Implement fixed HTTPS installer workflow**
 
 Use only `https://jimeng.jianying.com/cli`. Limit redirects to HTTPS and the
 approved host set, cap body size at 2 MiB, save with mode `0500` under a `0700`
@@ -526,13 +526,13 @@ minimal environment and bounded output. On success resolve the installed CLI,
 invoke native trust enrollment, then verify version and help. Never mark trust
 complete before both probes succeed.
 
-- [ ] **Step 4: Run GREEN and security regression tests**
+- [x] **Step 4: Run GREEN and security regression tests**
 
 Run: `python3 -m unittest tests.test_environment_service tests.test_trusted_cli tests.test_dreamina_adapter -v`
 
 Expected: host/scheme/redirect/oversize/denial/failure/success cases pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/environment_service.py scripts/trusted_cli.py tests/test_environment_service.py tests/test_trusted_cli.py
@@ -554,7 +554,7 @@ git commit -m "feat: add verified Dreamina CLI installation"
 - Consumes: all services from Tasks 2–9.
 - Produces: eleven public tools specified in the design, all returning structured MCP results.
 
-- [ ] **Step 1: Write failing MCP inventory, schema, annotation, and dispatch tests**
+- [x] **Step 1: Write failing MCP inventory, schema, annotation, and dispatch tests**
 
 ```python
 EXPECTED_TOOLS = {
@@ -573,13 +573,13 @@ Add handler tests asserting each tool delegates once to its service, rejects
 unknown properties, returns `structuredContent`, and translates errors into the
 specified structured error shape.
 
-- [ ] **Step 2: Run RED tests**
+- [x] **Step 2: Run RED tests**
 
 Run: `python3 -m unittest tests.test_dreamina_mcp_server tests.test_distribution tests.test_contracts tests.test_router_skill -v`
 
 Expected: fail because eight tools and new policy entries are absent.
 
-- [ ] **Step 3: Implement schemas and thin dispatch**
+- [x] **Step 3: Implement schemas and thin dispatch**
 
 Keep tool construction in focused helper functions. Add explicit `.mcp.json`
 entries: read-only status/capability/account/query/list/diagnose use `approve`;
@@ -590,7 +590,7 @@ actions within a multi-action tool as read-only.
 Update the router Skill to prefer executable MCP tools and identify the exact
 actions that pause for native/user approval.
 
-- [ ] **Step 4: Run GREEN tests and protocol smoke test**
+- [x] **Step 4: Run GREEN tests and protocol smoke test**
 
 Run: `python3 -m unittest tests.test_dreamina_mcp_server tests.test_distribution tests.test_contracts tests.test_router_skill -v`
 
@@ -598,7 +598,7 @@ Run: `printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
 
 Expected: tests pass; `tools/list` returns exactly eleven tools.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/dreamina_mcp_server.py tests/test_dreamina_mcp_server.py .mcp.json tests/test_distribution.py tests/test_contracts.py skills/codex-dreamina-design-use/SKILL.md tests/test_router_skill.py
@@ -622,7 +622,7 @@ git commit -m "feat: expose complete Dreamina MCP automation"
 - Consumes: all completed automation tools and validators.
 - Produces: released `0.3.0` plugin, public installation evidence, and completed plan ledger.
 
-- [ ] **Step 1: Write failing version and documentation assertions**
+- [x] **Step 1: Write failing version and documentation assertions**
 
 ```python
 def test_release_version_is_030(self):
@@ -633,20 +633,20 @@ def test_release_version_is_030(self):
 Add an automated table assertion mapping every original coverage row to a
 documented MCP tool and tested handler.
 
-- [ ] **Step 2: Run RED release tests**
+- [x] **Step 2: Run RED release tests**
 
 Run: `python3 -m unittest tests.test_distribution tests.test_official_cli_skill_coverage -v`
 
 Expected: fail because manifests still report `0.2.1` and the executable
 coverage evidence is incomplete.
 
-- [ ] **Step 3: Update version, docs, and evidence**
+- [x] **Step 3: Update version, docs, and evidence**
 
 Set manifests to `0.3.0`. Document all eleven tools, approval pauses, automation
 examples, recovery semantics, and the distinction between help-only probes and
 mutating runtime validation. Check plan boxes only as their commands pass.
 
-- [ ] **Step 4: Run complete local verification**
+- [x] **Step 4: Run complete local verification**
 
 Run:
 
@@ -663,21 +663,21 @@ git diff --check
 Expected: all commands exit zero; 13 upstream Skill trees match the pinned
 commit and 14 plugin Skills pass TRACE.
 
-- [ ] **Step 5: Perform allowed real read-only acceptance**
+- [x] **Step 5: Perform allowed real read-only acceptance**
 
 Call status/version/help, account, task list, Session list/search, and bounded
 diagnosis through the MCP server. Record commands and redacted results. Do not
 install/upgrade, alter OAuth state, mutate Sessions, or submit paid tasks without
 separate action-time approval.
 
-- [ ] **Step 6: Run security review and resolve findings**
+- [x] **Step 6: Run security review and resolve findings**
 
 Review installer trust, native confirmation binding, secret redaction, log file
 races, path policies, exact argv, output caps, and paid no-resubmit behavior.
 Repeat affected tests after each accepted fix. Release requires zero Critical,
 High, or production-blocking Medium findings.
 
-- [ ] **Step 7: Commit and push release**
+- [x] **Step 7: Commit and push release**
 
 ```bash
 git add .codex-plugin/plugin.json .agents/plugins/marketplace.json README.md README.zh-CN.md docs tests scripts skills/codex-dreamina-design-use/SKILL.md .mcp.json
@@ -685,7 +685,7 @@ git commit -m "release: publish Dreamina automation 0.3.0"
 git push origin main
 ```
 
-- [ ] **Step 8: Wait for terminal GitHub CI success**
+- [x] **Step 8: Wait for terminal GitHub CI success**
 
 Run: `gh run list --repo partme-ai/codex-dreamina-design-plugin --commit "$(git rev-parse HEAD)" --limit 1`
 
@@ -693,7 +693,7 @@ Then wait on the returned run with `gh run watch <run-id> --repo partme-ai/codex
 
 Expected: terminal conclusion `success`.
 
-- [ ] **Step 9: Refresh and reinstall the public plugin**
+- [x] **Step 9: Refresh and reinstall the public plugin**
 
 ```bash
 codex plugin marketplace upgrade partme-ai-dreamina-design
@@ -704,7 +704,7 @@ codex plugin add codex-dreamina-design@partme-ai-dreamina-design
 Verify the installed cache reports version `0.3.0`, contains all eleven tool
 definitions, and byte-matches the released router and upstream Skill trees.
 
-- [ ] **Step 10: Verify final repository identity**
+- [x] **Step 10: Verify final repository identity**
 
 Run:
 
