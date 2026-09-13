@@ -62,6 +62,19 @@ class VideoWebPrerequisiteRequired(VideoServiceError):
     """The first-video web-console prerequisite has not been acknowledged."""
 
 
+class BatchAllowanceCommitError(VideoServiceError):
+    """Provider accepted the request but allowance terminalization is uncertain."""
+
+    def __init__(self, *, submit_id: str, reservation_id: str,
+                 request_fingerprint: str, shot_id: str, attempt: int) -> None:
+        self.submit_id = submit_id
+        self.reservation_id = reservation_id
+        self.request_fingerprint = request_fingerprint
+        self.shot_id = shot_id
+        self.attempt = attempt
+        super().__init__("allowance commit is indeterminate; query the known submit_id")
+
+
 REFERENCE_LIMIT = 8
 VIDEO_REFERENCE_ROLES = {"style", "subject", "frame", "audio", "reference"}
 MODE_REQUIRED_REFERENCES = {
@@ -393,13 +406,32 @@ class VideoService:
             result = self._invoke_once(
                 request, adapter=adapter, session_id=allowance_id,
                 request_fingerprint=fingerprint, begin_intent=True,
+                allowance_id=allowance_id,
+                reservation_id=reservation["reservation_id"],
             )
         except Exception as exc:
+            known_submit_id = getattr(exc, "submit_id", None)
             allowance.mark_ambiguous(
-                reservation["reservation_id"], type(exc).__name__.upper()
+                reservation["reservation_id"], type(exc).__name__.upper(),
+                submit_id=known_submit_id,
             )
             raise
-        committed = allowance.commit(reservation["reservation_id"], result["submit_id"])
+        try:
+            committed = allowance.commit(reservation["reservation_id"], result["submit_id"])
+        except Exception as exc:
+            try:
+                allowance.mark_ambiguous(
+                    reservation["reservation_id"], "ALLOWANCE_COMMIT_INDETERMINATE",
+                    submit_id=result["submit_id"],
+                )
+            except Exception:
+                # A committed or ambiguous terminal record is already safe; the
+                # executor will reconcile it by the known provider identifier.
+                pass
+            raise BatchAllowanceCommitError(
+                submit_id=result["submit_id"], reservation_id=reservation["reservation_id"],
+                request_fingerprint=fingerprint, shot_id=shot_id, attempt=attempt,
+            ) from exc
         return {**result, "reservation": committed}
 
     def _invoke_once(
@@ -410,6 +442,8 @@ class VideoService:
         session_id: str,
         request_fingerprint: str,
         begin_intent: bool,
+        allowance_id: str | None = None,
+        reservation_id: str | None = None,
     ) -> dict[str, Any]:
         """Persist an invocation intent, invoke once, and durably bind its submit id."""
         # Direct submission already persisted its intent before approval. Batch
@@ -418,34 +452,56 @@ class VideoService:
             self._operation_ledger.begin_submission(
                 session_id=session_id, mode=str(request["mode"]),
                 request_fingerprint=request_fingerprint,
+                allowance_id=allowance_id, reservation_id=reservation_id,
             )
         argv = self._request_to_argv(request)
         try:
             result: DreaminaResult = adapter.run(argv)
         except Exception as exc:
+            known_submit_id = getattr(exc, "submit_id", None)
             self._operation_ledger.complete_submission_intent(
                 request_fingerprint=request_fingerprint,
-                submit_id=None,
+                submit_id=known_submit_id,
                 error_code=type(exc).__name__,
+                allowance_id=allowance_id, reservation_id=reservation_id,
             )
+            if known_submit_id:
+                try:
+                    self._operation_ledger.record(
+                        session_id=session_id,
+                        submit_id=known_submit_id,
+                        mode=str(request["mode"]),
+                        request_fingerprint=request_fingerprint,
+                        allowance_id=allowance_id,
+                        reservation_id=reservation_id,
+                    )
+                except Exception:
+                    # Preserve the provider-boundary exception. The accepted
+                    # intent remains durable even if the secondary receipt
+                    # cannot be materialized and reconciliation still blocks.
+                    pass
             raise
         if not result.submit_id:
             self._operation_ledger.complete_submission_intent(
                 request_fingerprint=request_fingerprint,
                 submit_id=None,
                 error_code="MISSING_SUBMIT_ID",
+                allowance_id=allowance_id, reservation_id=reservation_id,
             )
             raise VideoServiceError(
                 "Dreamina accepted no recoverable submit_id; manual review required"
             )
         self._operation_ledger.complete_submission_intent(
-            request_fingerprint=request_fingerprint, submit_id=result.submit_id
+            request_fingerprint=request_fingerprint, submit_id=result.submit_id,
+            allowance_id=allowance_id, reservation_id=reservation_id,
         )
         self._operation_ledger.record(
             session_id=session_id,
             submit_id=result.submit_id,
             mode=str(request["mode"]),
             request_fingerprint=request_fingerprint,
+            allowance_id=allowance_id,
+            reservation_id=reservation_id,
         )
         payload = result.payload or {}
         items = payload.get("items") if isinstance(payload, Mapping) else None
@@ -488,6 +544,7 @@ class VideoService:
 
 __all__ = [
     "ApprovalMismatchError",
+    "BatchAllowanceCommitError",
     "DurationOutOfRangeError",
     "InvalidReferenceError",
     "MissingApprovalError",

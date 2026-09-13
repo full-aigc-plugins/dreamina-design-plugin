@@ -65,7 +65,10 @@ class OperationLedger:
     # ------------------------------------------------------------------
     # Recording
     # ------------------------------------------------------------------
-    def begin_submission(self, *, session_id: str, mode: str, request_fingerprint: str) -> dict[str, Any]:
+    def begin_submission(
+        self, *, session_id: str, mode: str, request_fingerprint: str,
+        allowance_id: str | None = None, reservation_id: str | None = None,
+    ) -> dict[str, Any]:
         if re.fullmatch(r"[a-f0-9]{64}", request_fingerprint) is None:
             raise ValueError("request_fingerprint must be a SHA-256 hex digest")
         path = self._intents_dir / f"{request_fingerprint}.json"
@@ -83,15 +86,27 @@ class OperationLedger:
                 "created_at": _now_iso(),
                 "submit_id": None,
             }
+            if (allowance_id is None) != (reservation_id is None):
+                raise ValueError("allowance_id and reservation_id must be provided together")
+            if allowance_id is not None:
+                intent["allowance_id"] = allowance_id
+                intent["reservation_id"] = reservation_id
             self._atomic_write(path, intent)
             return intent
 
-    def complete_submission_intent(self, *, request_fingerprint: str, submit_id: str | None, error_code: str | None = None) -> dict[str, Any]:
+    def complete_submission_intent(
+        self, *, request_fingerprint: str, submit_id: str | None,
+        error_code: str | None = None, allowance_id: str | None = None,
+        reservation_id: str | None = None,
+    ) -> dict[str, Any]:
         path = self._intents_dir / f"{request_fingerprint}.json"
         with self._exclusive_lock():
             intent = self._load_json(path)
             if not intent:
                 raise OperationNotFoundError(request_fingerprint)
+            if allowance_id is not None or reservation_id is not None:
+                if (intent.get("allowance_id"), intent.get("reservation_id")) != (allowance_id, reservation_id):
+                    raise AmbiguousSubmissionError("submission result does not match its allowance reservation")
             intent["submit_id"] = submit_id
             intent["state"] = "accepted" if submit_id else "manual_review"
             intent["updated_at"] = _now_iso()
@@ -117,6 +132,8 @@ class OperationLedger:
         submit_id: str,
         mode: str,
         request_fingerprint: str,
+        allowance_id: str | None = None,
+        reservation_id: str | None = None,
     ) -> dict[str, Any]:
         with self._exclusive_lock():
             existing = self._read(submit_id)
@@ -136,6 +153,11 @@ class OperationLedger:
                 "required_action": "wait",
                 "history": [{"state": "queued", "at": _now_iso()}],
             }
+            if (allowance_id is None) != (reservation_id is None):
+                raise ValueError("allowance_id and reservation_id must be provided together")
+            if allowance_id is not None:
+                receipt["allowance_id"] = allowance_id
+                receipt["reservation_id"] = reservation_id
             self._atomic_write(self._path_for(submit_id), receipt)
             self._index_add(submit_id, session_id)
             return receipt

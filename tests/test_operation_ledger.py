@@ -66,6 +66,25 @@ class SubmitIdPersistenceTests(unittest.TestCase):
         op = ledger_b.get(submit_id="sub-A")
         self.assertEqual(op["session_id"], "s1")
 
+    def test_batch_intent_and_result_bind_allowance_reservation(self) -> None:
+        fingerprint = "d" * 64
+        intent = self.ledger.begin_submission(
+            session_id="ba_" + "2" * 32,
+            mode="text2video",
+            request_fingerprint=fingerprint,
+            allowance_id="ba_" + "2" * 32,
+            reservation_id="br_" + "3" * 32,
+        )
+        self.assertEqual(intent["allowance_id"], "ba_" + "2" * 32)
+        self.assertEqual(intent["reservation_id"], "br_" + "3" * 32)
+        result = self.ledger.complete_submission_intent(
+            request_fingerprint=fingerprint,
+            submit_id="submit_1",
+            allowance_id="ba_" + "2" * 32,
+            reservation_id="br_" + "3" * 32,
+        )
+        self.assertEqual(result["reservation_id"], "br_" + "3" * 32)
+
     def test_submission_intent_survives_crash_window_and_blocks_retry(self) -> None:
         fingerprint = "9" * 64
         self.ledger.begin_submission(session_id="s", mode="text2image", request_fingerprint=fingerprint)

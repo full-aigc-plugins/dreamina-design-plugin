@@ -169,6 +169,21 @@ class VideoServiceModuleTests(unittest.TestCase):
         self.assertEqual(calls[0][2]["request_fingerprint"], build_video_request_fingerprint(request))
         self.assertEqual(calls[1][0], "commit")
 
+    def test_batch_commit_failure_raises_identity_carrying_error(self) -> None:
+        from scripts.video_service import BatchAllowanceCommitError
+        request = {"mode": "text2video", "prompt": "p", "model": "seedance-test", "video_resolution": "720p", "duration_seconds": 4}
+        class Allowance:
+            def reserve(self, *args, **kwargs): return {"reservation_id": "br_" + "1" * 32}
+            def commit(self, *args, **kwargs): raise RuntimeError("indeterminate")
+            def mark_ambiguous(self, *args, **kwargs): return {"state": "ambiguous"}
+        class Adapter:
+            def run(self, argv): return DreaminaResult(0, {}, None, "submit-1", "")
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(BatchAllowanceCommitError) as caught:
+            VideoService({"modes": []}, Path(tmp)).submit_with_batch_allowance(
+                request, adapter=Adapter(), allowance=Allowance(), allowance_id="ba_" + "2" * 32,
+                shot_id="S01", attempt=1)
+        self.assertEqual((caught.exception.submit_id, caught.exception.reservation_id), ("submit-1", "br_" + "1" * 32))
+
 
 class FingerprintTests(unittest.TestCase):
     def test_fingerprint_is_stable(self) -> None:

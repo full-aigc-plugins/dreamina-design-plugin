@@ -22,3 +22,15 @@
 
 - All adapters and artifacts in Task 9 tests are synthetic; no network, paid request, native approval, release, or real Dreamina call was made.
 - A restart observed at the invocation boundary without a known submit ID fails closed to manual review.
+
+## Fix Round 1
+
+- Corrected verified downloads to persist `awaiting_evaluation`; retries remain closed until `record_evaluation_decision(..., "retry")` durably records an explicit evaluator decision.
+- Added `BatchAllowanceCommitError`, preserving submit ID, reservation ID, request fingerprint, shot ID, and attempt when allowance terminalization is indeterminate.
+- Provider-known timeout and commit-indeterminate paths persist allowance/reservation bindings in the operation ledger and resume by querying the known submit ID.
+- `run_next` now reconciles every known nonterminal submit ID before any new reservation or provider submission, including after restart.
+- RED evidence: focused tests failed on automatic `evaluation_retryable`, missing identity-carrying exception/state, and missing explicit evaluator-decision method.
+- Additional RED evidence: known-ID timeout lacked a ledger receipt, terminal failure was overwritten by later work, and corrupt downloads escaped instead of persisting manual review.
+- Final focused verification passed 146 tests; full discovery passed 499 tests in 25.256s. Python compilation and `git diff --check` passed.
+- Fix-round focused regression: 138 executor/service/task/ledger/allowance/planner tests passed.
+- Fix-round full regression: 499 tests passed in 24.589s; `py_compile` and `git diff --check` also passed.
