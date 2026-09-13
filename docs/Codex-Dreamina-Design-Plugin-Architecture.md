@@ -1,5 +1,25 @@
 # Codex Dreamina Design Plugin Architecture
 
+## 0.3.0 full automation layer
+
+The stdio MCP server exposes eleven closed-schema tools spanning CLI status,
+verified install/update, memory-only OAuth flows, account readiness, all eight
+generation modes, task query/list/download, Session CRUD, and redacted log
+diagnosis. Domain services construct fixed argv; the MCP server does not expose
+arbitrary shell or command execution. High-risk operations are enforced by a
+server-side native confirmation in addition to MCP approval metadata.
+
+```mermaid
+flowchart LR
+    Codex --> MCP[11 typed MCP tools]
+    MCP --> Services[Domain services]
+    Services --> Guard[Native approval and request guard]
+    Services --> Adapter[Trusted argv-only adapter]
+    Adapter --> CLI[Dreamina CLI]
+    Services --> Ledger[Operation ledger]
+    Services --> Verify[Artifact and log verification]
+```
+
 > Feature architecture implemented; production hardening in progress. Re-verified 2026-09-13.
 
 ## Context

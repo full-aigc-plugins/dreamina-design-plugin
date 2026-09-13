@@ -1,5 +1,23 @@
 # Codex Dreamina Design 插件架构
 
+## 0.3.0 全自动化层
+
+stdio MCP 服务提供 11 个闭合 Schema 工具，覆盖 CLI 状态、可信安装更新、仅内存
+OAuth 流程、账户就绪检查、8 种生成模式、任务查询/列表/下载、Session CRUD 和
+脱敏日志诊断。领域服务只构造固定 argv；MCP 不开放任意 Shell 或命令执行。高风险
+操作除 MCP 审批元数据外，还必须经过服务端原生确认。
+
+```mermaid
+flowchart LR
+    Codex --> MCP[11 个强类型 MCP 工具]
+    MCP --> Services[领域服务]
+    Services --> Guard[原生确认与请求防护]
+    Services --> Adapter[可信 argv-only 适配器]
+    Adapter --> CLI[Dreamina CLI]
+    Services --> Ledger[操作账本]
+    Services --> Verify[产物与日志校验]
+```
+
 > 功能架构已实现，生产加固进行中。重新验证日期 2026-09-13。
 
 ## 系统上下文
