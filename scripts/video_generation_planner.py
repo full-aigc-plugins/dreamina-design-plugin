@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 from scripts.json_contracts import canonical_fingerprint, validate_contract
@@ -89,8 +89,13 @@ def validate_batch_quote(quote: Mapping[str, Any]) -> None:
 class VideoGenerationPlanner:
     """Materialize every base/retry request without approving or submitting it."""
 
-    def __init__(self, reference_policy: Any | None = None) -> None:
+    def __init__(self, reference_policy: Any | None = None, *, project_store: Any | None = None, now: Any | None = None, snapshot_max_age_seconds: int = 86400) -> None:
         self._reference_policy = reference_policy
+        self._project_store = project_store
+        self._now = now or (lambda: datetime.now(timezone.utc))
+        if isinstance(snapshot_max_age_seconds, bool) or not isinstance(snapshot_max_age_seconds, int) or snapshot_max_age_seconds < 1:
+            raise ValueError("snapshot_max_age_seconds must be a positive integer")
+        self._snapshot_max_age = timedelta(seconds=snapshot_max_age_seconds)
 
     def plan_shot(self, shot: Mapping[str, Any], snapshot: Mapping[str, Any]) -> dict[str, Any]:
         """Choose one mode deterministically and build its exact base request."""
@@ -118,7 +123,16 @@ class VideoGenerationPlanner:
             raise UnsupportedCapabilityError(f"mode not in snapshot: {mode}")
         self._require_advertised_constraints(shot, snapshot, mode)
 
-        service = VideoService(snapshot=snapshot, ledger_dir=None, reference_policy=self._reference_policy)
+        policy = self._reference_policy
+        if policy is not None and hasattr(policy, "validate_for_quote"):
+            stable_validator = policy.validate_for_quote
+
+            class _StablePolicy:
+                def validate(self, reference: Mapping[str, Any]) -> dict[str, Any]:
+                    return stable_validator(reference)
+
+            policy = _StablePolicy()
+        service = VideoService(snapshot=snapshot, ledger_dir=None, reference_policy=policy)
         kwargs: dict[str, Any] = {
             "mode": mode,
             "prompt": str(shot.get("prompt", "")),
@@ -143,6 +157,7 @@ class VideoGenerationPlanner:
         cost_basis: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
         """Build a closed quote whose attempts and costs are all known in advance."""
+        self._validate_snapshot(snapshot)
         ceiling, normalized_cost = self._resolve_cost(snapshot, cost_basis)
         shots = design.get("shots")
         if shots is None and isinstance(design.get("payload"), Mapping):
@@ -208,6 +223,63 @@ class VideoGenerationPlanner:
         quote["quote_fingerprint"] = canonical_fingerprint(quote)
         validate_batch_quote(quote)
         return copy.deepcopy(quote)
+
+    def plan_persisted(
+        self, project_id: str, design_version: str, snapshot: Mapping[str, Any],
+        cost_basis: Mapping[str, Any] | None, *, generation: Mapping[str, Mapping[str, Any]],
+        output_destination: str, output_profile: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Plan from one safely read committed design and its current evidence."""
+        if self._project_store is None:
+            raise PlanningError("persisted planning requires a VideoProjectStore")
+        from scripts.video_redesign_service import VideoRedesignService
+        from scripts.video_rights_service import VideoRightsService
+
+        design = self._project_store.read_version(project_id, "redesign", design_version, "video_redesign.schema.json")
+        project = self._project_store.get(project_id)
+        if design["project_id"] != project_id or design["creative_mode"] != project["creative_mode"]:
+            raise PlanningError("persisted design mode or project binding mismatch")
+        VideoRedesignService(self._project_store)._validate_candidate_against_current_evidence(design)
+        payload = design["payload"]
+        if design["creative_mode"] == "authorized_replication":
+            receipt_id = design.get("rights_receipt_id")
+            if not isinstance(receipt_id, str):
+                raise PlanningError("authorized replication requires an exact rights receipt")
+            receipt = self._project_store.find_version_by_field(project_id, "rights_receipt", field="receipt_id", value=receipt_id, schema_name="video_rights_receipt.schema.json")
+            VideoRightsService(self._project_store, native_confirmer=None).assert_scope(
+                receipt, required=set(payload["preserve"]), binding={
+                    "project_id": project_id, "source_sha256": design["source_sha256"],
+                    "creative_mode": design["creative_mode"], "design_fingerprint": design["design_fingerprint"],
+                    "required_media": payload["required_media"], "purpose": payload["purpose"],
+                    "audience": payload["audience"], "territory": payload["territory"],
+                })
+        elif design.get("rights_receipt_id") is not None:
+            raise PlanningError("original redesign must not carry a replication receipt")
+        shots = []
+        for source_shot in payload["shots"]:
+            options = generation.get(source_shot["id"])
+            if not isinstance(options, Mapping):
+                raise PlanningError(f"generation options missing for {source_shot['id']}")
+            shots.append({**copy.deepcopy(dict(options)), "id": source_shot["id"], "prompt": source_shot["prompt"]})
+        materialized = {
+            **{key: copy.deepcopy(design[key]) for key in ("project_id", "version", "design_fingerprint", "rights_receipt_id", "source_sha256", "analysis_version", "machine_fingerprint", "creative_mode")},
+            "audio_policy": project["audio_policy"], "output_destination": output_destination,
+            "output_profile": copy.deepcopy(dict(output_profile)), "shots": shots,
+        }
+        return self.plan(materialized, snapshot, cost_basis)
+
+    def _validate_snapshot(self, snapshot: Mapping[str, Any]) -> None:
+        try:
+            validate_contract(snapshot, "capability_snapshot.schema.json")
+            captured = datetime.fromisoformat(_require_rfc3339(snapshot["captured_at"], label="captured_at").replace("Z", "+00:00")).astimezone(timezone.utc)
+        except Exception as exc:
+            raise UnsupportedCapabilityError("capability snapshot is not valid machine-readable evidence") from exc
+        current = self._now()
+        if isinstance(current, str):
+            current = datetime.fromisoformat(_require_rfc3339(current, label="now").replace("Z", "+00:00"))
+        current = current.astimezone(timezone.utc)
+        if captured > current + timedelta(minutes=5) or current - captured > self._snapshot_max_age:
+            raise UnsupportedCapabilityError("capability snapshot is stale or from the future")
 
     @staticmethod
     def validate_quote(quote: Mapping[str, Any]) -> None:

@@ -61,6 +61,23 @@ class ReferencePolicy:
         self._finalizer = weakref.finalize(self, shutil.rmtree, self._staging_root, True)
 
     def validate(self, reference: Mapping[str, Any]) -> dict[str, Any]:
+        normalized, resolved = self._inspect(reference)
+        staged = self._staging_root / f"{uuid.uuid4().hex}{resolved.suffix.lower()}"
+        with resolved.open("rb") as reader, staged.open("xb") as writer:
+            shutil.copyfileobj(reader, writer, length=1024 * 1024)
+            writer.flush()
+            os.fsync(writer.fileno())
+        os.chmod(staged, 0o400)
+        normalized["source_path"] = normalized["path"]
+        normalized["path"] = str(staged)
+        return normalized
+
+    def validate_for_quote(self, reference: Mapping[str, Any]) -> dict[str, Any]:
+        """Validate stable enrolled media without creating ephemeral request paths."""
+        normalized, _ = self._inspect(reference)
+        return normalized
+
+    def _inspect(self, reference: Mapping[str, Any]) -> tuple[dict[str, Any], Path]:
         raw_path = Path(str(reference.get("path", "")))
         if not raw_path.is_absolute() or raw_path.is_symlink():
             raise ReferencePolicyError("reference path must be an absolute non-symlink path")
@@ -83,10 +100,9 @@ class ReferencePolicy:
         declared_size = reference.get("size_bytes")
         if declared_size is not None and int(declared_size) != size:
             raise ReferencePolicyError("reference size_bytes does not match the file")
-        staged = self._staging_root / f"{uuid.uuid4().hex}{resolved.suffix.lower()}"
         digest = hashlib.sha256()
         header = b""
-        with os.fdopen(fd, "rb") as reader, staged.open("xb") as writer:
+        with os.fdopen(fd, "rb") as reader:
             while True:
                 chunk = reader.read(1024 * 1024)
                 if not chunk:
@@ -94,10 +110,6 @@ class ReferencePolicy:
                 if not header:
                     header = chunk[:32]
                 digest.update(chunk)
-                writer.write(chunk)
-            writer.flush()
-            os.fsync(writer.fileno())
-        os.chmod(staged, 0o400)
         mime = _detect_mime(header)
         if mime is None:
             raise ReferencePolicyError("reference media type is not recognized")
@@ -112,12 +124,11 @@ class ReferencePolicy:
         if size > limit:
             raise ReferencePolicyError(f"reference exceeds byte limit {limit}")
         normalized = dict(reference)
-        normalized["source_path"] = str(resolved)
-        normalized["path"] = str(staged)
+        normalized["path"] = str(resolved)
         normalized["mime_type"] = mime
         normalized["size_bytes"] = size
         normalized["sha256"] = digest.hexdigest()
-        return normalized
+        return normalized, resolved
 
     def close(self) -> None:
         self._finalizer()
