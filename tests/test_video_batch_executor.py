@@ -62,7 +62,7 @@ class Allowance:
 
 
 class Adapter:
-    def __init__(self): self.calls = []; self.raise_after_invoke = None; self.status = "querying"; self.download = False; self.corrupt_download = False; self.submissions = 0
+    def __init__(self): self.calls = []; self.raise_after_invoke = None; self.status = "querying"; self.status_by_submit = {}; self.download = False; self.corrupt_download = False; self.submissions = 0
     def run(self, args):
         self.calls.append(list(args))
         if args[0] == "query_result":
@@ -70,7 +70,8 @@ class Adapter:
                 target = Path(args[args.index("--download_dir") + 1]) / "clip.mp4"
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(b"not-media" if self.corrupt_download else b"\0\0\0\x18ftypisom" + b"x" * 20)
-            return DreaminaResult(0, {"gen_status": self.status}, None, args[2], "")
+            status = self.status_by_submit.get(args[2], self.status)
+            return DreaminaResult(0, {"gen_status": status}, None, args[2], "")
         if self.raise_after_invoke: raise self.raise_after_invoke
         self.submissions += 1
         return DreaminaResult(0, {"submit_id": f"submit_{self.submissions}"}, None, f"submit_{self.submissions}", "")
@@ -203,6 +204,37 @@ class VideoBatchExecutorTests(unittest.TestCase):
             allowance_id="ba_" + "2" * 32, video_service=None, adapter=self.adapter)
         restarted.reconcile(PROJECT_ID, "v001")
         self.assertEqual(self.adapter.calls[0][:3], ["query_result", "--submit_id", "submit_1"])
+
+    def test_aggregate_state_precedence_table(self):
+        cases = [
+            (["failed", "manual_review", "queued"], ("manual_review", "manual_review")),
+            (["awaiting_evaluation", "failed", "queued"], ("failed", "report_failure")),
+            (["queued", "awaiting_evaluation"], ("awaiting_evaluation", "evaluate")),
+            (["accepted", "queued"], ("generating", "query")),
+            (["accepted", "evaluation_retryable"], ("evaluation_retryable", "run_next")),
+            (["accepted", "accepted"], ("completed", "none")),
+        ]
+        for task_states, expected in cases:
+            with self.subTest(task_states=task_states):
+                tasks = [{"state": value} for value in task_states]
+                self.assertEqual(VideoBatchExecutor.aggregate_state(tasks), expected)
+                self.assertEqual(VideoBatchExecutor.aggregate_state(list(reversed(tasks))), expected)
+
+    def test_two_known_tasks_retain_dominant_state_and_block_new_submission(self):
+        for dominant_status, expected in (("mystery", "manual_review"), ("failed", "failed")):
+            for reverse in (False, True):
+                with self.subTest(dominant_status=dominant_status, reverse=reverse):
+                    self.setUp(); self.executor.run_next(PROJECT_ID, "v001", 2)
+                    state = self.executor._load(PROJECT_ID, "v001")
+                    if reverse:
+                        state["tasks"].reverse(); self.executor._save(state)
+                    self.adapter.status_by_submit = {"submit_1": dominant_status, "submit_2": "querying"}
+                    self.adapter.calls.clear()
+                    result = self.executor.run_next(PROJECT_ID, "v001", 1)
+                    self.assertEqual(result["state"], expected)
+                    self.assertEqual(result["new_submissions"], 0)
+                    self.assertEqual([call[2] for call in self.adapter.calls if call[0] == "query_result"],
+                                     ["submit_1", "submit_2"])
 
 
 if __name__ == "__main__": unittest.main()

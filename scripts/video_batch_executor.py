@@ -51,6 +51,38 @@ class VideoBatchExecutor:
     def _save(self, state: dict[str, Any]) -> None:
         self._ledger.save_batch(project_id=state["project_id"], batch_version=state["batch_version"], payload=state)
 
+    @staticmethod
+    def aggregate_state(tasks: list[dict[str, Any]]) -> tuple[str, str]:
+        """Return an order-independent batch state and its required action."""
+        states = {str(task.get("state", "manual_review")) for task in tasks}
+        precedence = (
+            ("manual_review", "manual_review", "manual_review"),
+            ("failed", "failed", "report_failure"),
+            ("rejected", "failed", "report_failure"),
+            ("missing_artifact", "missing_artifact", "retry_download"),
+            ("awaiting_evaluation", "awaiting_evaluation", "evaluate"),
+        )
+        for member, aggregate, action in precedence:
+            if member in states:
+                return aggregate, action
+        if states.intersection({"submitting", "queued", "querying", "downloading", "generating"}):
+            return "generating", "query"
+        if "evaluation_retryable" in states:
+            return "evaluation_retryable", "run_next"
+        if tasks and states <= {"accepted"}:
+            return "completed", "none"
+        return "ready", "run_next"
+
+    def _apply_aggregate(self, state: dict[str, Any], quote: dict[str, Any]) -> None:
+        aggregate, action = self.aggregate_state(state["tasks"])
+        if aggregate == "completed":
+            required = {(item["shot_id"], 1) for item in quote["items"]}
+            observed = {(item["shot_id"], item["attempt"]) for item in state["tasks"]}
+            if not required <= observed:
+                aggregate, action = "ready", "run_next"
+        state["state"] = aggregate
+        state["required_action"] = action
+
     def run_next(self, project_id: str, batch_version: str, max_new_submissions: int) -> dict[str, Any]:
         if isinstance(max_new_submissions, bool) or not isinstance(max_new_submissions, int) or not 1 <= max_new_submissions <= 4:
             raise ValueError("max_new_submissions must be between 1 and 4")
@@ -91,7 +123,7 @@ class VideoBatchExecutor:
         return {**state, "new_submissions": new_count}
 
     def reconcile(self, project_id: str, batch_version: str) -> dict[str, Any]:
-        self._quote(project_id, batch_version)
+        quote = self._quote(project_id, batch_version)
         state = self._load(project_id, batch_version)
         for task in sorted(state["tasks"], key=lambda item: (item["shot_index"], item["attempt"])):
             if task["state"] == "submitting" and not task.get("submit_id"):
@@ -125,6 +157,8 @@ class VideoBatchExecutor:
             task["artifacts"] = downloaded["artifacts"]
             task["state"] = "awaiting_evaluation" if task["artifacts"] else "missing_artifact"
             state["state"] = task["state"]; self._save(state)
+        self._apply_aggregate(state, quote)
+        self._save(state)
         return state
 
     def record_evaluation_decision(self, project_id: str, batch_version: str,
@@ -139,7 +173,7 @@ class VideoBatchExecutor:
             raise ValueError("evaluation decision requires a downloaded artifact awaiting evaluation")
         task["evaluation_decision"] = decision
         task["state"] = "evaluation_retryable" if decision == "retry" else decision
-        state["state"] = task["state"]
+        self._apply_aggregate(state, self._quote(project_id, batch_version))
         self._save(state)
         return state
 
