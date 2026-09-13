@@ -282,7 +282,10 @@ def _handle(message: Mapping[str, Any], tools: DreaminaMcpTools) -> dict | None:
             structured = tools.call(str(params.get("name", "")), params.get("arguments") or {})
             return _response(request_id, {"content": [{"type": "text", "text": json.dumps(structured, ensure_ascii=False)}], "structuredContent": structured, "isError": False})
         except Exception as exc:
-            return _response(request_id, {"content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}], "isError": True})
+            error_type=type(exc).__name__
+            requires_user_action=isinstance(exc,(PermissionError,TrustedCliError))
+            structured={"error_type":error_type,"message":str(exc),"retryable":False,"requires_user_action":requires_user_action,"next_action":"request_user_action" if requires_user_action else "correct_request"}
+            return _response(request_id, {"content": [{"type": "text", "text": json.dumps(structured, ensure_ascii=False)}], "structuredContent": structured, "isError": True})
     if request_id is not None:
         return _response(request_id, error={"code": -32601, "message": f"method not found: {method}"})
     return None

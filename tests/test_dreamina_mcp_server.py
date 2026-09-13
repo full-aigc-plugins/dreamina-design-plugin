@@ -74,6 +74,13 @@ class McpStdioTests(unittest.TestCase):
         names = {tool["name"] for tool in responses[1]["result"]["tools"]}
         self.assertEqual(names, {"dreamina_capability_snapshot", "dreamina_cli_status", "dreamina_cli_install_or_upgrade", "dreamina_auth", "dreamina_account", "dreamina_submit_image", "dreamina_submit_video", "dreamina_query_task", "dreamina_list_tasks", "dreamina_session", "dreamina_diagnose"})
 
+    def test_tool_errors_are_structured_for_automation(self) -> None:
+        message={"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"dreamina_account","arguments":{"unknown":True}}}
+        result=subprocess.run([sys.executable,"-m","scripts.dreamina_mcp_server"],cwd=ROOT,input=json.dumps(message)+"\n",capture_output=True,text=True,check=False)
+        payload=json.loads(result.stdout)["result"]
+        self.assertTrue(payload["isError"])
+        self.assertEqual(set(payload["structuredContent"]),{"error_type","message","retryable","requires_user_action","next_action"})
+
 
 class PaidToolHandlerTests(unittest.TestCase):
     class _Approve:
