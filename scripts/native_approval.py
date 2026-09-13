@@ -50,6 +50,16 @@ class NativeApprovalProvider:
         self._confirm_dialog("注册可信本地媒体工具\n\n" + summary, "信任此文件")
         return "native-media-tool-trust-confirmed"
 
+    def confirm_video_rights(self, request: Mapping[str, Any]) -> str:
+        """Confirm the exact user assertion, source, project, mode, and design candidate."""
+        summary = json.dumps(dict(request), ensure_ascii=False, sort_keys=True, indent=2)
+        self._confirm_dialog(
+            "确认视频复刻权利声明（仅记录用户声明，不验证所有权且不构成法律建议）\n\n"
+            + summary,
+            "确认声明",
+        )
+        return "native-video-rights-confirmed"
+
     @staticmethod
     def _confirm_dialog(message: str, approve_button: str) -> None:
         if platform.system() != "Darwin":

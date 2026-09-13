@@ -1,0 +1,144 @@
+from __future__ import annotations
+
+import copy
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from scripts.video_project_store import VideoProjectStore
+from scripts.video_rights_service import VideoRightsService
+from scripts.video_redesign_service import (
+    REUSE_DIMENSIONS,
+    OriginalityPolicyError,
+    RedesignBindingError,
+    VideoRedesignService,
+)
+
+
+class VideoRedesignServiceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = VideoProjectStore(Path(self.temp.name) / "projects")
+        project = self.store.create(
+            title="reference", creative_mode="original_redesign", audio_policy="silent"
+        )
+        self.project_id = project["project_id"]
+        self.fingerprint = "b" * 64
+        self._persist_analysis_and_annotation()
+        self.redesign = VideoRedesignService(self.store)
+
+    def _persist_analysis_and_annotation(self) -> None:
+        source = {
+            "schema_version": "1.0", "version": "v001", "project_id": self.project_id,
+            "source_sha256": "a" * 64, "size_bytes": 12, "mime_type": "video/mp4",
+            "video_codec": "h264", "width": 1280, "height": 720, "fps": 24.0,
+            "duration_seconds": 4.0, "audio_streams": [], "approved_roots_digest": "c" * 64,
+            "staged_path": "/private/source.mp4", "intake_at": "2026-09-14T00:00:00Z",
+        }
+        analysis = {
+            "schema_version": "1.0", "analysis_id": "an_" + "d" * 24,
+            "project_id": self.project_id, "source": source,
+            "parameters": {"scene_threshold": .3, "min_shot_seconds": .3, "track_hz": 5},
+            "cuts": [0.0, 4.0], "manual_cuts": [],
+            "shots": [{"id": "S01", "measured": {"start_seconds": 0.0, "end_seconds": 4.0, "duration_seconds": 4.0, "motion_median": 0.0, "boundary_source": "source_start"}, "semantic": None}],
+            "track_path": "/private/track.json",
+            "frame_checksums": {label: {"sha256": "e" * 64, "path": "/private/frame.png", "at_seconds": at, "frame_width": 480, "boundary_fingerprint": "f" * 64} for label, at in (("S01:a", .5), ("S01:b", 3.5))},
+            "machine_fingerprint": self.fingerprint,
+        }
+        self.store.write_version(self.project_id, "analysis", analysis, schema_name="shot_analysis.schema.json")
+        annotation = {
+            "schema_version": "1.0", "analysis_version": "v001", "machine_fingerprint": self.fingerprint,
+            "shots": [{"id": "S01", "shot_size": "wide", "category": "subject", "category_evidence": "subject person", "camera": "static", "frame_description": "A clearly described presenter standing inside a bright modern studio", "rhythm_role": None, "rhythm_evidence": None, "subjects": [], "on_screen_text": [], "dialogue": [], "narration": [], "music": [], "sound": [], "confidence": .9, "review_note": ""}],
+            "transcript": None,
+        }
+        self.store.write_version(self.project_id, "annotation", annotation, schema_name="shot_annotation.schema.json")
+
+    def payload(self, **changes):
+        payload = {
+            "schema_version": "1.0", "creative_mode": "original_redesign",
+            "machine_fingerprint": self.fingerprint,
+            "preserve": ["timing", "shot_sizes", "camera_moves", "rhythm", "transitions", "audio_beats"],
+            "replacements": {key: f"new {key}" for key in ("likeness", "voice", "dialogue", "music", "brand", "artwork", "settings", "costume", "distinctive_props")},
+            "audience": "general", "format": "short_video", "target_duration_seconds": 4.0,
+            "aspect_ratio": "16:9", "platform": "web", "concept": "A new original launch story",
+            "cast": ["new presenter"], "settings": ["new studio"], "palette": ["blue"],
+            "visual_style": "clean editorial", "dialogue": [], "narration": [], "music": "new licensed score",
+            "sound_intent": "new sound design", "shots": [{"id": "S01", "prompt": "new presenter in a new studio"}],
+            "continuity": ["new presenter remains consistent"], "author": "user",
+        }
+        payload.update(changes)
+        return payload
+
+    def test_original_redesign_forbids_source_face_voice_brand_dialogue_music_reuse(self):
+        for dimension in ("likeness", "voice", "brand", "dialogue", "music", "artwork", "distinctive_props"):
+            with self.subTest(dimension=dimension), self.assertRaises(OriginalityPolicyError):
+                self.redesign.prepare_candidate(self.project_id, "v001", self.payload(preserve=[dimension]))
+
+    def test_original_redesign_requires_explicit_expressive_replacements(self):
+        for dimension in ("likeness", "voice", "dialogue", "music", "brand", "artwork", "settings", "costume", "distinctive_props"):
+            payload = self.payload()
+            del payload["replacements"][dimension]
+            with self.subTest(dimension=dimension), self.assertRaises(OriginalityPolicyError):
+                self.redesign.prepare_candidate(self.project_id, "v001", payload)
+
+    def test_redesign_cannot_change_measured_analysis(self):
+        with self.assertRaises(RedesignBindingError):
+            self.redesign.prepare_candidate(self.project_id, "v001", self.payload(machine_fingerprint="0" * 64))
+
+    def test_candidate_is_not_persisted_and_mutation_invalidates_commit(self):
+        candidate = self.redesign.prepare_candidate(self.project_id, "v001", self.payload())
+        self.assertFalse((self.store.project_root(self.project_id) / "redesign").exists())
+        candidate["payload"]["concept"] = "mutated after authorization boundary"
+        with self.assertRaises(RedesignBindingError):
+            self.redesign.commit_version(candidate, rights_receipt_id=None)
+
+    def test_similarity_audit_partitions_every_dimension_exactly_once(self):
+        candidate = self.redesign.prepare_candidate(self.project_id, "v001", self.payload())
+        design = self.redesign.commit_version(candidate, rights_receipt_id=None)
+        preserved = design["similarity_audit"]["preserved"]
+        replaced = design["similarity_audit"]["replaced"]
+        self.assertEqual(set(preserved) | set(replaced), REUSE_DIMENSIONS)
+        self.assertFalse(set(preserved) & set(replaced))
+        self.assertEqual(len(preserved) + len(replaced), len(REUSE_DIMENSIONS))
+
+    def test_replication_cannot_commit_without_exact_bound_receipt(self):
+        project = self.store.create(title="replica", creative_mode="authorized_replication", audio_policy="silent")
+        other = VideoRedesignService(self.store)
+        # Copy valid immutable evidence into the second project with corrected identities.
+        self.project_id = project["project_id"]
+        self._persist_analysis_and_annotation()
+        candidate = other.prepare_candidate(self.project_id, "v001", self.payload(creative_mode="authorized_replication", preserve=list(REUSE_DIMENSIONS)))
+        with self.assertRaises(RedesignBindingError):
+            other.commit_version(candidate, rights_receipt_id=None)
+
+    def test_replication_commits_only_after_candidate_bound_native_receipt(self):
+        project = self.store.create(title="replica", creative_mode="authorized_replication", audio_policy="silent")
+        self.project_id = project["project_id"]
+        self._persist_analysis_and_annotation()
+        candidate = self.redesign.prepare_candidate(
+            self.project_id, "v001",
+            self.payload(creative_mode="authorized_replication", preserve=["likeness", "voice"]),
+        )
+
+        class Confirmer:
+            def confirm_video_rights(self, request): return "native-video-rights-confirmed"
+
+        rights = VideoRightsService(self.store, Confirmer())
+        assertion = {
+            "declarant": "holder@example.test", "rights_basis": "written license",
+            "evidence": [{"reference": "license-record", "sha256": "c" * 64}],
+            "allowed_media": ["video"], "allowed_reuse": ["likeness", "voice"],
+            "purpose": "authorized remake", "audience": "general", "territory": "worldwide",
+            "expires_at": "2099-01-01T00:00:00Z",
+        }
+        source = {"project_id": self.project_id, "source_sha256": "a" * 64}
+        receipt = rights.record_assertion(self.project_id, source, candidate, assertion)
+        design = self.redesign.commit_version(candidate, receipt["receipt_id"])
+        self.assertEqual(design["rights_receipt_id"], receipt["receipt_id"])
+        self.assertEqual(design["design_fingerprint"], candidate["design_fingerprint"])
+
+
+if __name__ == "__main__":
+    unittest.main()

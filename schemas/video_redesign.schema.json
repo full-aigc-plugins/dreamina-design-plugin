@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/video_redesign.schema.json",
+  "title": "Dreamina Versioned Video Redesign",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "version", "parent_version", "project_id", "analysis_version", "source_sha256", "machine_fingerprint", "creative_mode", "rights_receipt_id", "design_fingerprint", "payload", "similarity_audit", "committed_at"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "parent_version": {"type": ["string", "null"], "pattern": "^v[0-9]{3,}$"},
+    "project_id": {"type": "string", "pattern": "^vp_[a-f0-9]{24}$"},
+    "analysis_version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "machine_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "creative_mode": {"type": "string", "enum": ["authorized_replication", "original_redesign"]},
+    "rights_receipt_id": {"type": ["string", "null"], "pattern": "^rr_[a-f0-9]{24}$"},
+    "design_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "payload": {"type": "object"},
+    "similarity_audit": {"type": "object", "additionalProperties": false, "required": ["preserved", "replaced"], "properties": {"preserved": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}, "replaced": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}}},
+    "committed_at": {"type": "string", "minLength": 1}
+  }
+}

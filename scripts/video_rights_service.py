@@ -1,0 +1,113 @@
+"""Record fail-closed, candidate-bound user rights assertions."""
+
+from __future__ import annotations
+
+import re
+from datetime import datetime, timezone
+from typing import Any, Callable, Mapping
+
+from scripts.json_contracts import ContractValidationError, canonical_fingerprint, validate_contract
+from scripts.video_project_store import VideoProjectStore
+
+
+REUSE_DIMENSIONS = frozenset({
+    "timing", "shot_sizes", "camera_moves", "rhythm", "transitions", "audio_beats",
+    "likeness", "voice", "dialogue", "music", "brand", "artwork", "distinctive_props",
+})
+DISCLAIMER = (
+    "User-supplied assertion recorded as engineering authorization evidence; "
+    "not ownership verification or legal advice."
+)
+
+
+class RightsScopeError(PermissionError):
+    """A receipt is absent, expired, narrower than requested, or differently bound."""
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _instant(value: str) -> datetime:
+    if not isinstance(value, str):
+        raise ContractValidationError("expiry must be an RFC 3339 timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ContractValidationError("expiry must be an RFC 3339 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ContractValidationError("expiry must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+class VideoRightsService:
+    """Persist user assertions only after native confirmation of the exact candidate."""
+
+    def __init__(self, project_store: VideoProjectStore, native_confirmer: Any, *, now: Callable[[], str] = _utc_now) -> None:
+        self._store = project_store
+        self._confirmer = native_confirmer
+        self._now = now
+
+    def record_assertion(self, project_id: str, source_receipt: Mapping[str, Any], design_candidate: Mapping[str, Any], assertion: Mapping[str, Any]) -> dict[str, Any]:
+        project = self._store.get(project_id)
+        source_sha256 = source_receipt.get("source_sha256")
+        fingerprint = design_candidate.get("design_fingerprint")
+        if (
+            source_receipt.get("project_id") != project_id
+            or design_candidate.get("project_id") != project_id
+            or design_candidate.get("source_sha256") != source_sha256
+            or project["creative_mode"] != "authorized_replication"
+        ):
+            raise ContractValidationError("rights assertion is not bound to this replication project")
+        if design_candidate.get("creative_mode") != "authorized_replication":
+            raise ContractValidationError("rights assertion requires an authorized replication candidate")
+        if re.fullmatch(r"[a-f0-9]{64}", str(source_sha256)) is None or re.fullmatch(r"[a-f0-9]{64}", str(fingerprint)) is None:
+            raise ContractValidationError("rights assertion requires exact source and candidate fingerprints")
+        required = {"declarant", "rights_basis", "evidence", "allowed_media", "allowed_reuse", "purpose", "audience", "territory", "expires_at"}
+        if set(assertion) != required:
+            raise ContractValidationError("rights assertion fields must be complete and closed")
+        asserted_at = self._now()
+        _instant(asserted_at); _instant(str(assertion["expires_at"]))
+        confirmation_request = {
+            "action": "assert-video-replication-rights", "project_id": project_id,
+            "source_sha256": source_sha256, "creative_mode": "authorized_replication",
+            "design_fingerprint": fingerprint, **dict(assertion), "disclaimer": DISCLAIMER,
+        }
+        # Validate before showing or persisting by supplying only the storage-generated fields.
+        provisional = {
+            "schema_version": "1.0", "version": "v001",
+            "receipt_id": "rr_" + canonical_fingerprint({**confirmation_request, "asserted_at": asserted_at})[:24],
+            **{key: value for key, value in confirmation_request.items() if key != "action"},
+            "asserted_at": asserted_at, "native_confirmation": "native-video-rights-confirmed",
+        }
+        validate_contract(provisional, "video_rights_receipt.schema.json")
+        confirmation = self._confirmer.confirm_video_rights(confirmation_request)
+        if confirmation != "native-video-rights-confirmed":
+            raise RightsScopeError("native rights confirmation was not granted")
+        provisional["native_confirmation"] = confirmation
+        return self._store.write_version(project_id, "rights_receipt", {key: value for key, value in provisional.items() if key != "version"}, schema_name="video_rights_receipt.schema.json")
+
+    def assert_scope(self, receipt: Mapping[str, Any], *, required: set[str], binding: Mapping[str, Any]) -> None:
+        try:
+            validate_contract(receipt, "video_rights_receipt.schema.json")
+            exact = all(receipt.get(key) == binding.get(key) for key in ("project_id", "source_sha256", "creative_mode", "design_fingerprint"))
+            allowed = set(receipt["allowed_reuse"])
+            required_media_value = binding.get("required_media", ())
+            if isinstance(required_media_value, (str, bytes)):
+                raise TypeError("required media must be a collection")
+            required_media = set(required_media_value)
+            media_covered = required_media <= set(receipt["allowed_media"])
+            context_covered = all(
+                key not in binding or binding[key] == receipt[key]
+                for key in ("purpose", "audience", "territory")
+            )
+            valid_required = required <= REUSE_DIMENSIONS
+            current = _instant(self._now())
+            expiry = _instant(receipt["expires_at"])
+        except (ContractValidationError, KeyError, TypeError, ValueError) as exc:
+            raise RightsScopeError("rights receipt is invalid") from exc
+        if receipt["creative_mode"] != "authorized_replication" or not exact or not valid_required or not required <= allowed or not media_covered or not context_covered or expiry <= current:
+            raise RightsScopeError("rights receipt does not cover requested reuse and binding")
+
+
+__all__ = ["DISCLAIMER", "REUSE_DIMENSIONS", "RightsScopeError", "VideoRightsService"]

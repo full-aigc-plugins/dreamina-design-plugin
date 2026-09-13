@@ -1,0 +1,140 @@
+"""Prepare immutable redesign candidates and commit rights-aware versions."""
+
+from __future__ import annotations
+
+import json
+import re
+from datetime import datetime, timezone
+from typing import Any, Mapping, TypedDict
+
+from scripts.json_contracts import ContractValidationError, canonical_fingerprint, validate_contract
+from scripts.video_project_store import VideoProjectStore
+from scripts.video_rights_service import REUSE_DIMENSIONS, RightsScopeError, VideoRightsService
+
+
+FORBIDDEN_ORIGINAL_REUSE = frozenset({"likeness", "voice", "dialogue", "music", "brand", "artwork", "distinctive_props"})
+REQUIRED_REPLACEMENTS = frozenset({"likeness", "voice", "dialogue", "music", "brand", "artwork", "settings", "costume", "distinctive_props"})
+
+
+class OriginalityPolicyError(ValueError):
+    """An original redesign attempts expressive reuse or omits a replacement."""
+
+
+class RedesignBindingError(PermissionError):
+    """A candidate, analysis, project, or rights receipt binding is invalid."""
+
+
+class SimilarityAudit(TypedDict):
+    preserved: list[str]
+    replaced: list[str]
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+class VideoRedesignService:
+    """Keep candidates transient until originality or candidate-bound rights pass."""
+
+    def __init__(self, project_store: VideoProjectStore) -> None:
+        self._store = project_store
+
+    def prepare_candidate(self, project_id: str, analysis_version: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        project = self._store.get(project_id)
+        if re.fullmatch(r"v[0-9]{3,}", analysis_version) is None:
+            raise RedesignBindingError("invalid analysis version")
+        analysis = self._read(project_id, "analysis", analysis_version, "shot_analysis.schema.json")
+        annotation = self._read(project_id, "annotation", analysis_version, "shot_annotation.schema.json")
+        candidate_payload = json.loads(json.dumps(dict(payload), ensure_ascii=False, allow_nan=False))
+        mode = candidate_payload.get("creative_mode")
+        if mode != project["creative_mode"]:
+            raise RedesignBindingError("creative mode differs from the project")
+        if annotation["analysis_version"] != analysis_version or annotation["machine_fingerprint"] != analysis["machine_fingerprint"] or candidate_payload.get("machine_fingerprint") != analysis["machine_fingerprint"]:
+            raise RedesignBindingError("redesign differs from passed measured analysis")
+        preserve = candidate_payload.get("preserve")
+        if not isinstance(preserve, list) or len(preserve) != len(set(preserve)) or not set(preserve) <= REUSE_DIMENSIONS:
+            raise ContractValidationError("preserve must contain unique known reuse dimensions")
+        if mode == "original_redesign":
+            if set(preserve) & FORBIDDEN_ORIGINAL_REUSE:
+                raise OriginalityPolicyError("original redesign cannot reuse source expressive identity or content")
+            replacements = candidate_payload.get("replacements")
+            if not isinstance(replacements, Mapping) or set(replacements) != REQUIRED_REPLACEMENTS or any(not isinstance(value, str) or not value.strip() for value in replacements.values()):
+                raise OriginalityPolicyError("original redesign requires explicit expressive replacements")
+        core = {
+            "schema_version": "1.0", "project_id": project_id,
+            "analysis_version": analysis_version, "source_sha256": analysis["source"]["source_sha256"],
+            "machine_fingerprint": analysis["machine_fingerprint"], "creative_mode": mode,
+            "payload": candidate_payload,
+            "similarity_audit": self._audit(preserve),
+        }
+        return {**core, "design_fingerprint": canonical_fingerprint(core)}
+
+    def commit_version(self, candidate: Mapping[str, Any], rights_receipt_id: str | None) -> dict[str, Any]:
+        project_id = candidate.get("project_id")
+        if not isinstance(project_id, str):
+            raise RedesignBindingError("candidate project binding is absent")
+        core = {key: value for key, value in candidate.items() if key != "design_fingerprint"}
+        fingerprint = candidate.get("design_fingerprint")
+        if canonical_fingerprint(core) != fingerprint:
+            raise RedesignBindingError("candidate changed after fingerprinting")
+        self._validate_candidate_against_current_evidence(candidate)
+        mode = candidate["creative_mode"]
+        if mode == "authorized_replication":
+            if not isinstance(rights_receipt_id, str):
+                raise RedesignBindingError("authorized replication requires a rights receipt")
+            receipt = self._find_receipt(project_id, rights_receipt_id)
+            binding = {key: candidate[key] for key in ("project_id", "source_sha256", "creative_mode", "design_fingerprint")}
+            try:
+                VideoRightsService(self._store, native_confirmer=None).assert_scope(receipt, required=set(candidate["payload"]["preserve"]), binding=binding)
+            except RightsScopeError as exc:
+                raise RedesignBindingError("rights receipt does not authorize this candidate") from exc
+        elif rights_receipt_id is not None:
+            raise RedesignBindingError("original redesign must not attach a replication receipt")
+        family_root = self._store.project_root(project_id) / "redesign"
+        versions = sorted(path.stem for path in family_root.glob("v*.json")) if family_root.exists() else []
+        document = {
+            **core, "rights_receipt_id": rights_receipt_id,
+            "design_fingerprint": fingerprint, "parent_version": versions[-1] if versions else None,
+            "committed_at": _now(),
+        }
+        return self._store.write_version(project_id, "redesign", document, schema_name="video_redesign.schema.json")
+
+    def _validate_candidate_against_current_evidence(self, candidate: Mapping[str, Any]) -> None:
+        analysis = self._read(candidate["project_id"], "analysis", candidate["analysis_version"], "shot_analysis.schema.json")
+        annotation = self._read(candidate["project_id"], "annotation", candidate["analysis_version"], "shot_annotation.schema.json")
+        if analysis["source"]["source_sha256"] != candidate["source_sha256"] or analysis["machine_fingerprint"] != candidate["machine_fingerprint"] or annotation["machine_fingerprint"] != candidate["machine_fingerprint"]:
+            raise RedesignBindingError("candidate no longer matches immutable analysis evidence")
+        audit = candidate.get("similarity_audit", {})
+        preserved, replaced = audit.get("preserved", []), audit.get("replaced", [])
+        if set(preserved) | set(replaced) != REUSE_DIMENSIONS or set(preserved) & set(replaced) or len(preserved) + len(replaced) != len(REUSE_DIMENSIONS):
+            raise RedesignBindingError("similarity audit must partition every reuse dimension exactly once")
+
+    def _find_receipt(self, project_id: str, receipt_id: str) -> dict[str, Any]:
+        root = self._store.project_root(project_id) / "rights_receipt"
+        if root.is_dir():
+            for path in root.glob("v*.json"):
+                try:
+                    value = json.loads(path.read_text(encoding="utf-8"))
+                    validate_contract(value, "video_rights_receipt.schema.json")
+                except (OSError, json.JSONDecodeError, ContractValidationError):
+                    continue
+                if value["receipt_id"] == receipt_id:
+                    return value
+        raise RedesignBindingError("rights receipt was not found")
+
+    def _read(self, project_id: str, family: str, version: str, schema: str) -> dict[str, Any]:
+        target = self._store.project_root(project_id) / family / f"{version}.json"
+        try:
+            value = json.loads(target.read_text(encoding="utf-8"))
+            validate_contract(value, schema)
+        except (OSError, json.JSONDecodeError, ContractValidationError) as exc:
+            raise RedesignBindingError(f"required passed {family} version is unavailable") from exc
+        return value
+
+    @staticmethod
+    def _audit(preserve: list[str]) -> SimilarityAudit:
+        preserved = sorted(preserve)
+        return {"preserved": preserved, "replaced": sorted(REUSE_DIMENSIONS - set(preserved))}
+
+
+__all__ = ["FORBIDDEN_ORIGINAL_REUSE", "OriginalityPolicyError", "REQUIRED_REPLACEMENTS", "REUSE_DIMENSIONS", "RedesignBindingError", "SimilarityAudit", "VideoRedesignService"]
