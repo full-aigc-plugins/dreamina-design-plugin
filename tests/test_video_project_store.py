@@ -47,7 +47,9 @@ class VideoProjectStoreTests(unittest.TestCase):
 
     def test_transition_rejects_forbidden_edge_and_records_evidence(self) -> None:
         project = self.store.create(
-            title="demo", creative_mode="reference_faithful", audio_policy="preserve"
+            title="demo",
+            creative_mode="authorized_replication",
+            audio_policy="preserve_authorized_audio",
         )
         with self.assertRaises(ProjectStateConflictError):
             self.store.transition(
