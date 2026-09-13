@@ -184,6 +184,21 @@ class VideoServiceModuleTests(unittest.TestCase):
                 shot_id="S01", attempt=1)
         self.assertEqual((caught.exception.submit_id, caught.exception.reservation_id), ("submit-1", "br_" + "1" * 32))
 
+    def test_preinvoke_intent_failure_does_not_claim_remote_ambiguity(self) -> None:
+        request = {"mode": "text2video", "prompt": "p", "model": "seedance-test", "video_resolution": "720p", "duration_seconds": 4}
+        calls = []
+        class Allowance:
+            def reserve(self, *args, **kwargs): return {"reservation_id": "br_" + "1" * 32}
+            def mark_ambiguous(self, *args, **kwargs): calls.append((args, kwargs))
+        class Adapter:
+            def run(self, argv): calls.append(argv); raise AssertionError("must not invoke")
+        with tempfile.TemporaryDirectory() as tmp:
+            service = VideoService({"modes": []}, Path(tmp))
+            service._operation_ledger.begin_submission(session_id="old", mode="text2video", request_fingerprint=build_video_request_fingerprint(request))
+            with self.assertRaises(Exception):
+                service.submit_with_batch_allowance(request, adapter=Adapter(), allowance=Allowance(), allowance_id="ba_" + "2" * 32, shot_id="S01", attempt=1)
+        self.assertEqual(calls, [])
+
 
 class FingerprintTests(unittest.TestCase):
     def test_fingerprint_is_stable(self) -> None:

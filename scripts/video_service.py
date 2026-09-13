@@ -75,6 +75,22 @@ class BatchAllowanceCommitError(VideoServiceError):
         super().__init__("allowance commit is indeterminate; query the known submit_id")
 
 
+class PostInvokePersistenceError(VideoServiceError):
+    """The provider boundary was crossed and local durable completion failed."""
+
+    def __init__(self, *, submit_id: str | None, result_bytes: bytes,
+                 allowance_id: str | None, reservation_id: str | None,
+                 request_fingerprint: str, cause: Exception) -> None:
+        self.submit_id = submit_id
+        self.result_bytes = bytes(result_bytes)
+        self.allowance_id = allowance_id
+        self.reservation_id = reservation_id
+        self.request_fingerprint = request_fingerprint
+        self.remote_invoked = True
+        self.cause = cause
+        super().__init__("provider invocation crossed; reconcile known identity or require manual review")
+
+
 REFERENCE_LIMIT = 8
 VIDEO_REFERENCE_ROLES = {"style", "subject", "frame", "audio", "reference"}
 MODE_REQUIRED_REFERENCES = {
@@ -409,11 +425,10 @@ class VideoService:
                 allowance_id=allowance_id,
                 reservation_id=reservation["reservation_id"],
             )
-        except Exception as exc:
-            known_submit_id = getattr(exc, "submit_id", None)
+        except PostInvokePersistenceError as exc:
             allowance.mark_ambiguous(
                 reservation["reservation_id"], type(exc).__name__.upper(),
-                submit_id=known_submit_id,
+                submit_id=exc.submit_id,
             )
             raise
         try:
@@ -459,50 +474,54 @@ class VideoService:
             result: DreaminaResult = adapter.run(argv)
         except Exception as exc:
             known_submit_id = getattr(exc, "submit_id", None)
-            self._operation_ledger.complete_submission_intent(
-                request_fingerprint=request_fingerprint,
-                submit_id=known_submit_id,
-                error_code=type(exc).__name__,
-                allowance_id=allowance_id, reservation_id=reservation_id,
-            )
+            try:
+                self._operation_ledger.complete_submission_intent(
+                    request_fingerprint=request_fingerprint, submit_id=known_submit_id,
+                    error_code=type(exc).__name__, allowance_id=allowance_id,
+                    reservation_id=reservation_id)
+            except Exception:
+                pass
             if known_submit_id:
                 try:
                     self._operation_ledger.record(
-                        session_id=session_id,
-                        submit_id=known_submit_id,
-                        mode=str(request["mode"]),
-                        request_fingerprint=request_fingerprint,
-                        allowance_id=allowance_id,
-                        reservation_id=reservation_id,
+                        session_id=session_id, submit_id=known_submit_id,
+                        mode=str(request["mode"]), request_fingerprint=request_fingerprint,
+                        allowance_id=allowance_id, reservation_id=reservation_id,
                     )
                 except Exception:
-                    # Preserve the provider-boundary exception. The accepted
-                    # intent remains durable even if the secondary receipt
-                    # cannot be materialized and reconciliation still blocks.
                     pass
-            raise
-        if not result.submit_id:
-            self._operation_ledger.complete_submission_intent(
-                request_fingerprint=request_fingerprint,
-                submit_id=None,
-                error_code="MISSING_SUBMIT_ID",
+            raise PostInvokePersistenceError(
+                submit_id=known_submit_id, result_bytes=str(exc).encode("utf-8", "replace"),
                 allowance_id=allowance_id, reservation_id=reservation_id,
-            )
-            raise VideoServiceError(
-                "Dreamina accepted no recoverable submit_id; manual review required"
-            )
-        self._operation_ledger.complete_submission_intent(
-            request_fingerprint=request_fingerprint, submit_id=result.submit_id,
-            allowance_id=allowance_id, reservation_id=reservation_id,
-        )
-        self._operation_ledger.record(
-            session_id=session_id,
-            submit_id=result.submit_id,
-            mode=str(request["mode"]),
-            request_fingerprint=request_fingerprint,
-            allowance_id=allowance_id,
-            reservation_id=reservation_id,
-        )
+                request_fingerprint=request_fingerprint, cause=exc) from exc
+        if not result.submit_id:
+            missing = VideoServiceError("Dreamina returned no recoverable submit_id")
+            try:
+                self._operation_ledger.complete_submission_intent(
+                    request_fingerprint=request_fingerprint, submit_id=None,
+                    error_code="MISSING_SUBMIT_ID", allowance_id=allowance_id,
+                    reservation_id=reservation_id)
+            except Exception:
+                pass
+            raise PostInvokePersistenceError(
+                submit_id=None,
+                result_bytes=json.dumps(result.payload or {}, sort_keys=True, default=str).encode("utf-8"),
+                allowance_id=allowance_id, reservation_id=reservation_id,
+                request_fingerprint=request_fingerprint, cause=missing)
+        result_bytes = json.dumps(result.payload or {}, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        try:
+            self._operation_ledger.complete_submission_intent(
+                request_fingerprint=request_fingerprint, submit_id=result.submit_id,
+                allowance_id=allowance_id, reservation_id=reservation_id)
+            self._operation_ledger.record(
+                session_id=session_id, submit_id=result.submit_id, mode=str(request["mode"]),
+                request_fingerprint=request_fingerprint, allowance_id=allowance_id,
+                reservation_id=reservation_id)
+        except Exception as exc:
+            raise PostInvokePersistenceError(
+                submit_id=result.submit_id, result_bytes=result_bytes,
+                allowance_id=allowance_id, reservation_id=reservation_id,
+                request_fingerprint=request_fingerprint, cause=exc) from exc
         payload = result.payload or {}
         items = payload.get("items") if isinstance(payload, Mapping) else None
         if items is None and isinstance(payload, Mapping):
@@ -545,6 +564,7 @@ class VideoService:
 __all__ = [
     "ApprovalMismatchError",
     "BatchAllowanceCommitError",
+    "PostInvokePersistenceError",
     "DurationOutOfRangeError",
     "InvalidReferenceError",
     "MissingApprovalError",

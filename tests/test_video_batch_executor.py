@@ -93,6 +93,7 @@ class VideoBatchExecutorTests(unittest.TestCase):
     def test_run_next_submits_only_next_request_in_shot_and_attempt_order(self):
         result = self.executor.run_next(PROJECT_ID, "v001", 1)
         self.assertEqual(result["new_submissions"], 1)
+        self.assertEqual((result["state"], result["required_action"]), ("generating", "query"))
         self.assertEqual(self.adapter.calls, [["text2video", "--model_version", "seedance-test", "--prompt", "shot one", "--video_resolution", "720p", "--duration", "4"]])
 
     def test_max_new_submissions_is_bounded(self):
@@ -102,7 +103,7 @@ class VideoBatchExecutorTests(unittest.TestCase):
     def test_ambiguous_result_enters_manual_review_without_second_call(self):
         self.adapter.raise_after_invoke = TimeoutError("unknown remote outcome")
         result = self.executor.run_next(PROJECT_ID, "v001", 1)
-        self.assertEqual(result["state"], "manual_review"); self.assertEqual(len(self.adapter.calls), 1)
+        self.assertEqual((result["state"], result["required_action"]), ("manual_review", "manual_review")); self.assertEqual(len(self.adapter.calls), 1)
         self.executor.resume(PROJECT_ID, "v001"); self.assertEqual(len(self.adapter.calls), 1)
 
     def test_resume_queries_known_submit_id_before_new_submission_and_survives_restart(self):
@@ -133,6 +134,7 @@ class VideoBatchExecutorTests(unittest.TestCase):
         self.adapter.raise_after_invoke = TimeoutWithSubmitId("submit_known")
         first = self.executor.run_next(PROJECT_ID, "v001", 1)
         self.assertEqual(first["state"], "manual_review")
+        self.assertEqual(first["required_action"], "manual_review")
         self.assertEqual(first["tasks"][0]["submit_id"], "submit_known")
         self.assertEqual(self.allowance.ambiguous[0][2], "submit_known")
         receipt = self.executor._ledger.get(submit_id="submit_known")
@@ -154,6 +156,7 @@ class VideoBatchExecutorTests(unittest.TestCase):
                 self.adapter.status = status; self.adapter.calls.clear()
                 result = self.executor.reconcile(PROJECT_ID, "v001")
                 self.assertEqual(result["state"], expected); self.assertTrue(all(c[0] == "query_result" for c in self.adapter.calls))
+                self.assertEqual(result["required_action"], "report_failure" if expected == "failed" else "manual_review")
 
     def test_run_next_does_not_submit_new_work_after_terminal_failure(self):
         self.executor.run_next(PROJECT_ID, "v001", 1)
@@ -161,6 +164,7 @@ class VideoBatchExecutorTests(unittest.TestCase):
         self.adapter.calls.clear()
         result = self.executor.run_next(PROJECT_ID, "v001", 1)
         self.assertEqual(result["state"], "failed")
+        self.assertEqual(result["required_action"], "report_failure")
         self.assertEqual(result["new_submissions"], 0)
         self.assertTrue(all(call[0] == "query_result" for call in self.adapter.calls))
 
@@ -176,6 +180,7 @@ class VideoBatchExecutorTests(unittest.TestCase):
         self.adapter.calls.clear()
         blocked = self.executor.run_next(PROJECT_ID, "v001", 1)
         self.assertEqual(blocked["new_submissions"], 0)
+        self.assertEqual((blocked["state"], blocked["required_action"]), ("awaiting_evaluation", "evaluate"))
         self.executor.record_evaluation_decision(PROJECT_ID, "v001", "S01", 1, "retry")
         retried = self.executor.run_next(PROJECT_ID, "v001", 1)
         self.assertEqual(retried["new_submissions"], 1)
@@ -188,6 +193,7 @@ class VideoBatchExecutorTests(unittest.TestCase):
         self.adapter.corrupt_download = True
         result = self.executor.reconcile(PROJECT_ID, "v001")
         self.assertEqual(result["state"], "manual_review")
+        self.assertEqual(result["required_action"], "manual_review")
         self.assertEqual(result["tasks"][0]["state"], "manual_review")
         self.assertEqual(result["tasks"][0]["error_code"], "INVALID_DOWNLOADED_ARTIFACT")
 
@@ -196,6 +202,7 @@ class VideoBatchExecutorTests(unittest.TestCase):
         result = self.executor.run_next(PROJECT_ID, "v001", 1)
         task = result["tasks"][0]
         self.assertEqual(result["state"], "manual_review")
+        self.assertEqual(result["required_action"], "manual_review")
         self.assertEqual(task["submit_id"], "submit_1")
         self.assertTrue(task["reservation_id"].startswith("br_"))
         self.assertEqual(task["request_fingerprint"], build_video_request_fingerprint(request("shot one")))
@@ -204,6 +211,21 @@ class VideoBatchExecutorTests(unittest.TestCase):
             allowance_id="ba_" + "2" * 32, video_service=None, adapter=self.adapter)
         restarted.reconcile(PROJECT_ID, "v001")
         self.assertEqual(self.adapter.calls[0][:3], ["query_result", "--submit_id", "submit_1"])
+
+    def test_retry_submission_consumes_predecessor_and_restart_cannot_duplicate_it(self):
+        self.executor.run_next(PROJECT_ID, "v001", 1)
+        self.adapter.status = "success"; self.adapter.download = True
+        self.executor.reconcile(PROJECT_ID, "v001")
+        self.executor.record_evaluation_decision(PROJECT_ID, "v001", "S01", 1, "retry")
+        submitted = self.executor.run_next(PROJECT_ID, "v001", 1)
+        predecessor = next(task for task in submitted["tasks"] if task["attempt"] == 1)
+        self.assertEqual(predecessor["state"], "retry_superseded")
+        calls_before = self.adapter.submissions
+        restarted = VideoBatchExecutor(project_store=self.store, allowance=self.allowance,
+            allowance_id="ba_" + "2" * 32, video_service=None, adapter=self.adapter)
+        resumed = restarted.run_next(PROJECT_ID, "v001", 1)
+        self.assertEqual(self.adapter.submissions, calls_before)
+        self.assertEqual((resumed["state"], resumed["required_action"]), ("awaiting_evaluation", "evaluate"))
 
     def test_aggregate_state_precedence_table(self):
         cases = [

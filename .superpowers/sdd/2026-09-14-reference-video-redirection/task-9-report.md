@@ -43,3 +43,12 @@
 - RED evidence: aggregate API was absent and the last queried task incorrectly changed both dominant cases to `generating`.
 - Final focused Task 9/8/7 regression: 140 tests passed in 0.693s.
 - Final full regression: 501 tests passed in 15.983s; `py_compile` and `git diff --check` passed before the full run.
+
+## Fix Round 3
+
+- All `run_next` outcomes now pass through one aggregate/persist helper so `state` and `required_action` are written and returned as a coherent pair.
+- Added literal assertions for successful generation (`generating/query`) and timeout, unknown-status, corrupt-download, commit-indeterminate, and terminal blocking branches.
+- A submitted preapproved retry atomically marks its predecessor `retry_superseded` with `retry_consumed_by_attempt`; restart reconciliation skips the predecessor and cannot submit the retry twice.
+- RED evidence: first-success and ambiguity results lacked `required_action`, and the predecessor remained `evaluation_retryable` after its retry was submitted.
+- Final focused Task 9/8/7 regression: 144 tests passed in 0.742s.
+- Final full regression: 505 tests passed in 21.180s; `py_compile` and `git diff --check` passed.

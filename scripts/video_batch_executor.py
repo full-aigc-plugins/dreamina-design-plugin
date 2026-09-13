@@ -1,6 +1,10 @@
 """Durable, allowance-scoped execution of an approved Dreamina video batch."""
 from __future__ import annotations
 
+import fcntl
+import os
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +15,8 @@ from scripts.video_service import VideoService
 
 class VideoBatchExecutor:
     """Submit deterministically and resume only through known provider task ids."""
+    _locks_guard = threading.Lock()
+    _thread_locks: dict[str, threading.RLock] = {}
 
     def __init__(self, *, project_store: Any, allowance: Any, allowance_id: str,
                  video_service: VideoService | None, adapter: Any,
@@ -24,7 +30,28 @@ class VideoBatchExecutor:
         self._ledger = OperationLedger(self._root)
         self._service = video_service or VideoService({"modes": []}, self._root)
         self._tasks = TaskService(adapter)
-        self._downloads = Path(download_root) if download_root else self._root / "downloads"
+        default_downloads = self._root / "downloads"
+        if download_root is not None and Path(download_root).resolve() != default_downloads.resolve():
+            raise ValueError("download_root must remain inside the project-scoped executor root")
+        self._downloads = default_downloads
+        self._downloads.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(self._downloads, 0o700)
+
+    @contextmanager
+    def _transaction(self):
+        lock_path = self._root / f"{self._allowance_id}.transaction.lock"
+        key = str(lock_path.resolve())
+        with self._locks_guard:
+            thread_lock = self._thread_locks.setdefault(key, threading.RLock())
+        with thread_lock:
+            descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            try:
+                os.fchmod(descriptor, 0o600)
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                yield
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
 
     def _project_id_from_allowance(self) -> str:
         return str(self._allowance.get(self._allowance_id)["project_id"])
@@ -83,12 +110,23 @@ class VideoBatchExecutor:
         state["state"] = aggregate
         state["required_action"] = action
 
+    def _persist_aggregate(self, state: dict[str, Any], quote: dict[str, Any]) -> None:
+        """Atomically persist one coherent aggregate state/action pair."""
+        self._apply_aggregate(state, quote)
+        self._save(state)
+
     def run_next(self, project_id: str, batch_version: str, max_new_submissions: int) -> dict[str, Any]:
+        with self._transaction():
+            return self._run_next_locked(project_id, batch_version, max_new_submissions)
+
+    def _run_next_locked(self, project_id: str, batch_version: str, max_new_submissions: int) -> dict[str, Any]:
         if isinstance(max_new_submissions, bool) or not isinstance(max_new_submissions, int) or not 1 <= max_new_submissions <= 4:
             raise ValueError("max_new_submissions must be between 1 and 4")
         quote, state = self._quote(project_id, batch_version), self._load(project_id, batch_version)
         if state["tasks"]:
-            state = self.reconcile(project_id, batch_version)
+            state = self._reconcile_locked(project_id, batch_version)
+        else:
+            self._persist_aggregate(state, quote)
         if state["state"] not in {"ready", "generating", "evaluation_retryable"}:
             return {**state, "new_submissions": 0}
         known = {(item["shot_id"], item["attempt"]) for item in state["tasks"]}
@@ -101,10 +139,12 @@ class VideoBatchExecutor:
                                  and item["attempt"] == planned["attempt_number"] - 1), None)
                 if previous is None or previous["state"] != "evaluation_retryable":
                     continue
+                previous["state"] = "retry_superseded"
+                previous["retry_consumed_by_attempt"] = planned["attempt_number"]
             task = {"shot_index": planned["shot_index"], "shot_id": planned["shot_id"],
                     "attempt": planned["attempt_number"], "request_fingerprint": planned["request_fingerprint"],
                     "state": "submitting", "artifacts": []}
-            state["tasks"].append(task); state["state"] = "submitting"; self._save(state)
+            state["tasks"].append(task); self._persist_aggregate(state, quote)
             try:
                 result = self._service.submit_with_batch_allowance(
                     planned["request"], adapter=self._adapter, allowance=self._allowance,
@@ -116,49 +156,59 @@ class VideoBatchExecutor:
                     value = getattr(exc, field, None)
                     if value is not None:
                         task[field] = value
-                state["state"] = "manual_review"; self._save(state); break
+                self._persist_aggregate(state, quote); break
             task.update(state="queued", submit_id=result["submit_id"],
                         reservation_id=result["reservation"]["reservation_id"])
-            state["state"] = "generating"; new_count += 1; self._save(state)
+            new_count += 1; self._persist_aggregate(state, quote)
+        self._persist_aggregate(state, quote)
         return {**state, "new_submissions": new_count}
 
     def reconcile(self, project_id: str, batch_version: str) -> dict[str, Any]:
+        with self._transaction():
+            return self._reconcile_locked(project_id, batch_version)
+
+    def _reconcile_locked(self, project_id: str, batch_version: str) -> dict[str, Any]:
         quote = self._quote(project_id, batch_version)
         state = self._load(project_id, batch_version)
         for task in sorted(state["tasks"], key=lambda item: (item["shot_index"], item["attempt"])):
             if task["state"] == "submitting" and not task.get("submit_id"):
                 task["state"] = "manual_review"
                 task["error_code"] = "PROCESS_INTERRUPTED_AT_INVOCATION_BOUNDARY"
-                state["state"] = "manual_review"; self._save(state); continue
+                self._persist_aggregate(state, quote); continue
             if not task.get("submit_id") or task["state"] in {
-                "failed", "evaluation_retryable", "awaiting_evaluation", "accepted", "rejected"
+                "failed", "evaluation_retryable", "retry_superseded",
+                "awaiting_evaluation", "accepted", "rejected"
             }: continue
-            task["state"] = "querying"; self._save(state)
-            queried = self._tasks.query(task["submit_id"])
+            task["state"] = "querying"; self._persist_aggregate(state, quote)
+            try:
+                queried = self._tasks.query(task["submit_id"])
+            except (OSError, ValueError):
+                task["state"] = "manual_review"
+                task["error_code"] = "UNKNOWN_EXTERNAL_TASK_STATUS"
+                self._persist_aggregate(state, quote)
+                continue
             status = str(queried["result"].get("gen_status", "unknown")).lower()
             if status in {"fail", "failed"}:
-                task["state"] = "failed"; state["state"] = "failed"; self._save(state); continue
+                task["state"] = "failed"; self._persist_aggregate(state, quote); continue
             if status != "success":
                 task["state"] = "queued" if status == "querying" else "manual_review"
-                state["state"] = "generating" if status == "querying" else "manual_review"; self._save(state); continue
+                self._persist_aggregate(state, quote); continue
             attempt_root = self._downloads / task["shot_id"] / f"attempt-{task['attempt']}"
             sequence = len(list(attempt_root.glob("download-*"))) + 1 if attempt_root.exists() else 1
             target = attempt_root / f"download-{sequence:03d}"
-            task["state"] = "downloading"; task["download_dir"] = str(target); self._save(state)
+            task["state"] = "downloading"; task["download_dir"] = str(target); self._persist_aggregate(state, quote)
             target.mkdir(mode=0o700, parents=True, exist_ok=True)
             try:
                 downloaded = self._tasks.query(task["submit_id"], download_dir=str(target))
             except (OSError, ValueError):
                 task["state"] = "manual_review"
                 task["error_code"] = "INVALID_DOWNLOADED_ARTIFACT"
-                state["state"] = "manual_review"
-                self._save(state)
+                self._persist_aggregate(state, quote)
                 continue
             task["artifacts"] = downloaded["artifacts"]
             task["state"] = "awaiting_evaluation" if task["artifacts"] else "missing_artifact"
-            state["state"] = task["state"]; self._save(state)
-        self._apply_aggregate(state, quote)
-        self._save(state)
+            self._persist_aggregate(state, quote)
+        self._persist_aggregate(state, quote)
         return state
 
     def record_evaluation_decision(self, project_id: str, batch_version: str,
@@ -173,8 +223,7 @@ class VideoBatchExecutor:
             raise ValueError("evaluation decision requires a downloaded artifact awaiting evaluation")
         task["evaluation_decision"] = decision
         task["state"] = "evaluation_retryable" if decision == "retry" else decision
-        self._apply_aggregate(state, self._quote(project_id, batch_version))
-        self._save(state)
+        self._persist_aggregate(state, self._quote(project_id, batch_version))
         return state
 
     def resume(self, project_id: str, batch_version: str) -> dict[str, Any]:
