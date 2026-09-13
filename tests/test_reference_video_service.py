@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.media_adapter import MediaAdapter, MediaResult
+from scripts.media_adapter import MediaAdapter, MediaOutputError, MediaResult
 from scripts.reference_video_service import ReferenceVideoService
 from scripts.trusted_media_tools import TrustedMediaToolStore
 from scripts.video_project_store import VideoProjectStore
@@ -30,6 +30,7 @@ class RecordingMediaAdapter:
     def __init__(self) -> None:
         self.calls: list[tuple[str, list[str]]] = []
         self.motion_offset = 0
+        self.encoder_variant = "v1"
 
     def probe_json(self, path: Path) -> dict[str, object]:
         self.calls.append(("ffprobe", [str(path)]))
@@ -44,7 +45,10 @@ class RecordingMediaAdapter:
         output = Path(values[-1]) if values and values[-1] != "-" else None
         if output is not None and kind == "ffmpeg":
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_bytes((output.name + "\n").encode())
+            logical_argv = [*values[:-1], "<output>"]
+            output.write_bytes(
+                (json.dumps(logical_argv, separators=(",", ":")) + self.encoder_variant).encode()
+            )
         if any("select=" in item for item in values):
             return MediaResult(0, "", "pts_time:6.00 scene_score=0.72\npts_time:4.00 scene_score=0.51\n")
         if any("signalstats" in item for item in values):
@@ -178,6 +182,7 @@ class ReferenceVideoServiceTests(unittest.TestCase):
         frames = service.extract_frames(analysis["analysis_id"], frame_width=240)
         self.assertEqual(analysis["cuts"][0], 0.0)
         self.assertEqual(analysis["cuts"][-1], round(float(actual_probe["format"]["duration"]), 2))
+        self.assertTrue(any(abs(cut - 1.0) <= 0.15 for cut in analysis["cuts"][1:-1]))
         self.assertGreater(len(track["values"]), 5)
         self.assertTrue(Path(frames["S01"]["a"]["path"]).is_file())
 
@@ -313,7 +318,73 @@ class ReferenceVideoServiceTests(unittest.TestCase):
         self.assertIn("0.15", frame_calls[0])
         sheet_inputs = [argv[index + 1] for kind, argv in new_calls for index, value in enumerate(argv) if kind == "ffmpeg" and value == "-i"]
         self.assertTrue(sheets)
-        self.assertTrue(old_paths.isdisjoint(sheet_inputs))
+        changed_old_paths = {
+            item["path"]
+            for shot_id, pair in old_frames.items()
+            if shot_id in {"S01", "S02"}
+            for item in pair.values()
+        }
+        self.assertTrue(changed_old_paths.isdisjoint(sheet_inputs))
+        self.assertTrue(old_paths.intersection(sheet_inputs))
+
+    def test_changed_encoder_bytes_get_distinct_content_addresses(self) -> None:
+        analysis = self.seed()
+        first = self.service.extract_frames(analysis["analysis_id"], frame_width=320)
+        first_path = Path(first["S01"]["a"]["path"])
+        first_bytes = first_path.read_bytes()
+        self.adapter.encoder_variant = "v2"
+        second = self.service.extract_frames(analysis["analysis_id"], frame_width=320)
+        second_path = Path(second["S01"]["a"]["path"])
+        self.assertNotEqual(second_path, first_path)
+        self.assertEqual(first_path.read_bytes(), first_bytes)
+        self.assertEqual(first_path.stem, first["S01"]["a"]["sha256"])
+        self.assertEqual(second_path.stem, second["S01"]["a"]["sha256"])
+        manifests = list(first_path.parents[2].glob("frame_manifests/*/*.json"))
+        self.assertGreaterEqual(len(manifests), 2)
+
+        first_sheet = self.service.build_contact_sheets(
+            analysis["analysis_id"], cols=3, rows=1
+        )[0]
+        first_sheet_path = Path(first_sheet["path"])
+        first_sheet_bytes = first_sheet_path.read_bytes()
+        self.adapter.encoder_variant = "v3"
+        second_sheet = self.service.build_contact_sheets(
+            analysis["analysis_id"], cols=3, rows=1
+        )[0]
+        second_sheet_path = Path(second_sheet["path"])
+        self.assertNotEqual(second_sheet_path, first_sheet_path)
+        self.assertEqual(first_sheet_path.read_bytes(), first_sheet_bytes)
+        self.assertEqual(first_sheet_path.stem, first_sheet["sha256"])
+        self.assertEqual(second_sheet_path.stem, second_sheet["sha256"])
+
+    def test_corrupt_frame_and_sheet_are_never_returned_as_reusable(self) -> None:
+        analysis = self.seed()
+        frames = self.service.extract_frames(analysis["analysis_id"], frame_width=480)
+        frame_path = Path(frames["S01"]["a"]["path"])
+        frame_path.chmod(0o600)
+        frame_path.write_bytes(b"corrupt-frame")
+        with self.assertRaises(MediaOutputError):
+            self.service.build_contact_sheets(analysis["analysis_id"], cols=3, rows=1)
+
+    def test_symlink_at_content_address_is_never_reused(self) -> None:
+        analysis = self.seed()
+        frames = self.service.extract_frames(analysis["analysis_id"], frame_width=480)
+        frame_path = Path(frames["S01"]["a"]["path"])
+        replacement = self.root / "same-frame-bytes.png"
+        replacement.write_bytes(frame_path.read_bytes())
+        frame_path.unlink()
+        frame_path.symlink_to(replacement)
+        with self.assertRaises(MediaOutputError):
+            self.service.build_contact_sheets(analysis["analysis_id"], cols=3, rows=1)
+
+        self.adapter.encoder_variant = "fresh"
+        frames = self.service.extract_frames(analysis["analysis_id"], frame_width=480)
+        sheets = self.service.build_contact_sheets(analysis["analysis_id"], cols=3, rows=1)
+        sheet_path = Path(sheets[0]["path"])
+        sheet_path.chmod(0o600)
+        sheet_path.write_bytes(b"corrupt-sheet")
+        with self.assertRaises(MediaOutputError):
+            self.service.build_contact_sheets(analysis["analysis_id"], cols=3, rows=1)
 
 
 if __name__ == "__main__":

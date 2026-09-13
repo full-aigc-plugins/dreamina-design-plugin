@@ -44,7 +44,10 @@
               "boundary_source": {"type": "string", "enum": ["source_start", "scene", "manual_split"]}
             }
           },
-          "semantic": {"type": ["object", "null"]}
+          "semantic": {
+            "description": "Task 4 placeholder only; Task 5 defines the closed annotation contract.",
+            "type": ["object", "null"]
+          }
         }
       }
     },

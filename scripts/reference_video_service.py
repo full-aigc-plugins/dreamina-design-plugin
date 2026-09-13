@@ -113,11 +113,7 @@ class ReferenceVideoService:
             raise ValueError("frame_width must be an integer from 240 to 960")
         analysis = self.get_analysis(analysis_id)
         boundary_fingerprint = self._boundary_fingerprint(analysis, frame_width)
-        frame_root = (
-            self._analysis_root(analysis["project_id"], analysis_id)
-            / "frames"
-            / boundary_fingerprint
-        )
+        analysis_root = self._analysis_root(analysis["project_id"], analysis_id)
         result: dict[str, Any] = {}
         checksums: dict[str, str] = {}
         for shot in analysis["shots"]:
@@ -127,9 +123,9 @@ class ReferenceVideoService:
             result[shot["id"]] = {}
             for label, fraction in (("a", 0.15), ("b", 0.85)):
                 at = round(start + duration * fraction, 2)
-                target = frame_root / f"{shot['id']}-{label}.png"
-                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                temporary = self._temporary_path(target.parent, suffix=".png")
+                staging_root = analysis_root / "frame_staging"
+                staging_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+                temporary = self._temporary_path(staging_root, suffix=".png")
                 try:
                     media_result = self._media.run(
                         "ffmpeg",
@@ -140,10 +136,25 @@ class ReferenceVideoService:
                     self._require_success(media_result, "frame extraction")
                     if not temporary.is_file():
                         raise MediaOutputError("ffmpeg did not create the requested frame")
-                    self._publish_private_file(temporary, target)
+                    checksum, target = self._publish_content_artifact(
+                        temporary, analysis_root / "frames" / "content", suffix=".png"
+                    )
+                    manifest_input = {
+                        "source_sha256": analysis["source"]["source_sha256"],
+                        "boundary_fingerprint": boundary_fingerprint,
+                        "shot_id": shot["id"],
+                        "label": label,
+                        "at_seconds": at,
+                        "frame_width": frame_width,
+                    }
+                    self._write_artifact_manifest(
+                        analysis_root / "frame_manifests",
+                        manifest_input,
+                        output_path=target,
+                        output_sha256=checksum,
+                    )
                 finally:
                     temporary.unlink(missing_ok=True)
-                checksum = self._sha256(target)
                 checksums[f"{shot['id']}:{label}"] = {
                     "sha256": checksum,
                     "path": str(target),
@@ -180,31 +191,31 @@ class ReferenceVideoService:
         for offset in range(0, len(analysis["shots"]), page_size):
             shots = analysis["shots"][offset : offset + page_size]
             page_number = len(pages) + 1
-            sheet_identity = canonical_fingerprint({
-                "machine_fingerprint": analysis["machine_fingerprint"],
+            sheet_input = {
+                "source_sha256": analysis["source"]["source_sha256"],
+                "boundary_fingerprint": self._boundary_fingerprint(
+                    analysis,
+                    next(iter(analysis["frame_checksums"].values()))["frame_width"],
+                ),
                 "layout": {"cols": cols, "rows": rows},
                 "page": page_number,
                 "frame_checksums": {
-                    shot["id"]: analysis["frame_checksums"][f"{shot['id']}:a"]
+                    shot["id"]: analysis["frame_checksums"][f"{shot['id']}:a"]["sha256"]
                     for shot in shots
                 },
-            })
-            target = self._analysis_root(analysis["project_id"], analysis_id) / "sheets" / sheet_identity / f"page-{page_number:03d}.png"
-            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                "shot_ids": [shot["id"] for shot in shots],
+            }
+            analysis_root = self._analysis_root(analysis["project_id"], analysis_id)
+            # Validate any prior immutable result before producing another
+            # deterministic observation for the same logical input.
+            self._load_artifact_manifest(analysis_root / "sheet_manifests", sheet_input)
             inputs: list[str] = []
             for shot in shots:
                 inputs.extend(["-i", analysis["frame_checksums"][f"{shot['id']}:a"]["path"]])
             layout = "|".join(f"{index % cols}*w0_{index // cols}*h0" for index in range(len(shots)))
-            if target.is_file():
-                pages.append({
-                    "page": page_number,
-                    "shot_ids": [shot["id"] for shot in shots],
-                    "layout": {"cols": cols, "rows": rows},
-                    "path": str(target),
-                    "sha256": self._sha256(target),
-                })
-                continue
-            temporary = self._temporary_path(target.parent, suffix=".png")
+            staging_root = analysis_root / "sheet_staging"
+            staging_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            temporary = self._temporary_path(staging_root, suffix=".png")
             try:
                 filter_args = (
                     ["-filter_complex", f"xstack=inputs={len(shots)}:layout={layout}"]
@@ -219,7 +230,15 @@ class ReferenceVideoService:
                 self._require_success(result, "contact sheet")
                 if not temporary.is_file():
                     raise MediaOutputError("ffmpeg did not create the requested contact sheet")
-                self._publish_private_file(temporary, target)
+                checksum, target = self._publish_content_artifact(
+                    temporary, analysis_root / "sheets" / "content", suffix=".png"
+                )
+                self._write_artifact_manifest(
+                    analysis_root / "sheet_manifests",
+                    sheet_input,
+                    output_path=target,
+                    output_sha256=checksum,
+                )
             finally:
                 temporary.unlink(missing_ok=True)
             pages.append({
@@ -227,7 +246,7 @@ class ReferenceVideoService:
                 "shot_ids": [shot["id"] for shot in shots],
                 "layout": {"cols": cols, "rows": rows},
                 "path": str(target),
-                "sha256": self._sha256(target),
+                "sha256": checksum,
             })
         return pages
 
@@ -378,6 +397,67 @@ class ReferenceVideoService:
                 if not path.is_file() or self._sha256(path) != item.get("sha256"):
                     return False
         return True
+
+    @classmethod
+    def _publish_content_artifact(
+        cls, temporary: Path, content_root: Path, *, suffix: str
+    ) -> tuple[str, Path]:
+        digest = cls._sha256(temporary)
+        content_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        target = content_root / f"{digest}{suffix}"
+        cls._publish_private_file(temporary, target)
+        return digest, target
+
+    @classmethod
+    def _write_artifact_manifest(
+        cls,
+        manifest_root: Path,
+        manifest_input: Mapping[str, Any],
+        *,
+        output_path: Path,
+        output_sha256: str,
+    ) -> None:
+        input_fingerprint = canonical_fingerprint(manifest_input)
+        payload = {
+            "schema_version": "1.0",
+            "input_fingerprint": input_fingerprint,
+            "input": dict(manifest_input),
+            "output_path": str(output_path),
+            "output_sha256": output_sha256,
+        }
+        target = manifest_root / input_fingerprint / f"{output_sha256}.json"
+        cls._publish_private_bytes(
+            target, (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+        )
+
+    @classmethod
+    def _load_artifact_manifest(
+        cls, manifest_root: Path, manifest_input: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        input_fingerprint = canonical_fingerprint(manifest_input)
+        candidates = sorted((manifest_root / input_fingerprint).glob("*.json"))
+        if not candidates:
+            return None
+        latest: dict[str, Any] | None = None
+        for candidate in candidates:
+            try:
+                manifest = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise MediaOutputError("artifact manifest is unreadable") from exc
+            if manifest.get("input_fingerprint") != input_fingerprint:
+                raise MediaOutputError("artifact manifest input fingerprint mismatch")
+            output_path = Path(str(manifest.get("output_path", "")))
+            output_sha256 = manifest.get("output_sha256")
+            if (
+                not isinstance(output_sha256, str)
+                or candidate.stem != output_sha256
+                or output_path.stem != output_sha256
+                or not output_path.is_file()
+                or cls._sha256(output_path) != output_sha256
+            ):
+                raise MediaOutputError("content-addressed artifact failed checksum validation")
+            latest = manifest
+        return latest
 
     @staticmethod
     def _machine_fingerprint(payload: Mapping[str, Any]) -> str:
