@@ -256,3 +256,42 @@ Result: exit 0, `Ran 321 tests in 14.669s`, `OK`.
 ### Concerns
 
 - None specific to Round 3.
+
+## Fix Round 4 — Published-Inode-Safe Failure Cleanup
+
+### RED
+
+```bash
+python3 -m unittest tests.test_media_intake_service.MediaIntakeServiceTests.test_verification_failure_does_not_cleanup_replacement_path -v
+```
+
+Result: exit 1, `Ran 1 test in 0.004s`, `FAILED (errors=1)`. At the injected verification failure, the test replaced the published pathname with distinct bytes and mode; the old cleanup removed that replacement, producing `FileNotFoundError`.
+
+### GREEN and verification
+
+The exact focused test returned exit 0, `Ran 1 test in 0.004s`, `OK`. The existing post-hash pathname-replacement regression also returned exit 0.
+
+```bash
+python3 -m unittest tests.test_video_project_store tests.test_media_intake_service tests.test_contracts tests.test_reference_policy tests.test_json_contracts -v
+```
+
+Result: exit 0, `Ran 46 tests in 0.137s`, `OK`.
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Result: exit 0, `Ran 322 tests in 12.480s`, `OK`.
+
+`python3 -m compileall -q scripts/media_intake_service.py tests/test_media_intake_service.py` and `git diff --check` both exited 0.
+
+### Changes and self-review
+
+- The intake attempt records the device/inode identity of the file used for its successful hard-link publication.
+- Failure cleanup performs a fresh no-follow `lstat` and only changes mode or unlinks when the current pathname still names that exact device/inode pair.
+- A changed or unavailable pathname is left untouched, while cleanup failures are contained so the original validation exception remains authoritative.
+- The deterministic regression proves replacement bytes and mode survive and no source receipt is created.
+
+### Concerns
+
+- The project-local publish lock serializes cooperating intake attempts. The identity check prevents cleanup of an already-replaced entry; filesystem pathname operations themselves do not provide a portable atomic compare-and-unlink primitive against a fully privileged external attacker.

@@ -296,12 +296,15 @@ class MediaIntakeService:
         final = source_root / f"{digest}{suffix}"
         lock_descriptor = os.open(source_root / ".publish.lock", os.O_RDWR | os.O_CREAT, 0o600)
         created = False
+        published_identity: tuple[int, int] | None = None
         try:
             os.fchmod(lock_descriptor, 0o600)
             fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
             try:
+                attempt_info = attempt_path.lstat()
                 os.link(attempt_path, final, follow_symlinks=False)
                 created = True
+                published_identity = (attempt_info.st_dev, attempt_info.st_ino)
             except FileExistsError:
                 pass
             try:
@@ -324,9 +327,14 @@ class MediaIntakeService:
                     schema_name="source_receipt.schema.json",
                 )
             except BaseException:
-                if created:
-                    final.chmod(0o600)
-                    final.unlink(missing_ok=True)
+                if created and published_identity is not None:
+                    try:
+                        current = final.lstat()
+                        if (current.st_dev, current.st_ino) == published_identity:
+                            final.chmod(0o600, follow_symlinks=False)
+                            final.unlink()
+                    except OSError:
+                        pass
                 raise
         finally:
             fcntl.flock(lock_descriptor, fcntl.LOCK_UN)

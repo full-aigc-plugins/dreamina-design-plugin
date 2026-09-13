@@ -271,6 +271,33 @@ class MediaIntakeServiceTests(unittest.TestCase):
         receipt_root = self.store.project_root(self.project_id) / "source_receipt"
         self.assertFalse(receipt_root.exists())
 
+    def test_verification_failure_does_not_cleanup_replacement_path(self) -> None:
+        digest = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        final = self.store.project_root(self.project_id) / "source" / f"{digest}.mp4"
+        replacement_bytes = b"replacement-owned-by-another-actor"
+        replacement_mode = 0o640
+        validation_error = MediaIntakeError("injected staged validation failure")
+
+        def replace_then_fail(path: Path, actual_digest: str, actual_size: int) -> None:
+            self.assertEqual(path, final)
+            self.assertEqual(actual_digest, digest)
+            self.assertEqual(actual_size, self.source.stat().st_size)
+            replacement = final.with_name("replacement.mp4")
+            replacement.write_bytes(replacement_bytes)
+            replacement.chmod(replacement_mode)
+            os.replace(replacement, final)
+            raise validation_error
+
+        with patch.object(MediaIntakeService, "_verify_staged", side_effect=replace_then_fail):
+            with self.assertRaises(MediaIntakeError) as raised:
+                self.intake.intake(self.project_id, self.source, [self.approved_root])
+
+        self.assertIs(raised.exception, validation_error)
+        self.assertEqual(final.read_bytes(), replacement_bytes)
+        self.assertEqual(final.stat().st_mode & 0o777, replacement_mode)
+        receipt_root = self.store.project_root(self.project_id) / "source_receipt"
+        self.assertFalse(receipt_root.exists())
+
     def test_staged_verification_checks_initial_opened_descriptor_size(self) -> None:
         staged = self.base / "staged.mp4"
         staged.write_bytes(self.source.read_bytes())
