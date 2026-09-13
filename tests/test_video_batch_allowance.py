@@ -5,6 +5,8 @@ import json
 import multiprocessing
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -17,6 +19,7 @@ from scripts.video_batch_allowance import (
     BudgetExceededError,
     ReservationConsumedError,
     FileSealKeyStore,
+    LocalQuoteResolver,
     SealKeyUnavailableError,
     VideoBatchAllowance,
 )
@@ -121,6 +124,24 @@ def reserve_any_worker(root: str, key_path: str, allowance_id: str, fingerprint:
         queue.put(("rejected", allowance_id))
 
 
+def terminal_worker(root: str, key_path: str, reservation_id: str, state: str, submit_id: str, start, queue) -> None:
+    allowances = make_allowances(Path(root), Path(key_path))
+    start.wait()
+    try:
+        result = (
+            allowances.commit(reservation_id, submit_id)
+            if state == "committed"
+            else allowances.mark_ambiguous(
+                reservation_id, "TIMEOUT_AFTER_INVOKE", submit_id=submit_id
+            )
+        )
+        queue.put(("transitioned", result["state"]))
+    except ReservationConsumedError:
+        queue.put(("rejected", None))
+    finally:
+        allowances.close()
+
+
 class VideoBatchAllowanceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -135,6 +156,31 @@ class VideoBatchAllowanceTests(unittest.TestCase):
 
     def activate(self) -> str:
         return self.allowances.activate(self.quote, self.approver)
+
+    def activate_distinct_original(self, digit: str = "9") -> tuple[str, dict]:
+        quote = copy.deepcopy(self.quote)
+        quote["project_id"] = "vp_" + digit * 24
+        quote["creative_mode"] = "original_redesign"
+        quote.pop("rights_receipt_id")
+        quote.pop("rights_receipt_fingerprint")
+        quote["items"][0]["shot_id"] = f"S{digit}{digit}"
+        for index, attempt in enumerate(quote["items"][0]["attempts"], start=1):
+            attempt["request"]["prompt"] += f" distinct-{digit}-{index}"
+            attempt["request_fingerprint"] = build_video_request_fingerprint(attempt["request"])
+        quote["items"][0]["request_fingerprints"] = [
+            attempt["request_fingerprint"] for attempt in quote["items"][0]["attempts"]
+        ]
+        quote["quote_fingerprint"] = canonical_fingerprint(
+            {key: value for key, value in quote.items() if key != "quote_fingerprint"}
+        )
+        return self.allowances.activate(quote, self.approver), quote
+
+    def reserve_first(self, allowance_id: str, quote: dict) -> dict:
+        attempt = quote["items"][0]["attempts"][0]
+        return self.allowances.reserve(
+            allowance_id, shot_id=quote["items"][0]["shot_id"], attempt=1,
+            request_fingerprint=attempt["request_fingerprint"],
+        )
 
     def test_activation_dialog_contains_entire_exact_envelope(self) -> None:
         allowance_id = self.activate()
@@ -233,6 +279,17 @@ class VideoBatchAllowanceTests(unittest.TestCase):
         self.assertEqual(ambiguous["attempt"], 1)
         self.assertEqual(ambiguous["request_fingerprint"], attempt["request_fingerprint"])
         self.assertEqual(ambiguous["submit_id"], "submit_known_1")
+
+    def test_ambiguous_without_submit_id_requires_manual_review(self) -> None:
+        allowance_id = self.activate()
+        reservation = self.reserve_first(allowance_id, self.quote)
+        ambiguous = self.allowances.mark_ambiguous(
+            reservation["reservation_id"], "TIMEOUT_AFTER_INVOKE"
+        )
+        self.assertEqual(ambiguous["required_action"], "manual_review")
+        self.assertNotIn("submit_id", ambiguous)
+        with self.assertRaises(ReservationConsumedError):
+            self.reserve_first(allowance_id, self.quote)
 
     def test_submit_and_error_identifiers_are_opaque_not_paths_or_secrets(self) -> None:
         allowance_id = self.activate()
@@ -456,6 +513,115 @@ class VideoBatchAllowanceTests(unittest.TestCase):
         with self.assertRaises(BatchScopeError):
             self.allowances.get(allowance_id)
 
+    def test_submit_id_is_unique_across_committed_and_ambiguous_allowances(self) -> None:
+        first_id = self.activate()
+        second_id, second_quote = self.activate_distinct_original()
+        first = self.reserve_first(first_id, self.quote)
+        second = self.reserve_first(second_id, second_quote)
+        self.allowances.commit(first["reservation_id"], "submit_global")
+        with self.assertRaises(ReservationConsumedError):
+            self.allowances.mark_ambiguous(
+                second["reservation_id"], "TIMEOUT_AFTER_INVOKE", submit_id="submit_global"
+            )
+
+        third_id, third_quote = self.activate_distinct_original("8")
+        third = self.reserve_first(third_id, third_quote)
+        self.allowances.mark_ambiguous(
+            second["reservation_id"], "TIMEOUT_AFTER_INVOKE", submit_id="submit_ambiguous"
+        )
+        with self.assertRaises(ReservationConsumedError):
+            self.allowances.commit(third["reservation_id"], "submit_ambiguous")
+        with self.assertRaises(ReservationConsumedError):
+            self.allowances.mark_ambiguous(
+                third["reservation_id"], "TIMEOUT_AFTER_INVOKE", submit_id="submit_ambiguous"
+            )
+
+    def test_same_terminal_transition_is_idempotent_only_when_all_details_match(self) -> None:
+        allowance_id = self.activate()
+        reservation = self.reserve_first(allowance_id, self.quote)
+        first = self.allowances.mark_ambiguous(
+            reservation["reservation_id"], "TIMEOUT_AFTER_INVOKE", submit_id="submit_exact"
+        )
+        replay = self.allowances.mark_ambiguous(
+            reservation["reservation_id"], "TIMEOUT_AFTER_INVOKE", submit_id="submit_exact"
+        )
+        self.assertEqual(replay, first)
+        with self.assertRaises(ReservationConsumedError):
+            self.allowances.mark_ambiguous(
+                reservation["reservation_id"], "DIFFERENT_ERROR", submit_id="submit_exact"
+            )
+
+    def test_parallel_cross_allowance_terminal_submit_id_has_one_winner(self) -> None:
+        first_id = self.activate()
+        second_id, second_quote = self.activate_distinct_original()
+        first = self.reserve_first(first_id, self.quote)
+        second = self.reserve_first(second_id, second_quote)
+        ctx = multiprocessing.get_context("spawn")
+        start, queue = ctx.Event(), ctx.Queue()
+        processes = [
+            ctx.Process(target=terminal_worker, args=(str(self.root), str(self.key_path), first["reservation_id"], "committed", "submit_race", start, queue)),
+            ctx.Process(target=terminal_worker, args=(str(self.root), str(self.key_path), second["reservation_id"], "ambiguous", "submit_race", start, queue)),
+        ]
+        for process in processes:
+            process.start()
+        start.set()
+        results = [queue.get(timeout=10)[0] for _ in processes]
+        for process in processes:
+            process.join(timeout=10)
+            self.assertEqual(process.exitcode, 0)
+        self.assertEqual(results.count("transitioned"), 1)
+        self.assertEqual(results.count("rejected"), 1)
+
+    def test_rights_expiring_during_native_dialog_prevents_activation(self) -> None:
+        class ExpiringRights(FakeRightsService):
+            expired = False
+
+            def assert_scope(inner, receipt, *, required, binding):
+                super().assert_scope(receipt, required=required, binding=binding)
+                if inner.expired:
+                    raise PermissionError("rights expired")
+
+        rights = ExpiringRights()
+
+        class AdvancingApprover(RecordingApprover):
+            def confirm_video_batch(inner, request):
+                token = super().confirm_video_batch(request)
+                rights.expired = True
+                return token
+
+        allowances = VideoBatchAllowance(
+            self.root, seal_key_store=FileSealKeyStore(self.key_path),
+            project_store=FakeProjectStore(), rights_service=rights,
+        )
+        with self.assertRaises(BatchScopeError):
+            allowances.activate(self.quote, AdvancingApprover())
+        self.assertEqual(list((self.root / "allowances").glob("*.json")), [])
+        self.assertEqual(list((self.root / "activations").glob("*.json")), [])
+
+    def test_rights_receipt_replacement_during_native_dialog_prevents_activation(self) -> None:
+        class MutableStore(FakeProjectStore):
+            receipt = copy.deepcopy(RIGHTS_RECEIPT)
+
+            def find_version_by_field(inner, *args, **kwargs):
+                return copy.deepcopy(inner.receipt)
+
+        store = MutableStore()
+
+        class ReplacingApprover(RecordingApprover):
+            def confirm_video_batch(inner, request):
+                token = super().confirm_video_batch(request)
+                store.receipt["evidence"] = "replaced"
+                return token
+
+        allowances = VideoBatchAllowance(
+            self.root, seal_key_store=FileSealKeyStore(self.key_path),
+            project_store=store, rights_service=FakeRightsService(),
+        )
+        with self.assertRaises(BatchScopeError):
+            allowances.activate(self.quote, ReplacingApprover())
+        self.assertEqual(list((self.root / "allowances").glob("*.json")), [])
+        self.assertEqual(list((self.root / "activations").glob("*.json")), [])
+
     def test_symlink_root_and_replaced_allowances_directory_fail_closed(self) -> None:
         target = Path(self.temp.name) / "symlink-target"
         target.mkdir(mode=0o700)
@@ -469,6 +635,94 @@ class VideoBatchAllowanceTests(unittest.TestCase):
         moved = self.root / "allowances-old"
         directory.rename(moved)
         directory.mkdir(mode=0o700)
+        with self.assertRaises(BatchScopeError):
+            self.allowances.get(allowance_id)
+
+    def test_same_instance_threads_serialize_even_when_flock_is_process_local(self) -> None:
+        allowance_id = self.activate()
+        attempt = self.quote["items"][0]["attempts"][0]
+        start = threading.Barrier(3)
+        results: list[str] = []
+        original_load = self.allowances._load_allowance
+
+        def slow_load(*args, **kwargs):
+            value = original_load(*args, **kwargs)
+            time.sleep(0.03)
+            return value
+
+        def worker():
+            start.wait()
+            try:
+                self.allowances.reserve(
+                    allowance_id, shot_id="S01", attempt=1,
+                    request_fingerprint=attempt["request_fingerprint"],
+                )
+                results.append("reserved")
+            except ReservationConsumedError:
+                results.append("rejected")
+
+        with patch.object(self.allowances, "_load_allowance", side_effect=slow_load), patch(
+            "scripts.video_batch_allowance.fcntl.flock", return_value=None
+        ):
+            threads = [threading.Thread(target=worker) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            start.wait()
+            for thread in threads:
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+        self.assertEqual(results.count("reserved"), 1)
+        self.assertEqual(results.count("rejected"), 1)
+
+    def test_short_os_write_is_retried_until_complete(self) -> None:
+        allowance_id = self.activate()
+        attempt = self.quote["items"][0]["attempts"][0]
+        real_write = os.write
+
+        def short_write(descriptor, data):
+            return real_write(descriptor, data[: max(1, len(data) // 3)])
+
+        with patch("scripts.video_batch_allowance.os.write", side_effect=short_write):
+            self.allowances.reserve(
+                allowance_id, shot_id="S01", attempt=1,
+                request_fingerprint=attempt["request_fingerprint"],
+            )
+        restarted = make_allowances(self.root, self.key_path)
+        self.assertEqual(restarted.get(allowance_id)["consumed_credits"], 7)
+
+    def test_unsafe_read_failures_do_not_leak_file_descriptors(self) -> None:
+        allowance_id = self.activate()
+        allowance_path = self.root / "allowances" / f"{allowance_id}.json"
+        allowance_path.chmod(0o644)
+        before = len(os.listdir("/dev/fd"))
+        for _ in range(25):
+            with self.assertRaises(BatchScopeError):
+                self.allowances.get(allowance_id)
+        self.assertLessEqual(len(os.listdir("/dev/fd")), before + 1)
+
+        resolver = LocalQuoteResolver(Path(self.temp.name) / "resolver")
+        identity = resolver.persist(self.quote)
+        quote_path = resolver._root / f"{identity['fingerprint']}.json"
+        quote_path.chmod(0o644)
+        before = len(os.listdir("/dev/fd"))
+        for _ in range(25):
+            with self.assertRaises(BatchScopeError):
+                resolver.resolve(identity)
+        self.assertLessEqual(len(os.listdir("/dev/fd")), before + 1)
+        resolver.close()
+
+    def test_valid_hmac_cannot_hide_impossible_reservation_history(self) -> None:
+        allowance_id = self.activate()
+        reservation = self.reserve_first(allowance_id, self.quote)
+        path = self.root / "allowances" / f"{allowance_id}.json"
+        stored = json.loads(path.read_text())
+        stored["reservations"][0]["history"].append({
+            "state": "committed", "at": "2026-09-14T00:00:01Z", "submit_id": "submit_hidden"
+        })
+        key = FileSealKeyStore(self.key_path).load(allow_create=False)
+        self.allowances._seal(stored, key)
+        path.write_text(json.dumps(stored))
+        path.chmod(0o600)
         with self.assertRaises(BatchScopeError):
             self.allowances.get(allowance_id)
 

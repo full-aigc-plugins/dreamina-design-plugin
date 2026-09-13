@@ -308,6 +308,9 @@ class VideoBatchAllowance:
                 allowance["rights_receipt_fingerprint"] = quote_copy["rights_receipt_fingerprint"]
             self._seal(allowance, key)
             try:
+                # Revalidate immediately before publication: the native dialog may have
+                # remained open across expiry or a receipt/design replacement.
+                self._revalidate_rights(quote_copy)
                 self._atomic_write_at(self._allowances_fd, f"{allowance_id}.json", allowance, allowance_id=allowance_id, operation="activation")
                 self._atomic_write_at(self._activations_fd, activation_path.name, {"allowance_id": allowance_id, "quote_fingerprint": quote_fingerprint}, allowance_id=allowance_id, operation="activation-index")
             except BatchScopeError:
@@ -344,9 +347,11 @@ class VideoBatchAllowance:
                 raise BatchScopeError("request is outside the approved batch envelope")
             if any(
                 reservation["request_fingerprint"] == request_fingerprint
-                or (reservation["shot_id"], reservation["attempt"]) == (shot_id, attempt)
                 for other in self._all_allowances(key)
                 for reservation in other["reservations"]
+            ) or any(
+                (reservation["shot_id"], reservation["attempt"]) == (shot_id, attempt)
+                for reservation in allowance["reservations"]
             ):
                 raise ReservationConsumedError("the exact request reservation is already consumed")
             new_total = allowance["consumed_credits"] + item["credit_ceiling"]
@@ -394,28 +399,22 @@ class VideoBatchAllowance:
     def _transition_reservation(self, reservation_id: str, state: str, **details: str) -> dict[str, Any]:
         with self._exclusive_lock():
             key = self._seal_key_store.load(allow_create=False)
-            for name in self._allowance_names():
-                allowance = self._load_name(name, key=key)
+            loaded = [(name, self._load_name(name, key=key)) for name in self._allowance_names()]
+            for name, allowance in loaded:
                 reservation = next((item for item in allowance["reservations"] if item["reservation_id"] == reservation_id), None)
                 if reservation is None:
                     continue
                 submit_id = details.get("submit_id")
                 if submit_id is not None and any(
-                    item["reservation_id"] != reservation_id and item.get("submit_id") == submit_id
-                    for item in allowance["reservations"]
+                    other["reservation_id"] != reservation_id and other.get("submit_id") == submit_id
+                    for _, candidate in loaded
+                    for other in candidate["reservations"]
                 ):
-                    raise ReservationConsumedError("submit identifier is already bound")
+                    raise ReservationConsumedError("submit identifier is already bound to another reservation")
                 if reservation["state"] != "reserved":
                     if reservation["state"] == state and all(reservation.get(key) == value for key, value in details.items()):
                         return copy.deepcopy(reservation)
                     raise ReservationConsumedError("reservation already crossed its terminal boundary")
-                if state == "committed" and any(
-                    other.get("submit_id") == details["submit_id"]
-                    for candidate in self._allowance_names()
-                    for other in self._load_name(candidate, key=key)["reservations"]
-                    if other["reservation_id"] != reservation_id
-                ):
-                    raise ReservationConsumedError("submit identifier is already bound to another reservation")
                 timestamp = _now_iso()
                 reservation["state"] = state
                 reservation.update(details)
