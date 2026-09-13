@@ -175,6 +175,29 @@ class ApprovalReplayTests(unittest.TestCase):
         with self.assertRaises(ApprovalConsumedError):
             self.guard.consume_approval(self.session_id, request=request, approval_id=approval_id)
 
+    def test_domain_fingerprint_builder_is_explicit_and_wrong_builder_cannot_consume(self) -> None:
+        from scripts.json_contracts import canonical_fingerprint
+        from scripts.video_service import build_video_request_fingerprint
+
+        request = {"mode": "text2video", "prompt": "晨雾中的蓝色工作室", "model": "seedance-2.5", "video_resolution": "720P", "ratio": "16:9", "duration_seconds": 4}
+        legacy = build_video_request_fingerprint(request)
+        self.assertNotEqual(legacy, canonical_fingerprint(request))
+        receipt = _approval(legacy)
+        receipt["acknowledged_scope"] = {"count": 1, "model": "seedance-2.5", "resolution": "720P", "ratio": "16:9", "duration_seconds": 4}
+        approval_id = self.guard.record_approval(
+            self.session_id, request=request, receipt=receipt,
+            fingerprint_builder=build_video_request_fingerprint,
+        )
+        with self.assertRaises(RequestChangedError):
+            self.guard.consume_approval(
+                self.session_id, request=request, approval_id=approval_id,
+                fingerprint_builder=canonical_fingerprint,
+            )
+        self.guard.consume_approval(
+            self.session_id, request=request, approval_id=approval_id,
+            fingerprint_builder=build_video_request_fingerprint,
+        )
+
     def test_concurrent_consumption_has_exactly_one_winner(self) -> None:
         request = {"mode": "text2image", "prompt": "x", "model": "seedream-5.0-pro", "count": 1, "resolution_type": "1k"}
         from scripts.image_service import build_request_fingerprint
