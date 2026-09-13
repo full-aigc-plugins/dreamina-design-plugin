@@ -51,6 +51,13 @@ CAPABILITY_MODES = (
 class DreaminaAdapterError(RuntimeError):
     """Base class for all adapter-level errors."""
 
+    def __init__(self, message: str, *, invocation_started: bool = False,
+                 outcome_ambiguous: bool = False, submit_id: str | None = None) -> None:
+        self.invocation_started = invocation_started
+        self.outcome_ambiguous = outcome_ambiguous
+        self.submit_id = submit_id
+        super().__init__(message)
+
 
 class CLINotFoundError(DreaminaAdapterError):
     """The configured `dreamina` binary could not be located or executed."""
@@ -205,25 +212,25 @@ class DreaminaAdapter:
 
         stdout_bytes_size = len(stdout_text.encode("utf-8"))
         if stdout_bytes_size > self.max_output_bytes:
-            raise InvalidJSONError(
-                f"dreamina CLI output exceeded {self.max_output_bytes} bytes"
-            )
+            raise InvalidJSONError(f"dreamina CLI output exceeded {self.max_output_bytes} bytes",
+                                   invocation_started=True, outcome_ambiguous=True)
 
         stderr_lower = stderr_text.lower()
         if "upgrade required" in stderr_lower:
-            raise UpgradeRequiredError(stderr_text.strip() or "upgrade required")
+            raise UpgradeRequiredError(stderr_text.strip() or "upgrade required",
+                                       invocation_started=True, outcome_ambiguous=False)
         if returncode != 0:
             if (
                 "not authenticated" in stderr_lower
                 or "permission denied" in stderr_lower
                 or "unauthorized" in stderr_lower
             ):
-                raise PermissionDeniedError(stderr_text.strip() or "permission denied")
+                raise PermissionDeniedError(stderr_text.strip() or "permission denied",
+                                            invocation_started=True, outcome_ambiguous=False)
             payload = _safe_parse_json(stdout_text)
             if payload is None:
-                raise DreaminaAdapterError(
-                    f"dreamina CLI failed (exit {returncode}): {stderr_text.strip()}"
-                )
+                raise DreaminaAdapterError(f"dreamina CLI failed (exit {returncode}): {stderr_text.strip()}",
+                                           invocation_started=True, outcome_ambiguous=False)
             return DreaminaResult(
                 exit_code=returncode,
                 payload=payload,
@@ -234,7 +241,8 @@ class DreaminaAdapter:
 
         payload = _safe_parse_json(stdout_text)
         if payload is None:
-            raise InvalidJSONError("dreamina CLI did not emit JSON on stdout")
+            raise InvalidJSONError("dreamina CLI did not emit JSON on stdout",
+                                   invocation_started=True, outcome_ambiguous=True)
         submit_id = None
         if isinstance(payload, Mapping):
             raw = payload.get("submit_id")
@@ -281,8 +289,8 @@ class DreaminaAdapter:
                 if remaining <= 0:
                     self._terminate_process_group(process)
                     raise TimeoutError(
-                        f"dreamina CLI timed out after {self.timeout_seconds}s; operation NOT resubmitted"
-                    )
+                        f"dreamina CLI timed out after {self.timeout_seconds}s; operation NOT resubmitted",
+                        invocation_started=True, outcome_ambiguous=True)
                 for key, _ in selector.select(timeout=min(remaining, 0.1)):
                     chunk = os.read(key.fileobj.fileno(), 65536)
                     if not chunk:
@@ -293,8 +301,8 @@ class DreaminaAdapter:
                     if len(buffer) > self.max_output_bytes:
                         self._terminate_process_group(process)
                         raise InvalidJSONError(
-                            f"dreamina CLI {key.data} exceeded {self.max_output_bytes} bytes"
-                        )
+                            f"dreamina CLI {key.data} exceeded {self.max_output_bytes} bytes",
+                            invocation_started=True, outcome_ambiguous=True)
             returncode = process.wait(timeout=max(0.1, deadline - time.monotonic()))
         finally:
             selector.close()

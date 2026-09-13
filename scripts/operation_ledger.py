@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from scripts.output_redactor import redact_value
+
 
 TERMINAL_STATES = {"succeeded", "failed", "cancelled"}
 SUBMIT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -42,6 +44,10 @@ class AmbiguousSubmissionError(OperationLedgerError):
 
 class CancelNotSupportedError(OperationLedgerError):
     """The dreamina CLI reports that cancellation is not supported."""
+
+
+class DurableCommitIndeterminateError(OperationLedgerError):
+    """A replace became visible but parent-directory durability is uncertain."""
 
 
 def _now_iso() -> str:
@@ -198,7 +204,7 @@ class OperationLedger:
         """Atomically persist executor state before its next external side effect."""
         if re.fullmatch(r"vp_[a-f0-9]{24}", project_id) is None or re.fullmatch(r"v[0-9]{3,}", batch_version) is None:
             raise ValueError("invalid batch identity")
-        document = json.loads(json.dumps(dict(payload)))
+        document = json.loads(json.dumps(redact_value(dict(payload))))
         with self._exclusive_lock():
             self._atomic_write(self._batches_dir / f"{project_id}-{batch_version}.json", document)
         return document
@@ -307,6 +313,13 @@ class OperationLedger:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(tmp_path, path)
+            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            except OSError as exc:
+                raise DurableCommitIndeterminateError("replace visible; directory fsync failed") from exc
+            finally:
+                os.close(directory_fd)
         except Exception:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
@@ -338,6 +351,7 @@ class OperationLedger:
 __all__ = [
     "AmbiguousSubmissionError",
     "CancelNotSupportedError",
+    "DurableCommitIndeterminateError",
     "OperationLedger",
     "OperationNotFoundError",
     "TERMINAL_STATES",

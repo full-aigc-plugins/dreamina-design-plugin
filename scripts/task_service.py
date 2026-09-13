@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import secrets
 import stat
 from pathlib import Path
 from collections.abc import Mapping
@@ -78,6 +79,7 @@ class TaskService:
     def _verified_artifacts(directory_fd: int, before: set[str], target: Path,
                             parent_fd: int, directory_name: str) -> list[dict[str, object]]:
         artifacts = []
+        seen_digests: set[str] = set()
         TaskService._assert_directory_entry(parent_fd, directory_name, directory_fd)
         names = sorted(set(os.listdir(directory_fd)) - before)
         TaskService._assert_directory_entry(parent_fd, directory_name, directory_fd)
@@ -101,18 +103,66 @@ class TaskService:
                 if size == 0: raise ValueError("downloaded artifact size is invalid")
                 mime = "image/png" if prefix.startswith(b"\x89PNG\r\n\x1a\n") else "image/jpeg" if prefix.startswith(b"\xff\xd8\xff") else "video/mp4" if len(prefix) >= 12 and prefix[4:8] == b"ftyp" else None
                 if mime is None: raise ValueError("downloaded artifact type is unsupported")
-                os.fchmod(descriptor, 0o400)
                 current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
                 final = os.fstat(descriptor)
                 if ((final.st_dev, final.st_ino, final.st_size) != (current.st_dev, current.st_ino, current.st_size)
-                        or final.st_size != size or final.st_uid != os.getuid() or final.st_nlink != 1
-                        or stat.S_IMODE(final.st_mode) != 0o400 or stat.S_IMODE(current.st_mode) != 0o400):
+                        or final.st_size != size or final.st_uid != os.getuid() or final.st_nlink != 1):
                     raise ValueError("downloaded artifact changed during verification")
-                artifacts.append({"path": str(target / name), "mime_type": mime, "size_bytes": size,
-                                  "sha256": digest.hexdigest(), "provenance": "externally-queried"})
+                extension = {"video/mp4": ".mp4", "image/png": ".png", "image/jpeg": ".jpg"}[mime]
+                digest_value = digest.hexdigest()
+                if digest_value in seen_digests:
+                    continue
+                published_name = TaskService._publish_verified_copy(
+                    directory_fd, descriptor, digest_value, size, extension)
+                artifacts.append({"path": str(target / published_name), "mime_type": mime, "size_bytes": size,
+                                  "sha256": digest_value, "provenance": "externally-queried"})
+                seen_digests.add(digest_value)
             finally: os.close(descriptor)
         TaskService._assert_directory_entry(parent_fd, directory_name, directory_fd)
         return artifacts
+
+    @staticmethod
+    def _publish_verified_copy(directory_fd: int, source_fd: int, digest: str,
+                               size: int, extension: str) -> str:
+        """Copy verified bytes to an exclusive temp and no-replace digest name."""
+        temporary = f".verified-{secrets.token_hex(16)}.tmp"
+        final_name = f"artifact-{digest}{extension}"
+        output_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=directory_fd)
+        try:
+            os.lseek(source_fd, 0, os.SEEK_SET)
+            copied = 0
+            while True:
+                chunk = os.read(source_fd, 1024 * 1024)
+                if not chunk: break
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(output_fd, view)
+                    if written <= 0: raise OSError("short artifact write")
+                    view = view[written:]
+                copied += len(chunk)
+            if copied != size: raise ValueError("artifact changed while staging")
+            os.fsync(output_fd)
+            os.fchmod(output_fd, 0o400)
+            staged = os.fstat(output_fd)
+            if staged.st_size != size or stat.S_IMODE(staged.st_mode) != 0o400:
+                raise ValueError("staged artifact verification failed")
+            linked = True
+            try:
+                os.link(temporary, final_name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd, follow_symlinks=False)
+            except FileExistsError:
+                linked = False
+                existing = os.stat(final_name, dir_fd=directory_fd, follow_symlinks=False)
+                if not stat.S_ISREG(existing.st_mode) or existing.st_size != size or stat.S_IMODE(existing.st_mode) != 0o400:
+                    raise ValueError("content-addressed artifact collision")
+            os.fsync(directory_fd)
+            final = os.stat(final_name, dir_fd=directory_fd, follow_symlinks=False)
+            if linked and (final.st_dev, final.st_ino, final.st_size) != (staged.st_dev, staged.st_ino, size):
+                raise ValueError("published artifact identity mismatch")
+            return final_name
+        finally:
+            os.close(output_fd)
+            try: os.unlink(temporary, dir_fd=directory_fd)
+            except FileNotFoundError: pass
 
     def verify_download_dir(self, download_dir: str) -> list[dict[str, object]]:
         """Reconcile artifacts left after a crash at the download boundary."""

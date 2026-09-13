@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -83,6 +84,10 @@ class PostInvokePersistenceError(VideoServiceError):
                  request_fingerprint: str, cause: Exception) -> None:
         self.submit_id = submit_id
         self.result_bytes = bytes(result_bytes)
+        self.evidence_sha256 = hashlib.sha256(self.result_bytes).hexdigest()
+        self.evidence_length = len(self.result_bytes)
+        self.exception_type = _safe_exception_type(cause)
+        self.classification = "known_submit_id" if submit_id else "unknown_remote_outcome"
         self.allowance_id = allowance_id
         self.reservation_id = reservation_id
         self.request_fingerprint = request_fingerprint
@@ -137,6 +142,14 @@ def _canonical_bytes(payload: Mapping[str, Any]) -> bytes:
 def build_video_request_fingerprint(payload: Mapping[str, Any]) -> str:
     """SHA-256 hex digest over canonical JSON serialization."""
     return hashlib.sha256(_canonical_bytes(payload)).hexdigest()
+
+
+def _safe_exception_type(exc: Exception) -> str:
+    name = type(exc).__name__
+    if (len(name) > 64 or re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", name) is None
+            or re.search(r"token|secret|password|cookie|authorization", name, re.I)):
+        return "ADAPTER_ERROR"
+    return name
 
 
 class VideoService:
@@ -478,11 +491,21 @@ class VideoService:
         try:
             result: DreaminaResult = adapter.run(argv)
         except Exception as exc:
+            invocation_started = getattr(exc, "invocation_started", True)
+            outcome_ambiguous = getattr(exc, "outcome_ambiguous", True)
+            if not invocation_started or not outcome_ambiguous:
+                try:
+                    self._operation_ledger.abort_submission_intent(
+                        request_fingerprint=request_fingerprint,
+                        reason="PREINVOKE_OR_DEFINITE_LOCAL_FAILURE")
+                except Exception:
+                    pass
+                raise
             known_submit_id = getattr(exc, "submit_id", None)
             try:
                 self._operation_ledger.complete_submission_intent(
                     request_fingerprint=request_fingerprint, submit_id=known_submit_id,
-                    error_code=type(exc).__name__, allowance_id=allowance_id,
+                    error_code=_safe_exception_type(exc), allowance_id=allowance_id,
                     reservation_id=reservation_id)
             except Exception:
                 pass

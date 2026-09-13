@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
+import json
 import os
+import re
 import stat
 import threading
 from contextlib import contextmanager
@@ -11,7 +14,7 @@ from typing import Any
 
 from scripts.operation_ledger import OperationLedger
 from scripts.task_service import TaskService
-from scripts.video_service import VideoService
+from scripts.video_service import BatchAllowanceCommitError, PostInvokePersistenceError, VideoService
 
 
 class VideoBatchExecutor:
@@ -134,6 +137,7 @@ class VideoBatchExecutor:
     def aggregate_state(tasks: list[dict[str, Any]]) -> tuple[str, str]:
         """Return an order-independent batch state and its required action."""
         states = {str(task.get("state", "manual_review")) for task in tasks}
+        states.discard("retry_superseded")
         precedence = (
             ("manual_review", "manual_review", "manual_review"),
             ("failed", "failed", "report_failure"),
@@ -148,7 +152,7 @@ class VideoBatchExecutor:
             return "generating", "query"
         if "evaluation_retryable" in states:
             return "evaluation_retryable", "run_next"
-        if tasks and states <= {"accepted"}:
+        if tasks and states == {"accepted"}:
             return "completed", "none"
         return "ready", "run_next"
 
@@ -203,14 +207,23 @@ class VideoBatchExecutor:
                     allowance_id=self._allowance_id, shot_id=planned["shot_id"],
                     attempt=planned["attempt_number"])
             except Exception as exc:
-                task.update(state="manual_review", error_code=type(exc).__name__.upper())
+                error_code = (
+                    "POST_INVOKE_PERSISTENCE_ERROR" if isinstance(exc, PostInvokePersistenceError)
+                    else "BATCH_ALLOWANCE_COMMIT_ERROR" if isinstance(exc, BatchAllowanceCommitError)
+                    else "UNEXPECTED_SUBMISSION_ERROR"
+                )
+                task.update(state="manual_review", error_code=error_code)
                 for field in ("submit_id", "reservation_id", "request_fingerprint", "shot_id", "attempt"):
                     value = getattr(exc, field, None)
                     if value is not None:
                         task[field] = value
-                result_bytes = getattr(exc, "result_bytes", None)
-                if isinstance(result_bytes, bytes):
-                    task["result_bytes_hex"] = result_bytes[:65536].hex()
+                evidence_sha256 = getattr(exc, "evidence_sha256", None)
+                evidence_length = getattr(exc, "evidence_length", None)
+                if isinstance(evidence_sha256, str) and len(evidence_sha256) == 64 \
+                        and all(character in "0123456789abcdef" for character in evidence_sha256):
+                    task["evidence_sha256"] = evidence_sha256
+                if isinstance(evidence_length, int) and not isinstance(evidence_length, bool) and evidence_length >= 0:
+                    task["evidence_length"] = evidence_length
                 self._persist_aggregate(state, quote); break
             task.update(state="queued", submit_id=result["submit_id"],
                         reservation_id=result["reservation"]["reservation_id"])
@@ -240,10 +253,15 @@ class VideoBatchExecutor:
                     task["reservation_id"] = reservation.get("reservation_id")
                     if reservation.get("submit_id"):
                         task["submit_id"] = reservation["submit_id"]; task["state"] = "queued"
+                        self._persist_aggregate(state, quote)
+                    else:
+                        task["state"] = "manual_review"
+                        task["error_code"] = "PREINVOKE_RESERVATION_REQUIRES_OPERATOR_REVIEW"
                         self._persist_aggregate(state, quote); continue
-                task["state"] = "manual_review"
-                task["error_code"] = "PREINVOKE_RESERVATION_REQUIRES_OPERATOR_REVIEW" if reservation else "PROCESS_INTERRUPTED_BEFORE_RESERVATION"
-                self._persist_aggregate(state, quote); continue
+                else:
+                    task["state"] = "manual_review"
+                    task["error_code"] = "PROCESS_INTERRUPTED_BEFORE_RESERVATION"
+                    self._persist_aggregate(state, quote); continue
             if not task.get("submit_id") or task["state"] in {
                 "failed", "evaluation_retryable", "retry_superseded",
                 "awaiting_evaluation", "accepted", "rejected"
@@ -295,8 +313,15 @@ class VideoBatchExecutor:
         self._persist_aggregate(state, quote)
         return state
 
+    @staticmethod
+    def _evaluation_fingerprint(payload: dict[str, Any]) -> str:
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
     def _record_evaluation_decision(self, project_id: str, batch_version: str,
-                                    shot_id: str, attempt: int, decision: str) -> dict[str, Any]:
+                                    shot_id: str, attempt: int, decision: str, *,
+                                    artifact_sha256: str, submit_id: str,
+                                    evaluation_id: str, evaluation_fingerprint: str,
+                                    design_version: str) -> dict[str, Any]:
         """Persist a narrow evaluator decision without performing evaluation itself."""
         if decision not in {"accepted", "retry", "rejected", "manual_review"}:
             raise ValueError("unsupported evaluation decision")
@@ -305,9 +330,24 @@ class VideoBatchExecutor:
                      if item["shot_id"] == shot_id and item["attempt"] == attempt), None)
         if task is None or task["state"] != "awaiting_evaluation":
             raise ValueError("evaluation decision requires a downloaded artifact awaiting evaluation")
+        quote = self._quote(project_id, batch_version)
+        if quote.get("design_version") != design_version:
+            raise ValueError("evaluation design version is stale")
+        if task.get("submit_id") != submit_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", evaluation_id):
+            raise ValueError("evaluation identity does not match the generated task")
+        artifacts = task.get("artifacts", [])
+        if re.fullmatch(r"[a-f0-9]{64}", artifact_sha256) is None or not any(item.get("sha256") == artifact_sha256 for item in artifacts):
+            raise ValueError("evaluation artifact digest is stale")
+        binding = {"project_id": project_id, "batch_version": batch_version,
+                   "design_version": design_version, "shot_id": shot_id, "attempt": attempt,
+                   "artifact_sha256": artifact_sha256, "submit_id": submit_id,
+                   "evaluation_id": evaluation_id, "decision": decision}
+        if self._evaluation_fingerprint(binding) != evaluation_fingerprint:
+            raise ValueError("evaluation receipt fingerprint mismatch")
         task["evaluation_decision"] = decision
+        task["evaluation_receipt"] = {**binding, "evaluation_fingerprint": evaluation_fingerprint}
         task["state"] = "evaluation_retryable" if decision == "retry" else decision
-        self._persist_aggregate(state, self._quote(project_id, batch_version))
+        self._persist_aggregate(state, quote)
         return state
 
     def resume(self, project_id: str, batch_version: str) -> dict[str, Any]:

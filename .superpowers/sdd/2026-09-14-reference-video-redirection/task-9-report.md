@@ -78,3 +78,14 @@
 - RED evidence: replacing the target directory immediately after artifact enumeration was not detected and returned success evidence.
 - Final Task 9/8/7 focused regression: 217 tests passed in 6.181s.
 - Final full regression: 514 tests passed in 18.275s; Python compilation and `git diff --check` passed.
+
+## Fix Round 5 (Final Breaker Round)
+
+- Removed raw `result_bytes`/`result_bytes_hex`, adapter text, exception class, and classification from durable/returned executor state. Ambiguous evidence is now limited to recovery identities plus `evidence_length` and validated SHA-256.
+- Closed error codes to fixed bounded values at the executor boundary. Adapter exception type bookkeeping preserves safe legacy identifiers but collapses long, malformed, or credential-shaped names to `ADAPTER_ERROR`.
+- Added recursive ledger redaction for batch payloads, including nested credential-shaped keys and complete signed-URL removal; no provider evidence bytes are persisted.
+- Added nested authorization/API-key/signed-URL and 2 MiB evidence coverage. The regression scans every generated ledger JSON and the returned structured result for `SECRET_TOKEN`, `SECRET_KEY`, signed domains, and credential-shaped keys while proving submit ID, reservation, fingerprint, digest, and length remain available.
+- RED evidence: attacker-controlled `exception_type` containing an unbounded `SECRET_TOKEN` value was present in both returned and persisted batch state; the earlier intent receipt also retained the same sensitive exception type.
+- Final Task 9/8/7 focused regression: 221 tests passed in 5.188s.
+- Final full regression: 516 tests passed in 18.606s; Python compilation and `git diff --check` passed.
+- Residual load-bearing boundary: `PostInvokePersistenceError` retains raw evidence only in process memory until the exception is released; crash recovery intentionally has digest/length and provider identities, not replayable raw output. Novel secrets in non-auth-shaped ordinary business fields remain outside pattern-based redaction and must not be added to the closed executor state contract.

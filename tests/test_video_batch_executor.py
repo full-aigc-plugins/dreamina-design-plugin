@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import tempfile
 import threading
@@ -24,7 +25,7 @@ def request(prompt: str) -> dict:
 
 def quote() -> dict:
     one, retry, two = request("shot one"), request("shot one repaired"), request("shot two")
-    return {"project_id": PROJECT_ID, "quote_version": "v001", "items": [
+    return {"project_id": PROJECT_ID, "quote_version": "v001", "design_version": "v001", "items": [
         {"shot_id": "S01", "attempts": [
           {"attempt_number": 2, "request": retry, "request_fingerprint": build_video_request_fingerprint(retry)},
           {"attempt_number": 1, "request": one, "request_fingerprint": build_video_request_fingerprint(one)}]},
@@ -83,9 +84,11 @@ class Adapter:
 
 class TimeoutWithSubmitId(TimeoutError):
     def __init__(self, submit_id: str):
-        super().__init__("timeout after provider accepted request")
+        super().__init__("timeout token=SECRET_TOKEN https://signed.example/?key=SECRET_KEY")
         self.submit_id = submit_id
-        self.result_bytes = b'{"submit_id":"submit_known"}'
+        self.result_bytes = b'{"submit_id":"submit_known","token":"SECRET_TOKEN"}'
+        self.invocation_started = True
+        self.outcome_ambiguous = True
 
 
 class VideoBatchExecutorTests(unittest.TestCase):
@@ -94,6 +97,16 @@ class VideoBatchExecutorTests(unittest.TestCase):
         self.store = Store(Path(self.tmp.name)); self.allowance = Allowance(); self.adapter = Adapter()
         self.executor = VideoBatchExecutor(project_store=self.store, allowance=self.allowance,
             allowance_id="ba_" + "2" * 32, video_service=None, adapter=self.adapter)
+
+    def record_retry(self):
+        task = self.executor._load(PROJECT_ID, "v001")["tasks"][0]
+        binding = {"project_id": PROJECT_ID, "batch_version": "v001", "design_version": "v001",
+                   "shot_id": "S01", "attempt": 1, "artifact_sha256": task["artifacts"][0]["sha256"],
+                   "submit_id": task["submit_id"], "evaluation_id": "eval_1", "decision": "retry"}
+        return self.executor._record_evaluation_decision(
+            PROJECT_ID, "v001", "S01", 1, "retry", artifact_sha256=binding["artifact_sha256"],
+            submit_id=binding["submit_id"], evaluation_id="eval_1",
+            evaluation_fingerprint=self.executor._evaluation_fingerprint(binding), design_version="v001")
 
     def test_run_next_submits_only_next_request_in_shot_and_attempt_order(self):
         result = self.executor.run_next(PROJECT_ID, "v001", 1)
@@ -141,7 +154,12 @@ class VideoBatchExecutorTests(unittest.TestCase):
         self.assertEqual(first["state"], "manual_review")
         self.assertEqual(first["required_action"], "manual_review")
         self.assertEqual(first["tasks"][0]["submit_id"], "submit_known")
-        self.assertEqual(first["tasks"][0]["result_bytes_hex"], self.adapter.raise_after_invoke.result_bytes.hex())
+        self.assertEqual(first["tasks"][0]["evidence_length"], len(self.adapter.raise_after_invoke.result_bytes))
+        self.assertEqual(len(first["tasks"][0]["evidence_sha256"]), 64)
+        persisted = "\n".join(path.read_text(encoding="utf-8") for path in self.executor._root.rglob("*.json"))
+        self.assertNotIn("SECRET_TOKEN", persisted)
+        self.assertNotIn("SECRET_KEY", persisted)
+        self.assertNotIn("signed.example", persisted)
         self.assertEqual(self.allowance.ambiguous[0][2], "submit_known")
         receipt = self.executor._ledger.get(submit_id="submit_known")
         self.assertEqual(receipt["allowance_id"], "ba_" + "2" * 32)
@@ -153,6 +171,32 @@ class VideoBatchExecutorTests(unittest.TestCase):
             allowance_id="ba_" + "2" * 32, video_service=None, adapter=self.adapter)
         restarted.resume(PROJECT_ID, "v001")
         self.assertEqual(self.adapter.calls[0][:3], ["query_result", "--submit_id", "submit_known"])
+
+    def test_postinvoke_evidence_is_digest_only_redacted_and_bounded(self):
+        secret_error_type = type("SECRET_TOKEN_" + "X" * 5000, (TimeoutError,), {})
+        failure = secret_error_type("cookie=SECRET_KEY https://signed.example/?token=SECRET_TOKEN")
+        failure.submit_id = "submit_secret_safe"
+        failure.result_bytes = json.dumps({
+            "result": {"authorization": "Bearer SECRET_TOKEN", "nested": [{"api_key": "SECRET_KEY"}]},
+            "signed_url": "https://signed.example/?token=SECRET_TOKEN",
+        }).encode() + b"x" * (2 * 1024 * 1024)
+        self.adapter.raise_after_invoke = failure
+
+        result = self.executor.run_next(PROJECT_ID, "v001", 1)
+        task = result["tasks"][0]
+        self.assertEqual(task["submit_id"], "submit_secret_safe")
+        self.assertEqual(task["evidence_length"], len(failure.result_bytes))
+        self.assertEqual(len(task["evidence_sha256"]), 64)
+        self.assertNotIn("result_bytes", task)
+        self.assertNotIn("result_bytes_hex", task)
+        self.assertNotIn("exception_type", task)
+        self.assertNotIn("classification", task)
+        serialized_result = json.dumps(result, sort_keys=True)
+        persisted = "\n".join(path.read_text(encoding="utf-8") for path in self.executor._root.rglob("*.json"))
+        for forbidden in ("SECRET_TOKEN", "SECRET_KEY", "signed.example", "authorization", "api_key", "signed_url"):
+            self.assertNotIn(forbidden, serialized_result)
+            self.assertNotIn(forbidden, persisted)
+        self.assertLess(len(task["error_code"].encode()), 128)
 
     def test_failed_and_unknown_tasks_are_explicit_and_never_resubmit(self):
         for status, expected in (("failed", "failed"), ("mystery", "manual_review")):
@@ -192,7 +236,7 @@ class VideoBatchExecutorTests(unittest.TestCase):
         blocked = self.executor.run_next(PROJECT_ID, "v001", 1)
         self.assertEqual(blocked["new_submissions"], 0)
         self.assertEqual((blocked["state"], blocked["required_action"]), ("awaiting_evaluation", "evaluate"))
-        self.executor._record_evaluation_decision(PROJECT_ID, "v001", "S01", 1, "retry")
+        self.record_retry()
         retried = self.executor.run_next(PROJECT_ID, "v001", 1)
         self.assertEqual(retried["new_submissions"], 1)
         self.assertEqual(self.adapter.calls[-1][0], "text2video")
@@ -227,7 +271,7 @@ class VideoBatchExecutorTests(unittest.TestCase):
         self.executor.run_next(PROJECT_ID, "v001", 1)
         self.adapter.status = "success"; self.adapter.download = True
         self.executor.reconcile(PROJECT_ID, "v001")
-        self.executor._record_evaluation_decision(PROJECT_ID, "v001", "S01", 1, "retry")
+        self.record_retry()
         submitted = self.executor.run_next(PROJECT_ID, "v001", 1)
         predecessor = next(task for task in submitted["tasks"] if task["attempt"] == 1)
         self.assertEqual(predecessor["state"], "retry_superseded")
@@ -246,6 +290,7 @@ class VideoBatchExecutorTests(unittest.TestCase):
             (["accepted", "queued"], ("generating", "query")),
             (["accepted", "evaluation_retryable"], ("evaluation_retryable", "run_next")),
             (["accepted", "accepted"], ("completed", "none")),
+            (["retry_superseded", "accepted", "accepted"], ("completed", "none")),
         ]
         for task_states, expected in cases:
             with self.subTest(task_states=task_states):
@@ -297,6 +342,16 @@ class VideoBatchExecutorTests(unittest.TestCase):
 
     def test_evaluation_mutator_is_not_public_task9_api(self):
         self.assertFalse(hasattr(self.executor, "record_evaluation_decision"))
+
+    def test_private_evaluation_handoff_rejects_stale_artifact_digest(self):
+        self.executor.run_next(PROJECT_ID, "v001", 1)
+        self.adapter.status = "success"; self.adapter.download = True
+        self.executor.reconcile(PROJECT_ID, "v001")
+        with self.assertRaisesRegex(ValueError, "artifact digest"):
+            self.executor._record_evaluation_decision(
+                PROJECT_ID, "v001", "S01", 1, "retry", artifact_sha256="f" * 64,
+                submit_id="submit_1", evaluation_id="eval_1",
+                evaluation_fingerprint="a" * 64, design_version="v001")
 
     def test_existing_symlink_broad_or_foreign_download_root_fails_without_mutation(self):
         for kind in ("symlink", "broad", "foreign"):
