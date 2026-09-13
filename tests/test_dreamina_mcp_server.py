@@ -11,6 +11,7 @@ from pathlib import Path
 from scripts.dreamina_adapter import DreaminaResult
 from scripts.dreamina_mcp_server import DreaminaMcpTools, _tool_definitions
 from scripts.native_approval import ApprovalDeniedError
+from scripts.trusted_cli import TrustedCliError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +93,12 @@ class PaidToolHandlerTests(unittest.TestCase):
             result = DreaminaMcpTools().call("dreamina_capability_snapshot", {})
         self.assertEqual(result["model_count"], 1)
         self.assertNotIn("large", result)
+
+    def test_status_returns_actionable_result_when_cli_not_enrolled(self) -> None:
+        with mock.patch("scripts.dreamina_mcp_server._adapter", side_effect=TrustedCliError("not enrolled")):
+            result=DreaminaMcpTools().call("dreamina_cli_status", {})
+        self.assertEqual(result["installed"], False)
+        self.assertEqual(result["requires_user_action"], "install_or_enroll")
 
     def test_image_tool_derives_and_consumes_approval_inside_handler(self) -> None:
         snapshot = {

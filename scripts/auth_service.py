@@ -20,6 +20,10 @@ class AuthService:
     def __init__(self,adapter,account_service,approval_provider,flow_store:AuthFlowStore): self.adapter=adapter; self.account_service=account_service; self.approval_provider=approval_provider; self.flow_store=flow_store
     def execute(self,action:str,*,flow_id:str|None=None,poll_seconds:int=0)->dict[str,object]:
         if not 0 <= poll_seconds <= 300: raise ValueError('poll_seconds must be between 0 and 300')
+        if action in {'login','relogin'} and hasattr(self.adapter,'timeout_seconds'):
+            self.adapter.timeout_seconds=max(int(self.adapter.timeout_seconds),310)
+        elif action == 'check_login' and hasattr(self.adapter,'timeout_seconds'):
+            self.adapter.timeout_seconds=max(int(self.adapter.timeout_seconds),poll_seconds+10)
         if action == 'check_login':
             device_code=self.flow_store.consume(flow_id)
             argv=['login','checklogin','--device_code',device_code,'--poll',str(poll_seconds)]

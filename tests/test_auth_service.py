@@ -26,3 +26,7 @@ class AuthServiceTests(unittest.TestCase):
         a=Adapter()
         with self.assertRaises(ApprovalDeniedError): AuthService(a,Account(),Provider(True),AuthFlowStore()).execute('logout')
         self.assertEqual(a.calls,[])
+    def test_interactive_login_extends_adapter_timeout(self):
+        a=Adapter(); a.timeout_seconds=30
+        AuthService(a,Account(),Provider(),AuthFlowStore()).execute('login')
+        self.assertGreaterEqual(a.timeout_seconds,300)

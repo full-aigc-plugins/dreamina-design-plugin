@@ -41,3 +41,8 @@ class EnvironmentServiceTests(unittest.TestCase):
         runner=Runner()
         with self.assertRaises(ApprovalDeniedError): EnvironmentService(Adapter(),downloader=Downloader(),runner=runner).install_or_upgrade('upgrade',approval_provider=Provider())
         self.assertEqual(runner.calls,[])
+
+    def test_installer_rejects_non_script_response(self):
+        class Downloader:
+            def fetch(self,url,max_bytes): return b'<html>error</html>', url
+        with self.assertRaises(ValueError): EnvironmentService(Adapter(),downloader=Downloader()).install_or_upgrade('install',approval_provider=object())

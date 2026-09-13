@@ -20,7 +20,7 @@ from scripts.native_approval import NativeApprovalProvider
 from scripts.reference_policy import ReferencePolicy
 from scripts.session_service import SessionService
 from scripts.task_service import TaskService
-from scripts.trusted_cli import TrustedCliStore
+from scripts.trusted_cli import TrustedCliError, TrustedCliStore
 from scripts.video_service import VideoService, build_video_request_fingerprint
 
 
@@ -124,13 +124,21 @@ class DreaminaMcpTools:
             return service.install_or_upgrade(str(args["action"]),approval_provider=self.approval_provider)
         if name == "dreamina_diagnose":
             return DiagnosticService().diagnose(command=str(args["command"]),error=str(args["error"]),submit_id=args.get("submit_id"),since_minutes=int(args.get("since_minutes",60)),max_files=int(args.get("max_files",3)))
+        if name == "dreamina_cli_status":
+            try:
+                with _adapter(args) as adapter:
+                    return EnvironmentService(adapter).status(command=args.get("command"),detail=str(args.get("detail","summary")))
+            except TrustedCliError as exc:
+                return {"installed":False,"trusted":False,"requires_user_action":"install_or_enroll","message":str(exc)}
         if name in {"dreamina_cli_status","dreamina_account","dreamina_auth","dreamina_query_task","dreamina_list_tasks","dreamina_session"}:
             with _adapter(args) as adapter:
-                if name == "dreamina_cli_status": return EnvironmentService(adapter).status(command=args.get("command"),detail=str(args.get("detail","summary")))
                 account=AccountService(adapter)
                 if name == "dreamina_account": return account.user_credit()
                 if name == "dreamina_auth": return AuthService(adapter,account,self.approval_provider,self.auth_flow_store).execute(str(args["action"]),flow_id=args.get("flow_id"),poll_seconds=int(args.get("poll_seconds",0)))
-                if name == "dreamina_query_task": return TaskService(adapter).query(str(args["submit_id"]),poll_seconds=int(args.get("poll_seconds",0)),download_dir=_approved_download_dir(args))
+                if name == "dreamina_query_task":
+                    download_dir=_approved_download_dir(args)
+                    if download_dir: self.approval_provider.confirm({"operation":"dreamina-download","submit_id":str(args["submit_id"]),"download_dir":download_dir})
+                    return TaskService(adapter).query(str(args["submit_id"]),poll_seconds=int(args.get("poll_seconds",0)),download_dir=download_dir)
                 if name == "dreamina_list_tasks": return TaskService(adapter).list_tasks(args.get("filters",{}),limit=int(args.get("limit",20)))
                 return SessionService(adapter,self.approval_provider).execute(str(args["action"]),name=args.get("name"),session_id=args.get("session_id"),query=args.get("query"))
         if name == "dreamina_submit_image":

@@ -52,6 +52,7 @@ class EnvironmentService:
         data,final_url=self.downloader.fetch(INSTALLER_URL,2*1024*1024)
         parsed=urlparse(final_url)
         if parsed.scheme!='https' or parsed.hostname!='jimeng.jianying.com': raise ValueError('Dreamina installer redirected outside approved HTTPS host')
+        if not data.startswith(b'#!') or b'\x00' in data: raise ValueError('Dreamina installer response is not a shell script')
         digest=hashlib.sha256(data).hexdigest()
         approval_provider.confirm({'operation':'dreamina-cli-installer','action':action,'url':INSTALLER_URL,'final_url':final_url,'sha256':digest})
         with tempfile.TemporaryDirectory(prefix='dreamina-installer-') as tmp:
