@@ -54,7 +54,7 @@ class NativeApprovalProvider:
     def _confirm_dialog(message: str, approve_button: str) -> None:
         if platform.system() != "Darwin":
             raise ApprovalDeniedError(
-                "native paid approval is unavailable on this platform; refusing submission"
+                "native confirmation is unavailable on this platform; refusing guarded action"
             )
         script = (
             "on run argv\n"

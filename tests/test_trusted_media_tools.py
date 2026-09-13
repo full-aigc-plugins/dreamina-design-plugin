@@ -75,6 +75,7 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
         result = self.store.enroll("ffmpeg", self.ffmpeg, approval_provider=self.approver)
         digest = hashlib.sha256(b"trusted ffmpeg").hexdigest()
         self.assertEqual(result["sha256"], digest)
+        self.assertEqual(result["owner_uid"], os.getuid())
         self.assertEqual(
             self.approver.kwargs,
             {
@@ -86,6 +87,59 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
         )
         self.assertEqual(self.store.path.parent.stat().st_mode & 0o777, 0o700)
         self.assertEqual(self.store.path.stat().st_mode & 0o777, 0o600)
+
+    def test_recorded_owner_uid_mismatch_fails_closed(self) -> None:
+        self.store.enroll("ffmpeg", self.ffmpeg, approval_provider=self.approver)
+        payload = json.loads(self.store.path.read_text(encoding="utf-8"))
+        payload["tools"]["ffmpeg"]["owner_uid"] = os.getuid() + 1
+        self.store.path.write_text(json.dumps(payload), encoding="utf-8")
+        os.chmod(self.store.path, 0o600)
+        with self.assertRaisesRegex(TrustedMediaToolError, "owner"):
+            self.store.load_required({"ffmpeg"})
+
+    def test_first_enrollment_rejects_symlinked_config_directory(self) -> None:
+        target = self.root / "config-target"
+        target.mkdir(mode=0o700)
+        self.store.path.parent.symlink_to(target, target_is_directory=True)
+        with self.assertRaisesRegex(TrustedMediaToolError, "directory"):
+            self.store.enroll("ffmpeg", self.ffmpeg, approval_provider=self.approver)
+        self.assertFalse((target / self.store.path.name).exists())
+
+    def test_first_enrollment_rejects_overpermissive_config_directory(self) -> None:
+        self.store.path.parent.mkdir(mode=0o755)
+        with self.assertRaisesRegex(TrustedMediaToolError, "directory"):
+            self.store.enroll("ffmpeg", self.ffmpeg, approval_provider=self.approver)
+        self.assertFalse(self.store.path.exists())
+
+    def test_first_enrollment_rejects_foreign_owned_config_directory(self) -> None:
+        self.store.path.parent.mkdir(mode=0o700)
+        original_lstat = Path.lstat
+        real_stat = self.store.path.parent.lstat()
+        foreign_stat = os.stat_result(
+            (
+                real_stat.st_mode,
+                real_stat.st_ino,
+                real_stat.st_dev,
+                real_stat.st_nlink,
+                os.getuid() + 1,
+                real_stat.st_gid,
+                real_stat.st_size,
+                real_stat.st_atime,
+                real_stat.st_mtime,
+                real_stat.st_ctime,
+            )
+        )
+        with patch.object(
+            Path,
+            "lstat",
+            autospec=True,
+            side_effect=lambda path: (
+                foreign_stat if path == self.store.path.parent else original_lstat(path)
+            ),
+        ):
+            with self.assertRaisesRegex(TrustedMediaToolError, "directory"):
+                self.store.enroll("ffmpeg", self.ffmpeg, approval_provider=self.approver)
+        self.assertFalse(self.store.path.exists())
 
     def test_digest_change_after_enrollment_fails_closed(self) -> None:
         self.store.enroll("ffmpeg", self.ffmpeg, approval_provider=self.approver)
@@ -117,6 +171,28 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
         os.chmod(self.store.path, 0o644)
         with self.assertRaises(TrustedMediaToolError):
             self.store.load_required({"ffmpeg"})
+
+    def test_load_requires_exact_config_file_mode_0600(self) -> None:
+        self.store.enroll("ffmpeg", self.ffmpeg, approval_provider=self.approver)
+        for mode in (0o400, 0o500, 0o700, 0o640, 0o644):
+            with self.subTest(mode=oct(mode)):
+                os.chmod(self.store.path, mode)
+                try:
+                    with self.assertRaisesRegex(TrustedMediaToolError, "0600"):
+                        self.store.load_required({"ffmpeg"})
+                finally:
+                    os.chmod(self.store.path, 0o600)
+
+    def test_load_requires_exact_config_directory_mode_0700(self) -> None:
+        self.store.enroll("ffmpeg", self.ffmpeg, approval_provider=self.approver)
+        for mode in (0o500, 0o600, 0o750, 0o755):
+            with self.subTest(mode=oct(mode)):
+                os.chmod(self.store.path.parent, mode)
+                try:
+                    with self.assertRaisesRegex(TrustedMediaToolError, "0700"):
+                        self.store.load_required({"ffmpeg"})
+                finally:
+                    os.chmod(self.store.path.parent, 0o700)
         os.chmod(self.store.path, 0o600)
         payload = json.loads(self.store.path.read_text(encoding="utf-8"))
         payload["unexpected"] = True

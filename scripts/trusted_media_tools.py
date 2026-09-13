@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import tempfile
@@ -44,7 +45,7 @@ class TrustedMediaToolStore:
         )
         self._staging_root = Path(staging_root) if staging_root is not None else None
 
-    def enroll(self, kind: str, path: Path, approval_provider=None) -> dict[str, str]:
+    def enroll(self, kind: str, path: Path, approval_provider=None) -> dict[str, str | int]:
         """Approve and persist the identity of one fixed-purpose media tool."""
         self._validate_kinds({kind})
         source = Path(path)
@@ -57,7 +58,7 @@ class TrustedMediaToolStore:
             sha256=digest,
         )
         tools = self._load_config(allow_missing=True)
-        record = {"source_path": canonical, "sha256": digest}
+        record = {"source_path": canonical, "owner_uid": owner_uid, "sha256": digest}
         tools[kind] = record
         self._atomic_write({"version": 1, "tools": tools})
         return record.copy()
@@ -76,7 +77,12 @@ class TrustedMediaToolStore:
         try:
             for kind in sorted(required):
                 record = tools[kind]
-                loaded[kind] = self._stage(kind, record["source_path"], record["sha256"])
+                loaded[kind] = self._stage(
+                    kind,
+                    str(record["source_path"]),
+                    int(record["owner_uid"]),
+                    str(record["sha256"]),
+                )
             return loaded
         except Exception:
             for tool in loaded.values():
@@ -117,7 +123,8 @@ class TrustedMediaToolStore:
             raise TrustedMediaToolError("media tool changed during enrollment")
         return str(canonical), opened_stat.st_uid, digest
 
-    def _load_config(self, *, allow_missing: bool = False) -> dict[str, dict[str, str]]:
+    def _load_config(self, *, allow_missing: bool = False) -> dict[str, dict[str, str | int]]:
+        self._ensure_private_config_directory(create=allow_missing)
         if not self.path.exists():
             if allow_missing:
                 return {}
@@ -125,10 +132,14 @@ class TrustedMediaToolStore:
         if self.path.is_symlink() or not self.path.is_file():
             raise TrustedMediaToolError("trusted media tool config must be a regular file")
         config_stat = self.path.stat()
-        if config_stat.st_uid != os.getuid() or config_stat.st_mode & 0o077:
+        if config_stat.st_uid != os.getuid() or stat.S_IMODE(config_stat.st_mode) != 0o600:
             raise TrustedMediaToolError("trusted media tool config must be user-owned mode 0600")
         parent = self.path.parent
-        if parent.is_symlink() or parent.stat().st_uid != os.getuid() or parent.stat().st_mode & 0o077:
+        if (
+            parent.is_symlink()
+            or parent.stat().st_uid != os.getuid()
+            or stat.S_IMODE(parent.stat().st_mode) != 0o700
+        ):
             raise TrustedMediaToolError(
                 "trusted media tool config directory must be user-owned mode 0700"
             )
@@ -140,25 +151,47 @@ class TrustedMediaToolStore:
             raise TrustedMediaToolError("trusted media tool config has unexpected fields")
         if payload["version"] != 1 or not isinstance(payload["tools"], dict):
             raise TrustedMediaToolError("trusted media tool config version is invalid")
-        tools: dict[str, dict[str, str]] = {}
+        tools: dict[str, dict[str, str | int]] = {}
         for kind, record in payload["tools"].items():
             self._validate_kinds({kind})
-            if not isinstance(record, dict) or set(record) != {"source_path", "sha256"}:
+            if not isinstance(record, dict) or set(record) != {
+                "source_path",
+                "owner_uid",
+                "sha256",
+            }:
                 raise TrustedMediaToolError("trusted media tool record has unexpected fields")
             source_path = record["source_path"]
+            owner_uid = record["owner_uid"]
             digest = record["sha256"]
             if not isinstance(source_path, str) or not Path(source_path).is_absolute():
                 raise TrustedMediaToolError("trusted media tool source path is invalid")
             if not isinstance(digest, str) or _DIGEST.fullmatch(digest) is None:
                 raise TrustedMediaToolError("trusted media tool digest is invalid")
-            tools[kind] = {"source_path": source_path, "sha256": digest}
+            if not isinstance(owner_uid, int) or isinstance(owner_uid, bool):
+                raise TrustedMediaToolError("trusted media tool owner UID is invalid")
+            if owner_uid != os.getuid():
+                raise TrustedMediaToolError("trusted media tool recorded owner does not match user")
+            tools[kind] = {
+                "source_path": source_path,
+                "owner_uid": owner_uid,
+                "sha256": digest,
+            }
         return tools
 
-    def _stage(self, kind: str, source_path: str, expected_sha256: str) -> TrustedMediaTool:
+    def _stage(
+        self, kind: str, source_path: str, expected_owner_uid: int, expected_sha256: str
+    ) -> TrustedMediaTool:
         source = Path(source_path)
-        canonical, _owner_uid, current_sha256 = self._inspect_source(source)
-        if canonical != source_path or not hmac.compare_digest(current_sha256, expected_sha256):
-            raise TrustedMediaToolError(f"trusted {kind} digest or path changed after enrollment")
+        canonical, current_owner_uid, current_sha256 = self._inspect_source(source)
+        if (
+            canonical != source_path
+            or expected_owner_uid != os.getuid()
+            or current_owner_uid != expected_owner_uid
+            or not hmac.compare_digest(current_sha256, expected_sha256)
+        ):
+            raise TrustedMediaToolError(
+                f"trusted {kind} owner, digest, or path changed after enrollment"
+            )
         if self._staging_root is not None:
             self._staging_root.mkdir(parents=True, exist_ok=True)
             os.chmod(self._staging_root, 0o700)
@@ -185,21 +218,71 @@ class TrustedMediaToolStore:
             raise
 
     def _atomic_write(self, payload: dict[str, object]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.path.parent, 0o700)
-        fd, tmp_name = tempfile.mkstemp(prefix=".trusted-media-tools.", dir=self.path.parent)
+        directory_fd = self._open_private_config_directory(create=True)
+        tmp_name = f".trusted-media-tools.{secrets.token_hex(12)}"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(tmp_name, flags, 0o600, dir_fd=directory_fd)
         try:
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, indent=2, sort_keys=True)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(tmp_name, self.path)
-            os.chmod(self.path, 0o600)
+            os.replace(
+                tmp_name,
+                self.path.name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+            )
+            os.fsync(directory_fd)
         except Exception:
-            if os.path.exists(tmp_name):
-                os.unlink(tmp_name)
+            try:
+                os.unlink(tmp_name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
             raise
+        finally:
+            os.close(directory_fd)
+
+    def _ensure_private_config_directory(self, *, create: bool) -> os.stat_result:
+        parent = self.path.parent
+        try:
+            parent_stat = parent.lstat()
+        except FileNotFoundError:
+            if not create:
+                raise TrustedMediaToolError("trusted media tool config directory does not exist")
+            parent.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.mkdir(parent, 0o700)
+            except FileExistsError:
+                pass
+            parent_stat = parent.lstat()
+        if (
+            not stat.S_ISDIR(parent_stat.st_mode)
+            or parent_stat.st_uid != os.getuid()
+            or stat.S_IMODE(parent_stat.st_mode) != 0o700
+        ):
+            raise TrustedMediaToolError(
+                "trusted media tool config directory must be a user-owned non-symlink mode 0700 directory"
+            )
+        return parent_stat
+
+    def _open_private_config_directory(self, *, create: bool) -> int:
+        expected = self._ensure_private_config_directory(create=create)
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            directory_fd = os.open(self.path.parent, flags)
+        except OSError as exc:
+            raise TrustedMediaToolError("trusted media tool config directory is unsafe") from exc
+        opened = os.fstat(directory_fd)
+        if (
+            (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino)
+            or opened.st_uid != os.getuid()
+            or stat.S_IMODE(opened.st_mode) != 0o700
+        ):
+            os.close(directory_fd)
+            raise TrustedMediaToolError("trusted media tool config directory changed")
+        return directory_fd
 
 
 def _digest_opened_file(path: Path) -> tuple[str, os.stat_result]:

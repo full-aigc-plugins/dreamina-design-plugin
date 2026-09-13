@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from scripts.native_approval import NativeApprovalProvider
+from scripts.native_approval import ApprovalDeniedError, NativeApprovalProvider
 
 
 class NativeApprovalProviderTests(unittest.TestCase):
@@ -28,6 +28,15 @@ class NativeApprovalProviderTests(unittest.TestCase):
                 "sha256": "a" * 64,
             },
         )
+
+    def test_unavailable_native_dialog_error_is_action_neutral(self) -> None:
+        with patch("scripts.native_approval.platform.system", return_value="Linux"):
+            with self.assertRaises(ApprovalDeniedError) as raised:
+                NativeApprovalProvider._confirm_dialog("trust local tool", "approve")
+        message = str(raised.exception)
+        self.assertNotIn("paid", message)
+        self.assertNotIn("submission", message)
+        self.assertIn("guarded action", message)
 
 
 if __name__ == "__main__":
