@@ -14,7 +14,7 @@ import stat
 import tempfile
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
@@ -301,6 +301,8 @@ class VideoBatchAllowance:
         quote_resolver: Any | None = None,
         project_store: Any | None = None,
         rights_service: Any | None = None,
+        now: Any | None = None,
+        quote_max_age_seconds: int = 86400,
     ) -> None:
         self._root = Path(root)
         self._allowances = self._root / "allowances"
@@ -311,7 +313,12 @@ class VideoBatchAllowance:
         self._owns_quote_resolver = quote_resolver is None
         self._project_store = project_store
         self._rights_service = rights_service
+        self._now = now or (lambda: datetime.now(timezone.utc))
+        if isinstance(quote_max_age_seconds, bool) or not isinstance(quote_max_age_seconds, int) or quote_max_age_seconds < 1:
+            raise ValueError("quote_max_age_seconds must be a positive integer")
+        self._quote_max_age = timedelta(seconds=quote_max_age_seconds)
         self._thread_lock = threading.RLock()
+        self._closed = False
         directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
         self._parent_fd = self._root_fd = self._allowances_fd = self._activations_fd = None
         try:
@@ -382,19 +389,23 @@ class VideoBatchAllowance:
             raise BatchScopeError("allowance directory initialization is unsafe") from exc
 
     def close(self) -> None:
-        """Close every pinned descriptor owned by this allowance store."""
-        for field in ("_activations_fd", "_allowances_fd", "_root_fd", "_parent_fd"):
-            descriptor = getattr(self, field, None)
-            if descriptor is not None:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
-                setattr(self, field, None)
-        if self._owns_quote_resolver and isinstance(self._quote_resolver, LocalQuoteResolver):
-            self._quote_resolver.close()
-        if self._owns_seal_key_store and isinstance(self._seal_key_store, FileSealKeyStore):
-            self._seal_key_store.close()
+        """Wait for local operations, then idempotently close owned descriptors."""
+        with self._thread_lock:
+            if self._closed:
+                return
+            self._closed = True
+            for field in ("_activations_fd", "_allowances_fd", "_root_fd", "_parent_fd"):
+                descriptor = getattr(self, field, None)
+                if descriptor is not None:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+                    setattr(self, field, None)
+            if self._owns_quote_resolver and isinstance(self._quote_resolver, LocalQuoteResolver):
+                self._quote_resolver.close()
+            if self._owns_seal_key_store and isinstance(self._seal_key_store, FileSealKeyStore):
+                self._seal_key_store.close()
 
     def activate(self, quote: Mapping[str, Any], approver: Any) -> str:
         """Obtain native approval once and persist the exact batch allowance."""
@@ -449,6 +460,7 @@ class VideoBatchAllowance:
             try:
                 # Revalidate immediately before publication: the native dialog may have
                 # remained open across expiry or a receipt/design replacement.
+                self._validate_quote_for_activation(quote_copy)
                 if self._copy_json(self._quote_resolver.resolve(copy.deepcopy(quote_identity))) != quote_copy:
                     raise BatchScopeError("persisted exact quote changed during native confirmation")
                 self._revalidate_rights(quote_copy)
@@ -578,6 +590,18 @@ class VideoBatchAllowance:
             validate_batch_quote(quote)
         except (ContractValidationError, PlanningError, TypeError, ValueError) as exc:
             raise BatchScopeError("invalid batch quote") from exc
+        try:
+            quoted_at = datetime.fromisoformat(str(quote["quoted_at"]).replace("Z", "+00:00")).astimezone(timezone.utc)
+            recorded_at = datetime.fromisoformat(str(quote["cost_basis"]["recorded_at"]).replace("Z", "+00:00")).astimezone(timezone.utc)
+            current = self._now()
+            if isinstance(current, str):
+                current = datetime.fromisoformat(current.replace("Z", "+00:00"))
+            current = current.astimezone(timezone.utc)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise BatchScopeError("quote freshness evidence is invalid") from exc
+        for label, timestamp in (("quoted_at", quoted_at), ("cost_basis.recorded_at", recorded_at)):
+            if timestamp > current + timedelta(minutes=5) or current - timestamp > self._quote_max_age:
+                raise BatchScopeError(f"{label} is stale or from the future")
         fingerprints = [
             attempt["request_fingerprint"]
             for item in quote["items"]
@@ -585,6 +609,13 @@ class VideoBatchAllowance:
         ]
         if len(fingerprints) != len(set(fingerprints)):
             raise BatchScopeError("request fingerprints must be unique across the approved batch")
+        tuples = [
+            (item["shot_id"], attempt["attempt_number"])
+            for item in quote["items"]
+            for attempt in item["attempts"]
+        ]
+        if len(tuples) != len(set(tuples)):
+            raise BatchScopeError("shot attempt tuples must be unique within the approved batch")
         if quote["creative_mode"] == "authorized_replication":
             if not isinstance(quote.get("rights_receipt_id"), str) or not isinstance(quote.get("rights_receipt_fingerprint"), str):
                 raise BatchScopeError("replication quote lacks exact rights receipt binding")
@@ -792,11 +823,24 @@ class VideoBatchAllowance:
         self._atomic_write_at(directory_fd, path.name, payload, allowance_id=allowance_id, operation=operation)
 
     def _revalidate_rights(self, quote: Mapping[str, Any]) -> None:
-        if quote["creative_mode"] == "original_redesign":
-            return
-        if self._project_store is None or self._rights_service is None:
-            raise BatchScopeError("authorized replication requires trusted rights revalidation")
+        if self._project_store is None:
+            raise BatchScopeError("activation requires trusted durable design revalidation")
         try:
+            design = self._project_store.read_version(
+                quote["project_id"], "redesign", quote["design_version"], "video_redesign.schema.json"
+            )
+            expected_design = {
+                "project_id": quote["project_id"], "version": quote["design_version"],
+                "design_fingerprint": quote["design_fingerprint"],
+                "source_sha256": quote["source_sha256"],
+                "analysis_version": quote["analysis_version"],
+            }
+            if any(design.get(field) != value for field, value in expected_design.items()):
+                raise BatchScopeError("durable design binding changed")
+            if quote["creative_mode"] == "original_redesign":
+                return
+            if self._rights_service is None:
+                raise BatchScopeError("authorized replication requires trusted rights revalidation")
             receipt = self._project_store.find_version_by_field(
                 quote["project_id"], "rights_receipt", field="receipt_id",
                 value=quote["rights_receipt_id"], schema_name="video_rights_receipt.schema.json",
@@ -809,12 +853,7 @@ class VideoBatchAllowance:
                 if field != "receipt_id"
             ) or receipt.get("receipt_id") != quote["rights_receipt_id"]:
                 raise BatchScopeError("durable rights receipt binding changed")
-            design = self._project_store.read_version(
-                quote["project_id"], "redesign", quote["design_version"], "video_redesign.schema.json"
-            )
             payload = design["payload"]
-            if design["design_fingerprint"] != quote["design_fingerprint"]:
-                raise BatchScopeError("durable design fingerprint changed")
             self._rights_service.assert_scope(receipt, required=set(payload["preserve"]), binding={
                 "project_id": quote["project_id"], "source_sha256": quote["source_sha256"],
                 "creative_mode": quote["creative_mode"], "design_fingerprint": quote["design_fingerprint"],
@@ -841,6 +880,10 @@ class VideoBatchAllowance:
             return False
 
     def _assert_root_identity(self) -> None:
+        if any(getattr(self, field, None) is None for field in (
+            "_parent_fd", "_root_fd", "_allowances_fd", "_activations_fd"
+        )):
+            raise BatchScopeError("allowance store is closed")
         current_parent = self._root.parent.lstat()
         pinned_parent = os.fstat(self._parent_fd)
         if (
@@ -876,9 +919,21 @@ class VideoBatchAllowance:
 
     @staticmethod
     def _validate_history(allowance: Mapping[str, Any]) -> None:
+        allowance_history = allowance["history"]
+        if (
+            not allowance_history
+            or allowance_history[0] != {"state": "active", "at": allowance["activated_at"]}
+            or any(event.get("state") == "active" for event in allowance_history[1:])
+        ):
+            raise BatchScopeError("allowance history must have exactly one initial active event")
         reservation_ids: set[str] = set()
         fingerprints: set[str] = set()
         tuples: set[tuple[str, int]] = set()
+        histories: dict[str, list[Mapping[str, Any]]] = {}
+        approved = {
+            (request["shot_id"], request["attempt"], request["request_fingerprint"], request["credit_ceiling"])
+            for request in allowance["requests"]
+        }
         for reservation in allowance["reservations"]:
             reservation_id = reservation["reservation_id"]
             fingerprint = reservation["request_fingerprint"]
@@ -889,23 +944,47 @@ class VideoBatchAllowance:
             fingerprints.add(fingerprint)
             tuples.add(identity)
             history = reservation["history"]
-            if not history or history[0].get("state") != "reserved":
+            if (
+                (reservation["shot_id"], reservation["attempt"], fingerprint, reservation["credit_ceiling"]) not in approved
+                or reservation.get("allowance_id") != allowance["allowance_id"]
+            ):
+                raise BatchScopeError("reservation is not an exact approved request")
+            if not history or history[0] != {"state": "reserved", "at": reservation["reserved_at"]}:
                 raise BatchScopeError("reservation history must begin at reserved")
             terminal = [event for event in history[1:] if event.get("state") in {"committed", "ambiguous"}]
-            if reservation["state"] == "reserved" and terminal:
+            if reservation["state"] == "reserved" and (terminal or len(history) != 1):
                 raise BatchScopeError("reserved entry has terminal history")
             if reservation["state"] in {"committed", "ambiguous"} and (
-                len(terminal) != 1 or terminal[0].get("state") != reservation["state"]
+                len(history) != 2 or len(terminal) != 1 or terminal[0].get("state") != reservation["state"]
             ):
                 raise BatchScopeError("terminal reservation history is inconsistent")
+            if reservation["state"] == "committed" and terminal[0].get("submit_id") != reservation.get("submit_id"):
+                raise BatchScopeError("committed submit identity differs from history")
             if reservation["state"] == "ambiguous":
                 expected_action = "query" if reservation.get("submit_id") else "manual_review"
-                if reservation.get("required_action") != expected_action:
+                if (
+                    reservation.get("required_action") != expected_action
+                    or terminal[0].get("required_action") != expected_action
+                    or terminal[0].get("error_code") != reservation.get("error_code")
+                    or terminal[0].get("submit_id") != reservation.get("submit_id")
+                ):
                     raise BatchScopeError("ambiguous recovery action is inconsistent")
-        for event in allowance["history"]:
+            histories[reservation_id] = history
+        consumed_events = {reservation_id: 0 for reservation_id in reservation_ids}
+        for event in allowance_history[1:]:
             linked = event.get("reservation_id")
-            if linked is not None and linked not in reservation_ids:
+            if linked not in reservation_ids:
                 raise BatchScopeError("allowance history references an unknown reservation")
+            index = consumed_events[linked]
+            history = histories[linked]
+            if index >= len(history) or event != {**history[index], "reservation_id": linked}:
+                raise BatchScopeError("allowance and reservation histories disagree or are reordered")
+            consumed_events[linked] += 1
+        if any(consumed_events[reservation_id] != len(histories[reservation_id]) for reservation_id in reservation_ids):
+            raise BatchScopeError("allowance history is truncated")
+        exhausted = len(allowance["reservations"]) == len(allowance["requests"])
+        if (allowance["state"] == "exhausted") != exhausted:
+            raise BatchScopeError("allowance exhausted state does not match consumed requests")
 
     @staticmethod
     def _canonical_bytes(payload: Mapping[str, Any]) -> bytes:
@@ -914,6 +993,8 @@ class VideoBatchAllowance:
     @contextmanager
     def _exclusive_lock(self) -> Iterator[None]:
         with self._thread_lock:
+            if self._closed:
+                raise BatchScopeError("allowance store is closed")
             self._assert_root_identity()
             fcntl.flock(self._root_fd, fcntl.LOCK_EX)
             try:

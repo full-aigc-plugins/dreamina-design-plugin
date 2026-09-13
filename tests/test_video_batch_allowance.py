@@ -7,6 +7,7 @@ import os
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -65,6 +66,7 @@ class FakeRightsService:
 
 
 def make_allowances(root: Path, key_path: Path, **kwargs) -> VideoBatchAllowance:
+    kwargs.setdefault("now", lambda: datetime(2026, 9, 14, 1, tzinfo=timezone.utc))
     return VideoBatchAllowance(
         root, seal_key_store=FileSealKeyStore(key_path),
         project_store=FakeProjectStore(), rights_service=FakeRightsService(), **kwargs,
@@ -671,6 +673,15 @@ class VideoBatchAllowanceTests(unittest.TestCase):
         self.assertEqual(second["shot_id"], "S01")
         self.assertEqual(second["attempt"], 1)
 
+    def test_duplicate_shot_attempt_tuple_inside_one_quote_is_rejected(self) -> None:
+        corrupt = copy.deepcopy(self.quote)
+        corrupt["items"][0]["attempts"][1]["attempt_number"] = 1
+        corrupt["quote_fingerprint"] = canonical_fingerprint(
+            {key: value for key, value in corrupt.items() if key != "quote_fingerprint"}
+        )
+        with self.assertRaises(BatchScopeError):
+            self.allowances.activate(corrupt, self.approver)
+
     def test_symlink_root_and_replaced_allowances_directory_fail_closed(self) -> None:
         target = Path(self.temp.name) / "symlink-target"
         target.mkdir(mode=0o700)
@@ -908,6 +919,96 @@ class VideoBatchAllowanceTests(unittest.TestCase):
             thread.join(timeout=5)
         self.assertEqual(failures, [])
         self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+
+    def test_close_is_idempotent_and_future_operations_fail_with_typed_error(self) -> None:
+        allowance_id = self.activate()
+        self.allowances.close()
+        self.allowances.close()
+        with self.assertRaises(BatchScopeError):
+            self.allowances.get(allowance_id)
+
+    def test_original_and_replication_design_are_reloaded_after_dialog(self) -> None:
+        for mode in ("authorized_replication", "original_redesign"):
+            with self.subTest(mode=mode):
+                quote = copy.deepcopy(self.quote)
+                quote["creative_mode"] = mode
+                if mode == "original_redesign":
+                    quote.pop("rights_receipt_id")
+                    quote.pop("rights_receipt_fingerprint")
+                quote["quote_fingerprint"] = canonical_fingerprint(
+                    {key: value for key, value in quote.items() if key != "quote_fingerprint"}
+                )
+
+                class MutableDesignStore(FakeProjectStore):
+                    removed = False
+
+                    def read_version(inner, *args, **kwargs):
+                        if inner.removed:
+                            raise FileNotFoundError("design removed")
+                        return super().read_version(*args, **kwargs)
+
+                store = MutableDesignStore()
+
+                class RemovingApprover(RecordingApprover):
+                    def confirm_video_batch(inner, request):
+                        token = super().confirm_video_batch(request)
+                        store.removed = True
+                        return token
+
+                target_root = Path(self.temp.name) / f"design-{mode}"
+                allowances = VideoBatchAllowance(
+                    target_root,
+                    seal_key_store=FileSealKeyStore(Path(self.temp.name) / f"{mode}.key"),
+                    project_store=store, rights_service=FakeRightsService(),
+                )
+                with self.assertRaises(BatchScopeError):
+                    allowances.activate(quote, RemovingApprover())
+                self.assertEqual(list((target_root / "allowances").glob("*.json")), [])
+
+    def test_quote_freshness_is_rechecked_after_native_dialog(self) -> None:
+        current = [datetime(2026, 9, 14, 1, tzinfo=timezone.utc)]
+
+        class AdvancingApprover(RecordingApprover):
+            def confirm_video_batch(inner, request):
+                token = super().confirm_video_batch(request)
+                current[0] = datetime(2026, 9, 16, 1, tzinfo=timezone.utc)
+                return token
+
+        allowances = VideoBatchAllowance(
+            Path(self.temp.name) / "freshness",
+            seal_key_store=FileSealKeyStore(Path(self.temp.name) / "freshness.key"),
+            project_store=FakeProjectStore(), rights_service=FakeRightsService(),
+            now=lambda: current[0],
+        )
+        with self.assertRaises(BatchScopeError):
+            allowances.activate(self.quote, AdvancingApprover())
+
+    def test_sealed_history_rejects_orphans_duplicates_truncation_and_wrong_exhaustion(self) -> None:
+        mutations = (
+            lambda state: state["history"].append({"state": "reserved", "at": state["activated_at"], "reservation_id": "br_" + "f" * 32}),
+            lambda state: state["history"].append(copy.deepcopy(state["history"][-1])),
+            lambda state: state["history"].pop(),
+            lambda state: state.update({"state": "exhausted"}),
+        )
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                root = Path(self.temp.name) / f"history-{index}"
+                key_path = Path(self.temp.name) / f"history-{index}.key"
+                allowances = make_allowances(root, key_path)
+                allowance_id = allowances.activate(self.quote, self.approver)
+                attempt = self.quote["items"][0]["attempts"][0]
+                allowances.reserve(
+                    allowance_id, shot_id="S01", attempt=1,
+                    request_fingerprint=attempt["request_fingerprint"],
+                )
+                path = root / "allowances" / f"{allowance_id}.json"
+                state = json.loads(path.read_text())
+                mutate(state)
+                allowances._seal(state, FileSealKeyStore(key_path).load(allow_create=False))
+                path.write_text(json.dumps(state))
+                path.chmod(0o600)
+                with self.assertRaises(BatchScopeError):
+                    allowances.get(allowance_id)
 
 
 if __name__ == "__main__":
