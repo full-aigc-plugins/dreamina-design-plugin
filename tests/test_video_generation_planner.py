@@ -86,10 +86,10 @@ class VideoGenerationPlannerTests(unittest.TestCase):
         ]
         for candidate, expected in cases:
             with self.subTest(expected=expected):
-                self.assertEqual(self.planner.plan_shot(candidate, self.snapshot)["mode"], expected)
+                self.assertEqual(self.planner._plan_shot(candidate, self.snapshot)["mode"], expected)
 
     def test_quote_has_literal_fingerprints_and_total_for_every_enumerated_attempt(self):
-        quote = self.planner.plan(design(), self.snapshot, self.cost)
+        quote = self.planner._plan_materialized(design(), self.snapshot, self.cost)
         self.assertEqual(quote["items"][0]["request_fingerprints"], [
             "213655663daf0b749b0c05832c6a9e9a9ee6df240ececc8101ca7b91b8dfd5e6",
             "be80d8b1ee18282cff980f0b99579e6b48189fdacd07fc8c17866ce06047257f",
@@ -104,14 +104,14 @@ class VideoGenerationPlannerTests(unittest.TestCase):
 
     def test_unknown_price_blocks_instead_of_inventing_cost(self):
         with self.assertRaisesRegex(CostBasisError, "explicit operator ceiling"):
-            self.planner.plan(design(), self.snapshot, None)
+            self.planner._plan_materialized(design(), self.snapshot, None)
 
     def test_operator_cost_requires_source_and_timestamp(self):
         for missing in ("source", "recorded_at"):
             bad = dict(self.cost)
             del bad[missing]
             with self.subTest(missing=missing), self.assertRaises(CostBasisError):
-                self.planner.plan(design(), self.snapshot, bad)
+                self.planner._plan_materialized(design(), self.snapshot, bad)
 
     def test_unadvertised_capabilities_fail_closed(self):
         for change in (
@@ -119,32 +119,47 @@ class VideoGenerationPlannerTests(unittest.TestCase):
             {"duration_seconds": 31}, {"ratio": "21:9"},
         ):
             with self.subTest(change=change), self.assertRaises(UnsupportedCapabilityError):
-                self.planner.plan(design([shot(**change)]), self.snapshot, self.cost)
+                self.planner._plan_materialized(design([shot(**change)]), self.snapshot, self.cost)
 
     def test_snapshot_must_advertise_every_constraint_used_by_planning(self):
         missing_model_bounds = copy.deepcopy(self.snapshot)
         del missing_model_bounds["models"][0]["duration_max_seconds"]
         with self.assertRaisesRegex(UnsupportedCapabilityError, "duration bounds"):
-            self.planner.plan(design(), missing_model_bounds, self.cost)
+            self.planner._plan_materialized(design(), missing_model_bounds, self.cost)
 
         missing_multiframe_bounds = copy.deepcopy(self.snapshot)
         del missing_multiframe_bounds["mode_limits"]
         storyboard = [ref("a.png", "frame"), ref("b.png", "frame")]
         with self.assertRaisesRegex(UnsupportedCapabilityError, "duration bounds"):
-            self.planner.plan(
+            self.planner._plan_materialized(
                 design([shot(storyboard=storyboard, references=[], duration_seconds=4)]),
                 missing_multiframe_bounds,
                 self.cost,
             )
 
-    def test_unicode_base_and_retry_use_shared_canonical_fingerprint(self):
-        quote = self.planner.plan(
+    def test_unicode_base_and_retry_keep_legacy_video_fingerprint_encoding(self):
+        quote = self.planner._plan_materialized(
             design([shot(prompt="晨雾中的蓝色工作室")]), self.snapshot, self.cost
         )
         self.assertEqual(quote["items"][0]["request_fingerprints"], [
-            "0a8030925a839f0877da3effcf931da689a2aa114fc0c58b818eedd10f7c72f3",
-            "b69ae47f788ea137e1057859e72a7afd1cd94311c6f5e2fff4fd630478340fa2",
+            "f12e3b94d504052c1448f9faf982a393129e73bcfcccc85a834667d48628fb86",
+            "37ad109f93ea11c00045e4b3431d05b8d244b7715b15fd4f068b1b62c7507080",
         ])
+
+    def test_live_pricing_must_be_fresh_and_consistent_with_snapshot_time(self):
+        cases = {
+            "stale": "2026-09-12T00:00:00Z",
+            "future": "2026-09-14T02:06:00Z",
+            "later than snapshot": "2026-09-14T01:00:00Z",
+        }
+        for label, captured_at in cases.items():
+            live = copy.deepcopy(self.snapshot)
+            live["pricing"] = {"credit_ceiling_per_attempt": 2, "source": "cli", "captured_at": captured_at}
+            with self.subTest(label=label), self.assertRaisesRegex(CostBasisError, "pricing"):
+                self.planner._plan_materialized(design(), live, None)
+        live = copy.deepcopy(self.snapshot)
+        live["pricing"] = {"credit_ceiling_per_attempt": 2, "source": "cli", "captured_at": "2026-09-14T00:03:00Z"}
+        self.assertEqual(self.planner._plan_materialized(design(), live, None)["cost_basis"]["credit_ceiling"], 2)
 
     def test_cost_timestamps_require_strict_rfc3339_timezone(self):
         valid = ("2026-09-14T01:02:03Z", "2026-09-14T09:02:03+08:00")
@@ -152,21 +167,21 @@ class VideoGenerationPlannerTests(unittest.TestCase):
         for value in valid:
             candidate = dict(self.cost, recorded_at=value)
             with self.subTest(valid=value):
-                self.assertEqual(self.planner.plan(design(), self.snapshot, candidate)["quoted_at"], value)
+                self.assertEqual(self.planner._plan_materialized(design(), self.snapshot, candidate)["quoted_at"], value)
         for value in invalid:
             candidate = dict(self.cost, recorded_at=value)
             with self.subTest(invalid=value), self.assertRaisesRegex(CostBasisError, "RFC3339"):
-                self.planner.plan(design(), self.snapshot, candidate)
+                self.planner._plan_materialized(design(), self.snapshot, candidate)
 
         live = copy.deepcopy(self.snapshot)
         live["pricing"] = {"credit_ceiling_per_attempt": 2, "source": "cli", "captured_at": "bad"}
         with self.assertRaisesRegex(CostBasisError, "RFC3339"):
-            self.planner.plan(design(), live, None)
+            self.planner._plan_materialized(design(), live, None)
 
         missing_reference_limit = copy.deepcopy(self.snapshot)
         del missing_reference_limit["models"][0]["max_references"]
         with self.assertRaisesRegex(UnsupportedCapabilityError, "reference limit"):
-            self.planner.plan(
+            self.planner._plan_materialized(
                 design([shot(references=[ref("subject.png", "subject")])]),
                 missing_reference_limit,
                 self.cost,
@@ -175,14 +190,14 @@ class VideoGenerationPlannerTests(unittest.TestCase):
         missing_audio_limit = copy.deepcopy(self.snapshot)
         del missing_audio_limit["models"][0]["audio_reference_max_seconds"]
         with self.assertRaisesRegex(UnsupportedCapabilityError, "audio reference duration"):
-            self.planner.plan(
+            self.planner._plan_materialized(
                 design([shot(references=[ref("audio.wav", "audio", duration_seconds=4)])]),
                 missing_audio_limit,
                 self.cost,
             )
 
     def test_quote_counts_and_fingerprint_are_validated_against_materialized_tasks(self):
-        quote = self.planner.plan(design(), self.snapshot, self.cost)
+        quote = self.planner._plan_materialized(design(), self.snapshot, self.cost)
         self.planner.validate_quote(quote)
         for field in ("item_count", "task_count"):
             tampered = copy.deepcopy(quote)
@@ -196,7 +211,7 @@ class VideoGenerationPlannerTests(unittest.TestCase):
 
     def test_storyboard_cannot_silently_discard_other_references(self):
         with self.assertRaisesRegex(PlanningError, "storyboard cannot be combined"):
-            self.planner.plan_shot(
+            self.planner._plan_shot(
                 shot(
                     storyboard=[ref("a.png", "frame"), ref("b.png", "frame")],
                     references=[ref("audio.wav", "audio", duration_seconds=4)],
@@ -204,18 +219,24 @@ class VideoGenerationPlannerTests(unittest.TestCase):
                 self.snapshot,
             )
 
+    def test_duplicate_shot_ids_are_rejected_before_quote(self):
+        with self.assertRaisesRegex(PlanningError, "duplicate shot id"):
+            self.planner._plan_materialized(
+                design([shot(id="S01"), shot(id="S01")]), self.snapshot, self.cost
+            )
+
     def test_max_attempts_and_retry_vocabulary_are_closed(self):
         for attempts in (False, True, 0, 4, 1.5, "2"):
             with self.subTest(attempts=attempts), self.assertRaises(PlanningError):
-                self.planner.plan(design([shot(max_attempts=attempts)]), self.snapshot, self.cost)
+                self.planner._plan_materialized(design([shot(max_attempts=attempts)]), self.snapshot, self.cost)
         with self.assertRaisesRegex(PlanningError, "closed repair directive"):
-            self.planner.plan(design([shot(repair_directives=["make it nicer"])]), self.snapshot, self.cost)
+            self.planner._plan_materialized(design([shot(repair_directives=["make it nicer"])]), self.snapshot, self.cost)
         with self.assertRaisesRegex(PlanningError, "free-form retry prompt"):
-            self.planner.plan(design([shot(retry_prompt="make it nicer")]), self.snapshot, self.cost)
+            self.planner._plan_materialized(design([shot(retry_prompt="make it nicer")]), self.snapshot, self.cost)
 
     def test_quote_is_detached_from_mutable_inputs_and_binds_context(self):
         source = design()
-        quote = self.planner.plan(source, self.snapshot, self.cost)
+        quote = self.planner._plan_materialized(source, self.snapshot, self.cost)
         source["shots"][0]["prompt"] = "tampered"
         self.assertEqual(quote["project_id"], "vp_" + "1" * 24)
         self.assertEqual(quote["design_fingerprint"], "3" * 64)
@@ -227,7 +248,7 @@ class VideoGenerationPlannerTests(unittest.TestCase):
         self.assertNotEqual(quote["items"][0]["attempts"][0]["request"]["prompt"], "tampered")
 
     def test_quote_declares_target_duration_and_reserved_retries(self):
-        quote = self.planner.plan(
+        quote = self.planner._plan_materialized(
             design([shot(id="S01", duration_seconds=4), shot(id="S02", duration_seconds=6)]),
             self.snapshot,
             self.cost,
@@ -237,7 +258,7 @@ class VideoGenerationPlannerTests(unittest.TestCase):
 
     def test_output_profile_is_h264_only(self):
         with self.assertRaisesRegex(Exception, "h264"):
-            self.planner.plan(
+            self.planner._plan_materialized(
                 design(output_profile={"container": "mp4", "codec": "h265"}),
                 self.snapshot,
                 self.cost,

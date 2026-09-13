@@ -89,15 +89,16 @@ def validate_batch_quote(quote: Mapping[str, Any]) -> None:
 class VideoGenerationPlanner:
     """Materialize every base/retry request without approving or submitting it."""
 
-    def __init__(self, reference_policy: Any | None = None, *, project_store: Any | None = None, now: Any | None = None, snapshot_max_age_seconds: int = 86400) -> None:
+    def __init__(self, reference_policy: Any | None = None, *, project_store: Any | None = None, capability_provider: Any | None = None, now: Any | None = None, snapshot_max_age_seconds: int = 86400) -> None:
         self._reference_policy = reference_policy
         self._project_store = project_store
+        self._capability_provider = capability_provider
         self._now = now or (lambda: datetime.now(timezone.utc))
         if isinstance(snapshot_max_age_seconds, bool) or not isinstance(snapshot_max_age_seconds, int) or snapshot_max_age_seconds < 1:
             raise ValueError("snapshot_max_age_seconds must be a positive integer")
         self._snapshot_max_age = timedelta(seconds=snapshot_max_age_seconds)
 
-    def plan_shot(self, shot: Mapping[str, Any], snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    def _plan_shot(self, shot: Mapping[str, Any], snapshot: Mapping[str, Any]) -> dict[str, Any]:
         """Choose one mode deterministically and build its exact base request."""
         storyboard = list(shot.get("storyboard", []))
         references = copy.deepcopy(list(shot.get("references", [])))
@@ -150,7 +151,7 @@ class VideoGenerationPlanner:
             raise UnsupportedCapabilityError(str(exc)) from exc
         return {"shot_id": str(shot.get("id", "")), "mode": mode, "request": request}
 
-    def plan(
+    def _plan_materialized(
         self,
         design: Mapping[str, Any],
         snapshot: Mapping[str, Any],
@@ -184,7 +185,7 @@ class VideoGenerationPlanner:
             if any(key not in REPAIR_DIRECTIVES for key in repairs):
                 raise PlanningError("retry must use a closed repair directive")
 
-            planned = self.plan_shot(shot, snapshot)
+            planned = self._plan_shot(shot, snapshot)
             attempts = [self._attempt(1, None, planned["request"], ceiling)]
             for index, repair_key in enumerate(repairs, start=2):
                 retry = copy.deepcopy(planned["request"])
@@ -224,14 +225,30 @@ class VideoGenerationPlanner:
         validate_batch_quote(quote)
         return copy.deepcopy(quote)
 
-    def plan_persisted(
-        self, project_id: str, design_version: str, snapshot: Mapping[str, Any],
-        cost_basis: Mapping[str, Any] | None, *, generation: Mapping[str, Mapping[str, Any]],
+    def plan(
+        self, project_id: str, design_version: str, cost_basis: Mapping[str, Any] | None, *, generation: Mapping[str, Mapping[str, Any]],
         output_destination: str, output_profile: Mapping[str, Any],
     ) -> dict[str, Any]:
         """Plan from one safely read committed design and its current evidence."""
         if self._project_store is None:
             raise PlanningError("persisted planning requires a VideoProjectStore")
+        if self._capability_provider is None:
+            raise PlanningError("production planning requires a trusted capability provider")
+        evidence = self._capability_provider.capture()
+        if not isinstance(evidence, Mapping) or set(evidence) != {"snapshot", "identity_receipt"}:
+            raise PlanningError("trusted capability evidence must be complete and closed")
+        snapshot = evidence["snapshot"]
+        receipt = evidence["identity_receipt"]
+        if not isinstance(snapshot, Mapping) or not isinstance(receipt, Mapping):
+            raise PlanningError("trusted capability evidence is invalid")
+        expected_receipt = {
+            "cli_version": snapshot.get("cli_version"),
+            "cli_commit": snapshot.get("cli_commit"),
+            "snapshot_fingerprint": canonical_fingerprint(snapshot),
+            "captured_at": snapshot.get("captured_at"),
+        }
+        if dict(receipt) != expected_receipt:
+            raise PlanningError("capability identity receipt does not bind the snapshot")
         from scripts.video_redesign_service import VideoRedesignService
         from scripts.video_rights_service import VideoRightsService
 
@@ -266,7 +283,7 @@ class VideoGenerationPlanner:
             "audio_policy": project["audio_policy"], "output_destination": output_destination,
             "output_profile": copy.deepcopy(dict(output_profile)), "shots": shots,
         }
-        return self.plan(materialized, snapshot, cost_basis)
+        return self._plan_materialized(materialized, snapshot, cost_basis)
 
     def _validate_snapshot(self, snapshot: Mapping[str, Any]) -> None:
         try:
@@ -347,8 +364,7 @@ class VideoGenerationPlanner:
             "credit_ceiling": ceiling,
         }
 
-    @staticmethod
-    def _resolve_cost(snapshot: Mapping[str, Any], cost_basis: Mapping[str, Any] | None) -> tuple[int, dict[str, Any]]:
+    def _resolve_cost(self, snapshot: Mapping[str, Any], cost_basis: Mapping[str, Any] | None) -> tuple[int, dict[str, Any]]:
         if cost_basis is not None:
             if cost_basis.get("kind") != "operator_ceiling" or not cost_basis.get("source") or not cost_basis.get("recorded_at"):
                 raise CostBasisError("explicit operator ceiling requires source and recorded_at")
@@ -363,6 +379,21 @@ class VideoGenerationPlanner:
             ceiling = pricing.get("credit_ceiling_per_attempt")
             if isinstance(ceiling, int) and not isinstance(ceiling, bool) and ceiling > 0 and pricing.get("source") and pricing.get("captured_at"):
                 captured_at = _require_rfc3339(pricing["captured_at"], label="captured_at")
+                price_time = datetime.fromisoformat(captured_at.replace("Z", "+00:00")).astimezone(timezone.utc)
+                snapshot_time = datetime.fromisoformat(
+                    _require_rfc3339(snapshot.get("captured_at"), label="snapshot captured_at").replace("Z", "+00:00")
+                ).astimezone(timezone.utc)
+                current = self._now()
+                if isinstance(current, str):
+                    current = datetime.fromisoformat(
+                        _require_rfc3339(current, label="now").replace("Z", "+00:00")
+                    )
+                current = current.astimezone(timezone.utc)
+                future_skew = timedelta(minutes=5)
+                if price_time > current + future_skew or current - price_time > self._snapshot_max_age:
+                    raise CostBasisError("pricing captured_at is stale or from the future")
+                if price_time > snapshot_time + future_skew or snapshot_time - price_time > self._snapshot_max_age:
+                    raise CostBasisError("pricing captured_at is inconsistent with snapshot captured_at")
                 return ceiling, {
                     "kind": "live_snapshot", "credit_ceiling": ceiling, "currency": "credits",
                     "source": pricing["source"], "recorded_at": captured_at,
