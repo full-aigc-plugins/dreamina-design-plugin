@@ -366,19 +366,72 @@ class VideoService:
                 request_fingerprint=fingerprint, reason="APPROVAL_REJECTED"
             )
             raise ApprovalMismatchError(str(exc)) from exc
+        return self._invoke_once(
+            request, adapter=adapter, session_id=session_id,
+            request_fingerprint=fingerprint, begin_intent=False,
+        )
+
+    def submit_with_batch_allowance(
+        self,
+        request: Mapping[str, Any],
+        *,
+        adapter: Any,
+        allowance: Any,
+        allowance_id: str,
+        shot_id: str,
+        attempt: int,
+    ) -> dict[str, Any]:
+        """Reserve an exact approved batch request and cross the provider boundary once."""
+        if self._operation_ledger is None:
+            raise VideoServiceError("ledger_dir is required for batch submission")
+        fingerprint = build_video_request_fingerprint(dict(request))
+        reservation = allowance.reserve(
+            allowance_id, shot_id=shot_id, attempt=attempt,
+            request_fingerprint=fingerprint,
+        )
+        try:
+            result = self._invoke_once(
+                request, adapter=adapter, session_id=allowance_id,
+                request_fingerprint=fingerprint, begin_intent=True,
+            )
+        except Exception as exc:
+            allowance.mark_ambiguous(
+                reservation["reservation_id"], type(exc).__name__.upper()
+            )
+            raise
+        committed = allowance.commit(reservation["reservation_id"], result["submit_id"])
+        return {**result, "reservation": committed}
+
+    def _invoke_once(
+        self,
+        request: Mapping[str, Any],
+        *,
+        adapter: Any,
+        session_id: str,
+        request_fingerprint: str,
+        begin_intent: bool,
+    ) -> dict[str, Any]:
+        """Persist an invocation intent, invoke once, and durably bind its submit id."""
+        # Direct submission already persisted its intent before approval. Batch
+        # submission reaches this seam immediately after its durable reservation.
+        if begin_intent:
+            self._operation_ledger.begin_submission(
+                session_id=session_id, mode=str(request["mode"]),
+                request_fingerprint=request_fingerprint,
+            )
         argv = self._request_to_argv(request)
         try:
             result: DreaminaResult = adapter.run(argv)
         except Exception as exc:
             self._operation_ledger.complete_submission_intent(
-                request_fingerprint=fingerprint,
+                request_fingerprint=request_fingerprint,
                 submit_id=None,
                 error_code=type(exc).__name__,
             )
             raise
         if not result.submit_id:
             self._operation_ledger.complete_submission_intent(
-                request_fingerprint=fingerprint,
+                request_fingerprint=request_fingerprint,
                 submit_id=None,
                 error_code="MISSING_SUBMIT_ID",
             )
@@ -386,13 +439,13 @@ class VideoService:
                 "Dreamina accepted no recoverable submit_id; manual review required"
             )
         self._operation_ledger.complete_submission_intent(
-            request_fingerprint=fingerprint, submit_id=result.submit_id
+            request_fingerprint=request_fingerprint, submit_id=result.submit_id
         )
         self._operation_ledger.record(
             session_id=session_id,
             submit_id=result.submit_id,
             mode=str(request["mode"]),
-            request_fingerprint=fingerprint,
+            request_fingerprint=request_fingerprint,
         )
         payload = result.payload or {}
         items = payload.get("items") if isinstance(payload, Mapping) else None

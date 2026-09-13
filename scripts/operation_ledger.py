@@ -59,6 +59,8 @@ class OperationLedger:
         self._intents_dir = self._root / "submission_intents"
         self._intents_dir.mkdir(parents=True, exist_ok=True)
         self._index_path = self._root / "index.json"
+        self._batches_dir = self._root / "batches"
+        self._batches_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # Recording
@@ -169,6 +171,22 @@ class OperationLedger:
         if receipt is None:
             raise OperationNotFoundError(submit_id)
         return receipt
+
+    def save_batch(self, *, project_id: str, batch_version: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Atomically persist executor state before its next external side effect."""
+        if re.fullmatch(r"vp_[a-f0-9]{24}", project_id) is None or re.fullmatch(r"v[0-9]{3,}", batch_version) is None:
+            raise ValueError("invalid batch identity")
+        document = json.loads(json.dumps(dict(payload)))
+        with self._exclusive_lock():
+            self._atomic_write(self._batches_dir / f"{project_id}-{batch_version}.json", document)
+        return document
+
+    def load_batch(self, *, project_id: str, batch_version: str) -> dict[str, Any] | None:
+        """Load durable executor state after a process restart."""
+        if re.fullmatch(r"vp_[a-f0-9]{24}", project_id) is None or re.fullmatch(r"v[0-9]{3,}", batch_version) is None:
+            raise ValueError("invalid batch identity")
+        value = self._load_json(self._batches_dir / f"{project_id}-{batch_version}.json")
+        return value if isinstance(value, dict) else None
 
     # ------------------------------------------------------------------
     # CLI-driven discovery and querying

@@ -149,6 +149,26 @@ class VideoServiceModuleTests(unittest.TestCase):
     def test_module_exports_service(self) -> None:
         self.assertIsNotNone(VideoService)
 
+    def test_batch_allowance_reserves_exact_request_and_commits_submit_id(self) -> None:
+        request = {"mode": "text2video", "prompt": "p", "model": "seedance-test", "video_resolution": "720p", "duration_seconds": 4}
+        calls = []
+        class Allowance:
+            def reserve(self, allowance_id, **fields):
+                calls.append(("reserve", allowance_id, fields)); return {"reservation_id": "br_" + "1" * 32}
+            def commit(self, reservation_id, submit_id):
+                calls.append(("commit", reservation_id, submit_id)); return {"reservation_id": reservation_id, "state": "committed", "submit_id": submit_id}
+            def mark_ambiguous(self, *args, **kwargs): raise AssertionError("not ambiguous")
+        class Adapter:
+            def run(self, argv):
+                return DreaminaResult(0, {"submit_id": "submit-1"}, None, "submit-1", "")
+        with tempfile.TemporaryDirectory() as tmp:
+            result = VideoService({"modes": []}, Path(tmp)).submit_with_batch_allowance(
+                request, adapter=Adapter(), allowance=Allowance(), allowance_id="ba_" + "2" * 32,
+                shot_id="S01", attempt=1)
+        self.assertEqual(result["submit_id"], "submit-1")
+        self.assertEqual(calls[0][2]["request_fingerprint"], build_video_request_fingerprint(request))
+        self.assertEqual(calls[1][0], "commit")
+
 
 class FingerprintTests(unittest.TestCase):
     def test_fingerprint_is_stable(self) -> None:

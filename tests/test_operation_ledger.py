@@ -75,6 +75,12 @@ class SubmitIdPersistenceTests(unittest.TestCase):
         intent = restarted.complete_submission_intent(request_fingerprint=fingerprint, submit_id=None, error_code="TRANSPORT_UNKNOWN")
         self.assertEqual(intent["state"], "manual_review")
 
+    def test_batch_execution_state_survives_restart(self) -> None:
+        project_id = "vp_" + "1" * 24
+        self.ledger.save_batch(project_id=project_id, batch_version="v001", payload={"state": "generating"})
+        restarted = OperationLedger(root=Path(self.tmp.name) / "ops")
+        self.assertEqual(restarted.load_batch(project_id=project_id, batch_version="v001"), {"state": "generating"})
+
 
 class TerminalAndUnknownStateTests(unittest.TestCase):
     def setUp(self) -> None:
