@@ -11,7 +11,7 @@ flowchart LR
     Router --> Capability[CLI 能力快照]
     Prompt --> Request[生成请求]
     Capability --> Request
-    UI[Codex MCP 工具批准弹窗] --> Approval[单次批准门禁]
+    UI[Codex MCP 弹窗 + 服务端原生弹窗] --> Approval[单次批准门禁]
     Request --> Approval
     Approval --> Intent[持久化 SUBMITTING 意图]
     Intent --> CLI[绝对路径 + SHA-256 可信 CLI]
@@ -44,5 +44,6 @@ CLI 是远程事实权威，插件不实现 Dreamina 私有 API。每个生成�
 ## 安全
 
 manifest、日志、Prompt、台账和产物中不得出现凭据。本地参考文件必须通过
-批准根目录、普通文件、类型和大小校验。付费动作只通过配置了
-`approval_mode: prompt` 的 MCP 工具暴露；调用方自报身份不能作为授权证据。
+批准根目录、普通文件、类型和大小校验。付费动作通过配置了
+`approval_mode: prompt` 的 MCP 工具暴露，并额外要求服务端原生确认弹窗；
+CLI 身份只能来自独立注册的私有信任配置。

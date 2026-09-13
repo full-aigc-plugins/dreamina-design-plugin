@@ -8,13 +8,14 @@
 
 ## Status and purpose
 
-**Feature baseline complete; production hardening is in progress.**
+**Production candidate 0.2.0; final publication is in progress.**
 
 The offline implementation gate is satisfied, but production acceptance is
 tracked separately in
 [`docs/superpowers/plans/2026-09-12-production-readiness-hardening.md`](docs/superpowers/plans/2026-09-12-production-readiness-hardening.md).
-Paid canary, fresh local/public installation, input-file containment, final
-security review, and remote publication are not yet complete.
+The minimum-specification canary, local installation, input-file containment,
+official validation, and final security review are complete. Remote publication
+and public-marketplace reinstall remain.
 
 ```text
 Creative intent -> prompt contract -> live CLI capability discovery
@@ -23,54 +24,38 @@ Creative intent -> prompt contract -> live CLI capability discovery
 ```
 
 All seven baseline plan tasks are implemented; the current hardening suite is
-covered by 222 offline tests
-(no network, no `dreamina` binary, no paid calls). Eleven of the plan's
-thirteen completion-gate lines are `PASS` on measured evidence — including
+covered by 225 offline tests. All thirteen baseline completion-gate lines now
+have measured evidence — including
 Skill snapshot parity pinned to upstream
 `full-aigc-skills/dreamina-skills@300bfc1`, strict per-Skill TRACE 13/13,
 plugin validation, zero secret matches, and a **public-marketplace install
 verified to discover all 14 Skills** via `codex debug prompt-input`.
 
-The last two gate lines are disjunctions:
+The runtime gate lines are:
 
 ```text
 read_only_runtime_contract = observed or explicitly blocked
 paid_canary = separately approved or NOT_RUN
 ```
 
-The read-only runtime contract is now `observed` from the installed CLI's
-version and command-help snapshot. The paid canary remains `NOT_RUN`; no paid
-generation has been performed. `--plan-gate` reports
-`plan_gate = SATISFIED` for exactly that state:
+The read-only runtime contract is `observed`. The authorized canary is
+`APPROVED` and reached `success`; its artifact and cost evidence are recorded.
+Both the baseline and strict runtime gates pass:
 
 ```text
-$ python3 scripts/validate_distribution_v7.py --plan-gate     # exit 0
+$ python3 scripts/validate_distribution_v7.py --plan-gate
+$ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ```
 
-### Closing the two runtime gates — pick one
-
-**Path (a) — accept the `explicitly blocked` / `NOT_RUN` branch:**
+### Runtime evidence
 
 ```text
-$ python3 scripts/record_gate_decision.py accept-blocked \
-      --approver <your-name> --reason "<why live evidence is deferred>"
-$ python3 scripts/validate_distribution_v7.py --plan-gate     # confirm exit 0
+$ python3 scripts/unlock_runtime_gates.py status
+$ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ```
 
-**Path (b) — upgrade to `observed` / `APPROVED`:**
-
-```text
-$ python3 scripts/unlock_runtime_gates.py probe     # after installing + authorizing dreamina
-# then fill in docs/verification/account-readiness.md
-$ python3 scripts/unlock_runtime_gates.py record-canary \
-      --submit-id <real-submit-id> --approver <your-name> --observed "<what you saw>"
-$ python3 scripts/validate_distribution_v7.py --require-runtime-gates   # confirm exit 0
-```
-
-Both paths are one command and require **you** — the tooling records the
-decision, it never makes one. `probe` refuses to run without the CLI,
-`record-canary` rejects placeholder submit IDs, and `accept-blocked`
-refuses a placeholder approver. Neither command will fabricate evidence.
+The paid production path requires protected CLI enrollment plus a server-side
+native confirmation dialog whose default action is Cancel.
 
 Full detail: [authorization decision record](docs/verification/authorization-decision.md) ·
 [offline evidence](docs/verification/offline.md) ·

@@ -1,6 +1,6 @@
 # Offline verification evidence
 
-> Current audit: 2026-09-13 · 222/222 tests PASS
+> Current audit: 2026-09-13 · 225/225 tests PASS
 
 ## Verified gates
 
@@ -27,7 +27,7 @@
 - installed CLI contract: observed
 - existing successful task query/download: PASS
 - disposable local marketplace installation: 14/14 Skills discovered with full bodies
-- paid canary: NOT_RUN
+- paid canary: APPROVED; terminal success and artifact/cost evidence recorded
 - public publication/reinstall: pending
 - official `plugin-creator` validator: blocked by its undeclared local PyYAML dependency; Codex installation and repository validators pass
 

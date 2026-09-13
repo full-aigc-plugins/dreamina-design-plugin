@@ -14,7 +14,7 @@ historical feature baseline.
 - [x] Validate approval scope against the exact request, expire approvals, and consume them once.
 - [x] Add cross-process locks and fsync-backed atomic writes for approval/operation state.
 - [x] Add concurrent-process stress tests proving no duplicate session creation or approval consumption.
-- [x] Route paid submissions through MCP tools configured with Codex `approval_mode: prompt`; tool handlers derive issuer/scope internally, issue a maximum five-minute opaque approval, and consume it once.
+- [x] Route paid submissions through MCP tools plus a server-side native dialog; enroll the CLI path/hash through a separate native trust dialog and protected `0700/0600` configuration.
 
 ## P2 — CLI runtime and recovery
 
@@ -45,10 +45,10 @@ historical feature baseline.
 
 ## P5 — Distribution and production acceptance
 
-- [ ] Run the official plugin validator in an environment containing its declared PyYAML dependency.
+- [x] Run the official plugin validator in an isolated environment with pinned PyYAML 6.0.3.
 - [x] Install the local candidate through a disposable marketplace and prove all 14 Skills are discovered and cached with executable bodies.
-- [ ] Complete the final security re-review after the paid MCP prompt reject/accept paths and canary are exercised; current code-only review has no remaining Critical/High findings.
-- [ ] Run one separately approved minimum-cost canary and preserve submit/query/artifact evidence.
+- [x] Complete final security re-review after native approve/deny paths, trusted CLI enrollment, and canary; zero Critical/High/direct production-blocking Medium findings remain.
+- [x] Run one separately approved minimum-specification canary and preserve submit/query/download/artifact/cost evidence.
 - [ ] Update version/cachebuster, commit, push, reinstall from the public marketplace, and prove local/tracking/remote SHA equality.
 
 ## Production completion gate

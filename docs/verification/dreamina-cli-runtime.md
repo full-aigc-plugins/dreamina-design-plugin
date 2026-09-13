@@ -1,7 +1,7 @@
 # Dreamina CLI runtime evidence
 
 > Read-only runtime contract: observed
-> Paid canary: NOT_RUN
+> Paid canary: APPROVED and completed
 
 ## Observed contract
 
@@ -33,8 +33,10 @@ The 13 packaged Design Skill trees byte-match upstream Git commit
 `300bfc1d649a68c1802a43aa7a64c50000e095d4`. Verification reads blobs from the
 pinned Git object rather than trusting a mutable working-tree HEAD.
 
-## Remaining paid boundary
+## Paid boundary evidence
 
-A paid image/video canary must receive action-time user approval. Until that
-occurs, `paid_canary = NOT_RUN`; no automated test or agent may manufacture a
-submit ID or approval record.
+The authorized minimum-specification canary reached `success`; see
+`paid-canary-2026-09-13.md`. Production MCP calls no longer accept a caller
+controlled executable. The trusted CLI is enrolled through a native dialog and
+stored in a user-owned `0600` configuration; each paid request additionally
+requires a native dialog whose default action is Cancel.

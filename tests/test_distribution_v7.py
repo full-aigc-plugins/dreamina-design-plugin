@@ -369,11 +369,10 @@ class ExitCodeContractTests(unittest.TestCase):
             0,
         )
 
-    def test_require_runtime_gates_fails_while_gates_are_blocked(self) -> None:
-        """The stricter opt-in must fail on this machine (CLI absent)."""
-        self.assertNotEqual(self._run("--require-runtime-gates"), 0)
+    def test_require_runtime_gates_succeeds_with_observed_canary(self) -> None:
+        self.assertEqual(self._run("--require-runtime-gates"), 0)
 
-    def test_require_runtime_gates_reports_nonzero_exit_codes(self) -> None:
+    def test_require_runtime_gates_reports_approved_evidence(self) -> None:
         result = subprocess.run(  # noqa: S603
             [
                 sys.executable,
@@ -383,8 +382,8 @@ class ExitCodeContractTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertIn(result.returncode, (5, 6))
-        self.assertIn("paid_canary", result.stdout)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('"paid_canary": "APPROVED"', result.stdout)
 
 
 class GateContentValidationTests(unittest.TestCase):
@@ -548,16 +547,16 @@ class PlanGateModeTests(unittest.TestCase):
         result = self._run("--plan-gate", "--expected-upstream-sha", "0" * 40)
         self.assertNotEqual(result.returncode, 0)
 
-    def test_plan_gate_reports_observed_runtime_without_approving_canary(self) -> None:
+    def test_plan_gate_reports_observed_runtime_and_approved_canary(self) -> None:
         result = self._run("--plan-gate")
         self.assertIn('"read_only_runtime_contract": "observed"', result.stdout)
-        self.assertIn('"paid_canary": "NOT_RUN"', result.stdout)
+        self.assertIn('"paid_canary": "APPROVED"', result.stdout)
 
-    def test_require_runtime_gates_is_stricter_than_plan_gate(self) -> None:
+    def test_plan_and_runtime_gates_both_pass_after_canary(self) -> None:
         plan_gate = self._run("--plan-gate").returncode
         strict_runtime = self._run("--require-runtime-gates").returncode
         self.assertEqual(plan_gate, 0)
-        self.assertNotEqual(strict_runtime, 0)
+        self.assertEqual(strict_runtime, 0)
 
 
 if __name__ == "__main__":

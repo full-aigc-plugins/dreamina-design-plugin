@@ -11,7 +11,9 @@ from typing import Any, Mapping
 from scripts.approval_guard import ApprovalGuard
 from scripts.dreamina_adapter import DreaminaAdapter
 from scripts.image_service import ImageService, build_request_fingerprint
+from scripts.native_approval import NativeApprovalProvider
 from scripts.reference_policy import ReferencePolicy
+from scripts.trusted_cli import TrustedCliStore
 from scripts.video_service import VideoService, build_video_request_fingerprint
 
 
@@ -19,15 +21,11 @@ PROTOCOL_VERSION = "2025-06-18"
 
 
 def _tool_definitions() -> list[dict[str, Any]]:
-    common = {
-        "cli_path": {"type": "string", "description": "Absolute reviewed dreamina executable path"},
-        "cli_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-    }
     return [
         {
             "name": "dreamina_capability_snapshot",
             "description": "Read the verified Dreamina CLI capability snapshot without generation.",
-            "inputSchema": {"type": "object", "properties": {**common, "detail": {"type": "string", "enum": ["summary", "full"], "default": "summary"}}, "required": ["cli_path", "cli_sha256"], "additionalProperties": False},
+            "inputSchema": {"type": "object", "properties": {"detail": {"type": "string", "enum": ["summary", "full"], "default": "summary"}}, "additionalProperties": False},
             "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         },
         {
@@ -36,7 +34,6 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    **common,
                     "mode": {"type": "string", "enum": ["text2image", "image2image"]},
                     "prompt": {"type": "string", "minLength": 1, "maxLength": 4000},
                     "model": {"type": "string"},
@@ -46,7 +43,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "references": {"type": "array", "items": {"type": "object"}, "maxItems": 10},
                     "approved_roots": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["cli_path", "cli_sha256", "mode", "prompt", "model", "resolution_type"],
+                "required": ["mode", "prompt", "model", "resolution_type"],
                 "additionalProperties": False,
             },
             "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True},
@@ -57,7 +54,6 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    **common,
                     "mode": {"type": "string", "enum": ["text2video", "image2video", "frames2video", "multimodal2video"]},
                     "prompt": {"type": "string", "maxLength": 4000},
                     "model": {"type": "string"},
@@ -68,7 +64,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "approved_roots": {"type": "array", "items": {"type": "string"}},
                     "web_prerequisite_acknowledged": {"type": "boolean"},
                 },
-                "required": ["cli_path", "cli_sha256", "mode", "prompt", "model", "video_resolution"],
+                "required": ["mode", "prompt", "model", "video_resolution"],
                 "additionalProperties": False,
             },
             "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True},
@@ -79,8 +75,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
 class DreaminaMcpTools:
     """Tool handlers; paid handlers are protected by Codex approval_mode=prompt."""
 
-    def __init__(self, *, state_root: Path | None = None) -> None:
+    def __init__(self, *, state_root: Path | None = None, approval_provider: Any | None = None) -> None:
         self.state_root = state_root or (Path.home() / ".local" / "share" / "codex-dreamina-design")
+        self.approval_provider = approval_provider or NativeApprovalProvider()
 
     def call(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
         if name == "dreamina_capability_snapshot":
@@ -113,7 +110,8 @@ class DreaminaMcpTools:
                 ratio=args.get("ratio"), references=list(args.get("references", [])),
             )
             scope = _scope(request)
-            approval_id = guard.record_approval(session_id, request=request, receipt=_approved_receipt(build_request_fingerprint(request), scope))
+            approver = self.approval_provider.confirm(request)
+            approval_id = guard.record_approval(session_id, request=request, receipt=_approved_receipt(build_request_fingerprint(request), scope, approver))
             return service.submit(request, adapter=adapter, approval_guard=guard, session_id=session_id, approval_id=approval_id)
 
     def _submit_video(self, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -131,7 +129,8 @@ class DreaminaMcpTools:
                 references=list(args.get("references", [])),
             )
             scope = _scope(request)
-            approval_id = guard.record_approval(session_id, request=request, receipt=_approved_receipt(build_video_request_fingerprint(request), scope))
+            approver = self.approval_provider.confirm(request)
+            approval_id = guard.record_approval(session_id, request=request, receipt=_approved_receipt(build_video_request_fingerprint(request), scope, approver))
             return service.submit(request, adapter=adapter, approval_guard=guard, session_id=session_id, approval_id=approval_id, web_prerequisite_cleared=bool(args.get("web_prerequisite_acknowledged")))
 
     def _approval_context(self, kind: str) -> tuple[str, ApprovalGuard]:
@@ -147,7 +146,8 @@ class _AdapterContext:
 
 
 def _adapter(args: Mapping[str, Any]) -> _AdapterContext:
-    return _AdapterContext(DreaminaAdapter(cli_command=str(args["cli_path"]), trusted_binary_sha256=str(args["cli_sha256"])))
+    trusted = TrustedCliStore().load()
+    return _AdapterContext(DreaminaAdapter(cli_command=trusted["cli_path"], trusted_binary_sha256=trusted["cli_sha256"]))
 
 
 def _reference_policy(args: Mapping[str, Any]) -> ReferencePolicy | None:
@@ -169,8 +169,8 @@ def _scope(request: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in values.items() if value is not None}
 
 
-def _approved_receipt(fingerprint: str, scope: Mapping[str, Any]) -> dict[str, Any]:
-    return {"request_fingerprint": fingerprint, "acknowledged_cost": "credits", "acknowledged_scope": dict(scope), "approver": "codex-product-approved-mcp-tool"}
+def _approved_receipt(fingerprint: str, scope: Mapping[str, Any], approver: str) -> dict[str, Any]:
+    return {"request_fingerprint": fingerprint, "acknowledged_cost": "credits", "acknowledged_scope": dict(scope), "approver": approver}
 
 
 def _response(request_id: Any, result: Any = None, error: dict | None = None) -> dict:

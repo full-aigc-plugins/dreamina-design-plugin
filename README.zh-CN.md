@@ -8,11 +8,12 @@
 
 ## 状态与定位
 
-**功能基线已完成；生产加固仍在进行。**
+**生产候选版本 0.2.0；正在完成最终公开发布。**
 
 离线实施门禁已经满足，但生产验收由
 [`docs/superpowers/plans/2026-09-12-production-readiness-hardening.md`](docs/superpowers/plans/2026-09-12-production-readiness-hardening.md)
-单独跟踪。付费 canary、全新本地/公开安装、输入文件边界、最终安全复审和远端发布尚未完成。
+单独跟踪。最低规格 canary、本地安装、输入文件边界、官方验证和最终安全复审已经完成；
+仅剩远端发布与公开 marketplace 重装。
 
 ```text
 创作意图 -> Prompt 契约 -> 实时发现 CLI 能力
@@ -20,48 +21,35 @@
         -> 按 submit_id 查询 -> 验证/下载产物
 ```
 
-基线计划 7 个任务已经实现；当前生产加固由 222 个离线测试覆盖（测试本身无付费调用）。
-计划 13 行完成门禁中 11 行为有实测证据的 `PASS` —— 含 Skill snapshot parity 固定到上游
+基线计划 7 个任务已经实现；当前生产加固由 225 个离线测试覆盖。
+计划 13 行完成门禁均已有实测证据 —— 含 Skill snapshot parity 固定到上游
 `full-aigc-skills/dreamina-skills@300bfc1`、严格 TRACE 13/13、plugin 校验、
 凭证零命中，以及**公开 marketplace 安装后经 `codex debug prompt-input` 验证发现全部 14 个 Skill**。
 
-最后两行门禁是析取：
+runtime 门禁为：
 
 ```text
 read_only_runtime_contract = observed or explicitly blocked
 paid_canary = separately approved or NOT_RUN
 ```
 
-只读 runtime 契约已由本机 CLI 的 version 与 command-help 快照提升为 `observed`；
-付费 canary 仍为 `NOT_RUN`，未执行过付费生成。`--plan-gate` 对该状态报 `plan_gate = SATISFIED`：
+只读 runtime 契约为 `observed`；经授权的 canary 已达到 `success`，产物与消费证据均已记录。
+基线门禁与严格 runtime 门禁均通过：
 
 ```text
-$ python3 scripts/validate_distribution_v7.py --plan-gate     # exit 0
+$ python3 scripts/validate_distribution_v7.py --plan-gate
+$ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ```
 
-### 收尾这两项门禁 —— 二选一
-
-**路径 (a) —— 接受 `explicitly blocked` / `NOT_RUN` 分支：**
+### runtime 证据
 
 ```text
-$ python3 scripts/record_gate_decision.py accept-blocked \
-      --approver <您的名字> --reason "<为何延后 live 证据>"
-$ python3 scripts/validate_distribution_v7.py --plan-gate     # 确认 exit 0
+$ python3 scripts/unlock_runtime_gates.py status
+$ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ```
 
-**路径 (b) —— 升级到 `observed` / `APPROVED`：**
-
-```text
-$ python3 scripts/unlock_runtime_gates.py probe     # 装好并授权 dreamina 后
-# 然后填写 docs/verification/account-readiness.md
-$ python3 scripts/unlock_runtime_gates.py record-canary \
-      --submit-id <真实ID> --approver <您的名字> --observed "<观察描述>"
-$ python3 scripts/validate_distribution_v7.py --require-runtime-gates   # 确认 exit 0
-```
-
-两条路径都是一条命令，且都必须由**您**执行 —— 工具只负责记录决定，从不替您做决定。
-`probe` 在 CLI 缺失时拒绝运行，`record-canary` 拒绝占位 submit ID，
-`accept-blocked` 拒绝占位 approver。两条命令都不会伪造证据。
+生产付费路径要求先完成受保护的 CLI 信任注册，并通过服务端原生确认弹窗；
+默认操作始终是取消。
 
 完整细节：[授权决定记录](docs/verification/authorization-decision.md) ·
 [离线证据](docs/verification/offline.md) ·

@@ -11,7 +11,7 @@ flowchart LR
     Router --> Capability[CLI Capability Snapshot]
     Prompt --> Request[Generation Request]
     Capability --> Request
-    UI[Codex MCP tool approval prompt] --> Approval[Single-use Approval Guard]
+    UI[Codex MCP prompt + native dialog] --> Approval[Single-use Approval Guard]
     Request --> Approval
     Approval --> CLI[dreamina CLI]
     Approval --> Intent[Durable SUBMITTING intent]
@@ -46,5 +46,6 @@ complete byte-verified Skill trees pinned by `skills/.upstream-commit`.
 
 No credentials in manifests, logs, prompts, ledgers, or artifacts. Local
 reference files require approved-root, regular-file, type and size validation.
-Paid actions are exposed only through MCP tools configured with
-`approval_mode: prompt`; caller-supplied identity assertions are not accepted.
+Paid actions are exposed through MCP tools configured with `approval_mode:
+prompt` and independently require a server-side native dialog. CLI identity is
+loaded only from a separately enrolled private trust configuration.

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from scripts.dreamina_adapter import DreaminaResult
 from scripts.dreamina_mcp_server import DreaminaMcpTools, _tool_definitions
+from scripts.native_approval import ApprovalDeniedError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,10 @@ class McpConfigurationTests(unittest.TestCase):
 
     def test_paid_tool_annotations_are_destructive_and_non_idempotent(self) -> None:
         tools = {tool["name"]: tool for tool in _tool_definitions()}
+        for tool in tools.values():
+            properties = tool["inputSchema"].get("properties", {})
+            self.assertNotIn("cli_path", properties)
+            self.assertNotIn("cli_sha256", properties)
         for name in ("dreamina_submit_image", "dreamina_submit_video"):
             annotations = tools[name]["annotations"]
             self.assertFalse(annotations["readOnlyHint"])
@@ -59,6 +64,10 @@ class McpStdioTests(unittest.TestCase):
 
 
 class PaidToolHandlerTests(unittest.TestCase):
+    class _Approve:
+        def confirm(self, request):
+            return "test-native-user"
+
     def test_capability_tool_defaults_to_compact_summary(self) -> None:
         class _Adapter:
             def capability_snapshot(self):
@@ -69,7 +78,7 @@ class PaidToolHandlerTests(unittest.TestCase):
             def __exit__(self, *_): return None
 
         with mock.patch("scripts.dreamina_mcp_server._adapter", return_value=_Context()):
-            result = DreaminaMcpTools().call("dreamina_capability_snapshot", {"cli_path": "/x", "cli_sha256": "a" * 64})
+            result = DreaminaMcpTools().call("dreamina_capability_snapshot", {})
         self.assertEqual(result["model_count"], 1)
         self.assertNotIn("large", result)
 
@@ -93,16 +102,43 @@ class PaidToolHandlerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch(
             "scripts.dreamina_mcp_server._adapter", return_value=_Context()
         ):
-            result = DreaminaMcpTools(state_root=Path(tmp)).call(
+            result = DreaminaMcpTools(state_root=Path(tmp), approval_provider=self._Approve()).call(
                 "dreamina_submit_image",
-                {"cli_path": "/trusted/dreamina", "cli_sha256": "a" * 64, "mode": "text2image", "prompt": "x", "model": "5.0Pro", "resolution_type": "1.5k", "count": 1, "ratio": "1:1"},
+                {"mode": "text2image", "prompt": "x", "model": "5.0Pro", "resolution_type": "1.5k", "count": 1, "ratio": "1:1"},
             )
             self.assertEqual(result["submit_id"], "mcp-sub-1")
             receipt_files = [path for path in (Path(tmp) / "approvals").rglob("*.json") if path.parent.name == "approvals"]
             receipts = [json.loads(path.read_text()) for path in receipt_files]
             self.assertEqual(len(receipts), 1)
-            self.assertEqual(receipts[0]["approver"], "codex-product-approved-mcp-tool")
+            self.assertEqual(receipts[0]["approver"], "test-native-user")
             self.assertIsNotNone(receipts[0]["consumed_at"])
+
+    def test_denied_native_approval_never_invokes_generation(self) -> None:
+        snapshot = {"modes": ["text2image"], "models": [{"name": "5.0Pro", "modes": ["text2image"], "resolutions": ["1.5k"], "ratios": ["1:1"], "max_count": 1}], "resolutions": {"image": ["1.5k"]}, "ratios": ["1:1"]}
+
+        class _Adapter:
+            generation_calls = 0
+            def capability_snapshot(self): return snapshot
+            def run(self, args):
+                self.generation_calls += 1
+                raise AssertionError("generation must not run after denial")
+
+        adapter = _Adapter()
+
+        class _Context:
+            def __enter__(self): return adapter
+            def __exit__(self, *_): return None
+
+        class _Deny:
+            def confirm(self, request): raise ApprovalDeniedError("denied")
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch("scripts.dreamina_mcp_server._adapter", return_value=_Context()):
+            with self.assertRaises(ApprovalDeniedError):
+                DreaminaMcpTools(state_root=Path(tmp), approval_provider=_Deny()).call(
+                    "dreamina_submit_image",
+                    {"mode": "text2image", "prompt": "x", "model": "5.0Pro", "resolution_type": "1.5k", "count": 1, "ratio": "1:1"},
+                )
+        self.assertEqual(adapter.generation_calls, 0)
 
 
 if __name__ == "__main__":
