@@ -49,7 +49,21 @@
       }
     },
     "track_path": {"type": "string", "pattern": "^/"},
-    "frame_checksums": {"type": "object"},
+    "frame_checksums": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sha256", "path", "at_seconds", "frame_width", "boundary_fingerprint"],
+        "properties": {
+          "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "path": {"type": "string", "pattern": "^/"},
+          "at_seconds": {"type": "number", "minimum": 0},
+          "frame_width": {"type": "integer", "minimum": 240, "maximum": 960},
+          "boundary_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        }
+      }
+    },
     "machine_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
   }
 }

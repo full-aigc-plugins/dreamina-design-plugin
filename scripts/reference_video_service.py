@@ -8,6 +8,7 @@ import math
 import os
 import re
 import statistics
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -18,8 +19,9 @@ from scripts.video_project_store import VideoProjectStore
 
 
 SCENE_ROW = re.compile(r"pts_time[:=](?P<time>[0-9]+(?:\.[0-9]+)?)")
-MOTION_ROW = re.compile(
-    r"pts_time[:=](?P<time>[0-9]+(?:\.[0-9]+)?).*?lavfi\.signalstats\.YAVG[=:](?P<value>[0-9]+(?:\.[0-9]+)?)"
+MOTION_TIME = re.compile(r"pts_time[:=](?P<time>[0-9]+(?:\.[0-9]+)?)")
+MOTION_VALUE = re.compile(
+    r"lavfi\.signalstats\.YAVG[=:](?P<value>[0-9]+(?:\.[0-9]+)?)"
 )
 
 
@@ -70,9 +72,10 @@ class ReferenceVideoService:
         }
         identity = canonical_fingerprint({"source": source, "parameters": parameters})
         analysis_id = "an_" + identity[:24]
-        analysis_root = self._analysis_root(project_id, analysis_id)
-        track_path = analysis_root / "track.json"
-        self._write_private_json(track_path, track)
+        track_bytes = (json.dumps(track, sort_keys=True) + "\n").encode("utf-8")
+        track_digest = hashlib.sha256(track_bytes).hexdigest()
+        track_path = self._analysis_root(project_id, analysis_id) / "tracks" / track_digest / "track.json"
+        self._publish_private_bytes(track_path, track_bytes)
         shots = self._measure_shots(cuts, track["values"], manual_cuts=set())
         payload = {
             "schema_version": "1.0",
@@ -109,7 +112,12 @@ class ReferenceVideoService:
         if not isinstance(frame_width, int) or isinstance(frame_width, bool) or not 240 <= frame_width <= 960:
             raise ValueError("frame_width must be an integer from 240 to 960")
         analysis = self.get_analysis(analysis_id)
-        frame_root = self._analysis_root(analysis["project_id"], analysis_id) / "frames"
+        boundary_fingerprint = self._boundary_fingerprint(analysis, frame_width)
+        frame_root = (
+            self._analysis_root(analysis["project_id"], analysis_id)
+            / "frames"
+            / boundary_fingerprint
+        )
         result: dict[str, Any] = {}
         checksums: dict[str, str] = {}
         for shot in analysis["shots"]:
@@ -121,18 +129,28 @@ class ReferenceVideoService:
                 at = round(start + duration * fraction, 2)
                 target = frame_root / f"{shot['id']}-{label}.png"
                 target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                media_result = self._media.run(
-                    "ffmpeg",
-                    ["-hide_banner", "-nostdin", "-ss", f"{at:.2f}", "-i", analysis["source"]["staged_path"],
-                     "-frames:v", "1", "-vf", f"scale={frame_width}:-2", "-y", str(target)],
-                    timeout_seconds=30,
-                )
-                self._require_success(media_result, "frame extraction")
-                if not target.is_file():
-                    raise MediaOutputError("ffmpeg did not create the requested frame")
-                os.chmod(target, 0o600)
+                temporary = self._temporary_path(target.parent, suffix=".png")
+                try:
+                    media_result = self._media.run(
+                        "ffmpeg",
+                        ["-hide_banner", "-nostdin", "-ss", f"{at:.2f}", "-i", analysis["source"]["staged_path"],
+                         "-frames:v", "1", "-vf", f"scale={frame_width}:-2", "-y", str(temporary)],
+                        timeout_seconds=30,
+                    )
+                    self._require_success(media_result, "frame extraction")
+                    if not temporary.is_file():
+                        raise MediaOutputError("ffmpeg did not create the requested frame")
+                    self._publish_private_file(temporary, target)
+                finally:
+                    temporary.unlink(missing_ok=True)
                 checksum = self._sha256(target)
-                checksums[f"{shot['id']}:{label}"] = checksum
+                checksums[f"{shot['id']}:{label}"] = {
+                    "sha256": checksum,
+                    "path": str(target),
+                    "at_seconds": at,
+                    "frame_width": frame_width,
+                    "boundary_fingerprint": boundary_fingerprint,
+                }
                 result[shot["id"]][label] = {
                     "at_seconds": at, "path": str(target), "sha256": checksum
                 }
@@ -154,8 +172,7 @@ class ReferenceVideoService:
         ):
             raise ValueError("contact sheet layout must contain 1 to 25 shots")
         analysis = self.get_analysis(analysis_id)
-        frame_root = self._analysis_root(analysis["project_id"], analysis_id) / "frames"
-        if not all((frame_root / f"{shot['id']}-a.png").is_file() for shot in analysis["shots"]):
+        if not self._frames_match_analysis(analysis):
             self.extract_frames(analysis_id)
             analysis = self.get_analysis(analysis_id)
         page_size = cols * rows
@@ -163,21 +180,48 @@ class ReferenceVideoService:
         for offset in range(0, len(analysis["shots"]), page_size):
             shots = analysis["shots"][offset : offset + page_size]
             page_number = len(pages) + 1
-            target = self._analysis_root(analysis["project_id"], analysis_id) / "sheets" / f"page-{page_number:03d}.png"
+            sheet_identity = canonical_fingerprint({
+                "machine_fingerprint": analysis["machine_fingerprint"],
+                "layout": {"cols": cols, "rows": rows},
+                "page": page_number,
+                "frame_checksums": {
+                    shot["id"]: analysis["frame_checksums"][f"{shot['id']}:a"]
+                    for shot in shots
+                },
+            })
+            target = self._analysis_root(analysis["project_id"], analysis_id) / "sheets" / sheet_identity / f"page-{page_number:03d}.png"
             target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             inputs: list[str] = []
             for shot in shots:
-                inputs.extend(["-i", str(frame_root / f"{shot['id']}-a.png")])
+                inputs.extend(["-i", analysis["frame_checksums"][f"{shot['id']}:a"]["path"]])
             layout = "|".join(f"{index % cols}*w0_{index // cols}*h0" for index in range(len(shots)))
-            result = self._media.run(
-                "ffmpeg",
-                ["-hide_banner", "-nostdin", *inputs, "-filter_complex", f"xstack=inputs={len(shots)}:layout={layout}", "-frames:v", "1", "-y", str(target)],
-                timeout_seconds=60,
-            )
-            self._require_success(result, "contact sheet")
-            if not target.is_file():
-                raise MediaOutputError("ffmpeg did not create the requested contact sheet")
-            os.chmod(target, 0o600)
+            if target.is_file():
+                pages.append({
+                    "page": page_number,
+                    "shot_ids": [shot["id"] for shot in shots],
+                    "layout": {"cols": cols, "rows": rows},
+                    "path": str(target),
+                    "sha256": self._sha256(target),
+                })
+                continue
+            temporary = self._temporary_path(target.parent, suffix=".png")
+            try:
+                filter_args = (
+                    ["-filter_complex", f"xstack=inputs={len(shots)}:layout={layout}"]
+                    if len(shots) > 1
+                    else []
+                )
+                result = self._media.run(
+                    "ffmpeg",
+                    ["-hide_banner", "-nostdin", *inputs, *filter_args, "-frames:v", "1", "-y", str(temporary)],
+                    timeout_seconds=60,
+                )
+                self._require_success(result, "contact sheet")
+                if not temporary.is_file():
+                    raise MediaOutputError("ffmpeg did not create the requested contact sheet")
+                self._publish_private_file(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
             pages.append({
                 "page": page_number,
                 "shot_ids": [shot["id"] for shot in shots],
@@ -243,10 +287,18 @@ class ReferenceVideoService:
             timeout_seconds=120,
         )
         self._require_success(result, "motion measurement")
-        values = [
-            {"at_seconds": round(float(match.group("time")), 2), "value": round(float(match.group("value")), 6)}
-            for match in MOTION_ROW.finditer(result.stderr)
-        ]
+        values: list[dict[str, float]] = []
+        current_time: float | None = None
+        for line in result.stderr.splitlines():
+            time_match = MOTION_TIME.search(line)
+            if time_match is not None:
+                current_time = float(time_match.group("time"))
+            value_match = MOTION_VALUE.search(line)
+            if value_match is not None and current_time is not None:
+                values.append({
+                    "at_seconds": round(current_time, 2),
+                    "value": round(float(value_match.group("value")), 6),
+                })
         return {"schema_version": "1.0", "hz": hz, "values": values}
 
     @staticmethod
@@ -294,6 +346,40 @@ class ReferenceVideoService:
         return root
 
     @staticmethod
+    def _boundary_fingerprint(analysis: Mapping[str, Any], frame_width: int) -> str:
+        return canonical_fingerprint({
+            "source_sha256": analysis["source"]["source_sha256"],
+            "cuts": analysis["cuts"],
+            "measured_shots": [shot["measured"] for shot in analysis["shots"]],
+            "frame_width": frame_width,
+        })
+
+    def _frames_match_analysis(self, analysis: Mapping[str, Any]) -> bool:
+        checksums = analysis.get("frame_checksums")
+        if not isinstance(checksums, Mapping) or not checksums:
+            return False
+        widths = {
+            item.get("frame_width")
+            for item in checksums.values()
+            if isinstance(item, Mapping)
+        }
+        if len(widths) != 1:
+            return False
+        frame_width = next(iter(widths))
+        if not isinstance(frame_width, int):
+            return False
+        expected_boundary = self._boundary_fingerprint(analysis, frame_width)
+        for shot in analysis["shots"]:
+            for label in ("a", "b"):
+                item = checksums.get(f"{shot['id']}:{label}")
+                if not isinstance(item, Mapping) or item.get("boundary_fingerprint") != expected_boundary:
+                    return False
+                path = Path(str(item.get("path", "")))
+                if not path.is_file() or self._sha256(path) != item.get("sha256"):
+                    return False
+        return True
+
+    @staticmethod
     def _machine_fingerprint(payload: Mapping[str, Any]) -> str:
         return canonical_fingerprint({
             "source": payload["source"], "parameters": payload["parameters"],
@@ -331,10 +417,37 @@ class ReferenceVideoService:
         return digest.hexdigest()
 
     @staticmethod
-    def _write_private_json(path: Path, payload: Mapping[str, Any]) -> None:
+    def _temporary_path(parent: Path, *, suffix: str) -> Path:
+        descriptor, name = tempfile.mkstemp(prefix=".pending-", suffix=suffix, dir=parent)
+        os.close(descriptor)
+        return Path(name)
+
+    @classmethod
+    def _publish_private_bytes(cls, path: Path, content: bytes) -> None:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        path.write_text(json.dumps(dict(payload), sort_keys=True) + "\n", encoding="utf-8")
-        os.chmod(path, 0o600)
+        temporary = cls._temporary_path(path.parent, suffix=path.suffix)
+        try:
+            with temporary.open("wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            cls._publish_private_file(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _publish_private_file(temporary: Path, target: Path) -> None:
+        os.chmod(temporary, 0o600)
+        try:
+            os.link(temporary, target, follow_symlinks=False)
+        except FileExistsError:
+            if ReferenceVideoService._sha256(temporary) != ReferenceVideoService._sha256(target):
+                raise MediaOutputError("content-addressed artifact collision")
+        directory = os.open(target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
 
 def normalized_cuts(*, duration: float, candidates: Sequence[float], minimum: float) -> list[float]:
