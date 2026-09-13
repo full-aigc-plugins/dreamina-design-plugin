@@ -774,6 +774,136 @@ class VideoBatchAllowanceTests(unittest.TestCase):
         with self.assertRaises(BatchScopeError):
             self.allowances.get(allowance_id)
 
+    def test_preexisting_root_symlink_and_public_directories_are_rejected_without_chmod(self) -> None:
+        root = Path(self.temp.name) / "unsafe-root"
+        target = Path(self.temp.name) / "target"
+        target.mkdir(mode=0o700)
+        root.symlink_to(target, target_is_directory=True)
+        with self.assertRaises(BatchScopeError):
+            VideoBatchAllowance(root, seal_key_store=object(), quote_resolver=object())
+
+        root.unlink()
+        root.mkdir(mode=0o755)
+        with self.assertRaises(BatchScopeError):
+            VideoBatchAllowance(root, seal_key_store=object(), quote_resolver=object())
+        self.assertEqual(root.stat().st_mode & 0o777, 0o755)
+
+        root.chmod(0o700)
+        child = root / "allowances"
+        child.mkdir(mode=0o755)
+        with self.assertRaises(BatchScopeError):
+            VideoBatchAllowance(root, seal_key_store=object(), quote_resolver=object())
+        self.assertEqual(child.stat().st_mode & 0o777, 0o755)
+
+    def test_foreign_owner_child_simulation_fails_without_chmod(self) -> None:
+        root = Path(self.temp.name) / "foreign-child"
+        root.mkdir(mode=0o700)
+        (root / "allowances").mkdir(mode=0o700)
+        (root / "activations").mkdir(mode=0o700)
+        real_fstat = os.fstat
+        fstat_calls = 0
+
+        def foreign_allowances(descriptor):
+            nonlocal fstat_calls
+            fstat_calls += 1
+            metadata = real_fstat(descriptor)
+            if fstat_calls == 2:
+                return type("ForeignStat", (), {
+                    "st_mode": metadata.st_mode, "st_uid": os.getuid() + 1,
+                    "st_dev": metadata.st_dev, "st_ino": metadata.st_ino,
+                })()
+            return metadata
+
+        with patch("scripts.video_batch_allowance.os.fstat", side_effect=foreign_allowances):
+            with self.assertRaises(BatchScopeError):
+                VideoBatchAllowance(root, seal_key_store=object(), quote_resolver=object())
+        self.assertEqual((root / "allowances").stat().st_mode & 0o777, 0o700)
+
+    def test_root_swap_between_mkdir_and_open_is_rejected(self) -> None:
+        root = Path(self.temp.name) / "swap-root"
+        real_open = os.open
+        swapped = False
+
+        def swapping_open(path, *args, **kwargs):
+            nonlocal swapped
+            if path == root.name and kwargs.get("dir_fd") is not None and not swapped:
+                swapped = True
+                root.rename(Path(self.temp.name) / "original-root")
+                root.mkdir(mode=0o700)
+            return real_open(path, *args, **kwargs)
+
+        with patch("scripts.video_batch_allowance.os.open", side_effect=swapping_open):
+            with self.assertRaises(BatchScopeError):
+                VideoBatchAllowance(root, seal_key_store=object(), quote_resolver=object())
+
+    def test_parent_replacement_after_initialization_blocks_operation(self) -> None:
+        allowance_id = self.activate()
+        parent = self.root.parent
+        moved = parent.with_name(parent.name + "-moved")
+        parent.rename(moved)
+        parent.mkdir(mode=0o700)
+        with self.assertRaises(BatchScopeError):
+            self.allowances.get(allowance_id)
+
+    def test_partial_constructor_failures_close_all_opened_descriptors(self) -> None:
+        for fail_call in range(1, 5):
+            root = Path(self.temp.name) / f"partial-{fail_call}"
+            before = len(os.listdir("/dev/fd"))
+            real_open = os.open
+            calls = 0
+
+            def failing_open(path, *args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == fail_call:
+                    raise OSError("injected constructor failure")
+                return real_open(path, *args, **kwargs)
+
+            with patch("scripts.video_batch_allowance.os.open", side_effect=failing_open):
+                with self.assertRaises(BatchScopeError):
+                    VideoBatchAllowance(root, seal_key_store=object(), quote_resolver=object())
+            self.assertLessEqual(len(os.listdir("/dev/fd")), before + 1)
+
+        for fail_call in (1, 2):
+            root = Path(self.temp.name) / f"resolver-partial-{fail_call}"
+            before = len(os.listdir("/dev/fd"))
+            real_open = os.open
+            calls = 0
+
+            def failing_resolver_open(path, *args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == fail_call:
+                    raise OSError("injected resolver failure")
+                return real_open(path, *args, **kwargs)
+
+            with patch("scripts.video_batch_allowance.os.open", side_effect=failing_resolver_open):
+                with self.assertRaises(BatchScopeError):
+                    LocalQuoteResolver(root)
+            self.assertLessEqual(len(os.listdir("/dev/fd")), before + 1)
+
+    def test_concurrent_normal_initialization_is_idempotent(self) -> None:
+        root = Path(self.temp.name) / "concurrent-init"
+        start = threading.Barrier(9)
+        failures = []
+
+        def initialize():
+            start.wait()
+            try:
+                instance = VideoBatchAllowance(root, seal_key_store=object(), quote_resolver=object())
+                instance.close()
+            except Exception as exc:
+                failures.append(exc)
+
+        threads = [threading.Thread(target=initialize) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        start.wait()
+        for thread in threads:
+            thread.join(timeout=5)
+        self.assertEqual(failures, [])
+        self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+
 
 if __name__ == "__main__":
     unittest.main()

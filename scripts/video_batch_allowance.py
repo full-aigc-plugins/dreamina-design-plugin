@@ -88,9 +88,12 @@ class FileSealKeyStore:
         try:
             self._parent_fd = os.open(parent, flags)
             metadata = os.fstat(self._parent_fd)
-            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid():
-                raise SealKeyUnavailableError("seal key directory ownership or type is unsafe")
-            os.fchmod(self._parent_fd, 0o700)
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != os.getuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o700
+            ):
+                raise SealKeyUnavailableError("seal key directory ownership, type, or mode is unsafe")
             self._parent_identity = os.fstat(self._parent_fd)
         except Exception:
             descriptor = getattr(self, "_parent_fd", None)
@@ -175,17 +178,36 @@ class LocalQuoteResolver:
                 base = Path(root)
                 base.mkdir(parents=True, exist_ok=True, mode=0o700)
                 self._parent_fd = os.open(base, flags)
-                os.fchmod(self._parent_fd, 0o700)
                 parent_fd = self._parent_fd
+                parent_metadata = os.fstat(parent_fd)
+                if (
+                    not stat.S_ISDIR(parent_metadata.st_mode)
+                    or parent_metadata.st_uid != os.getuid()
+                    or stat.S_IMODE(parent_metadata.st_mode) != 0o700
+                ):
+                    raise BatchScopeError("quote parent directory is unsafe")
+            expected = None
             try:
                 os.mkdir("quotes", 0o700, dir_fd=parent_fd)
+                expected = os.stat("quotes", dir_fd=parent_fd, follow_symlinks=False)
             except FileExistsError:
-                pass
+                expected = os.stat("quotes", dir_fd=parent_fd, follow_symlinks=False)
+                if (
+                    not stat.S_ISDIR(expected.st_mode)
+                    or expected.st_uid != os.getuid()
+                    or stat.S_IMODE(expected.st_mode) != 0o700
+                ):
+                    raise BatchScopeError("quote directory ownership, type, or mode is unsafe")
             self._root_fd = os.open("quotes", flags, dir_fd=parent_fd)
             metadata = os.fstat(self._root_fd)
-            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid():
-                raise BatchScopeError("quote directory ownership or type is unsafe")
-            os.fchmod(self._root_fd, 0o700)
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != os.getuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o700
+                or expected is not None
+                and (metadata.st_dev, metadata.st_ino) != (expected.st_dev, expected.st_ino)
+            ):
+                raise BatchScopeError("quote directory ownership, type, mode, or identity is unsafe")
             self._identity = os.fstat(self._root_fd)
             self._pinned_parent_fd = parent_fd
         except Exception as exc:
@@ -295,27 +317,56 @@ class VideoBatchAllowance:
         try:
             self._root.parent.mkdir(parents=True, exist_ok=True)
             self._parent_fd = os.open(self._root.parent, directory_flags)
+            expected_root = None
             try:
                 os.mkdir(self._root.name, 0o700, dir_fd=self._parent_fd)
+                expected_root = os.stat(
+                    self._root.name, dir_fd=self._parent_fd, follow_symlinks=False
+                )
             except FileExistsError:
-                pass
+                expected_root = os.stat(self._root.name, dir_fd=self._parent_fd, follow_symlinks=False)
+                if (
+                    not stat.S_ISDIR(expected_root.st_mode)
+                    or expected_root.st_uid != os.getuid()
+                    or stat.S_IMODE(expected_root.st_mode) != 0o700
+                ):
+                    raise BatchScopeError("allowance root ownership, type, or mode is unsafe")
             self._root_fd = os.open(self._root.name, directory_flags, dir_fd=self._parent_fd)
             root_metadata = os.fstat(self._root_fd)
-            if not stat.S_ISDIR(root_metadata.st_mode) or root_metadata.st_uid != os.getuid():
-                raise BatchScopeError("allowance root ownership or type is unsafe")
-            os.fchmod(self._root_fd, 0o700)
+            if (
+                not stat.S_ISDIR(root_metadata.st_mode)
+                or root_metadata.st_uid != os.getuid()
+                or stat.S_IMODE(root_metadata.st_mode) != 0o700
+                or expected_root is not None
+                and (root_metadata.st_dev, root_metadata.st_ino) != (expected_root.st_dev, expected_root.st_ino)
+            ):
+                raise BatchScopeError("allowance root ownership, type, mode, or identity is unsafe")
+            child_expectations = {}
             for name in ("allowances", "activations"):
                 try:
                     os.mkdir(name, 0o700, dir_fd=self._root_fd)
                 except FileExistsError:
-                    pass
+                    expected = os.stat(name, dir_fd=self._root_fd, follow_symlinks=False)
+                    if (
+                        not stat.S_ISDIR(expected.st_mode)
+                        or expected.st_uid != os.getuid()
+                        or stat.S_IMODE(expected.st_mode) != 0o700
+                    ):
+                        raise BatchScopeError("allowance child directory ownership, type, or mode is unsafe")
+                    child_expectations[name] = expected
             self._allowances_fd = os.open("allowances", directory_flags, dir_fd=self._root_fd)
             self._activations_fd = os.open("activations", directory_flags, dir_fd=self._root_fd)
-            for descriptor in (self._allowances_fd, self._activations_fd):
+            for name, descriptor in (("allowances", self._allowances_fd), ("activations", self._activations_fd)):
                 metadata = os.fstat(descriptor)
-                if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid():
-                    raise BatchScopeError("allowance child directory ownership or type is unsafe")
-                os.fchmod(descriptor, 0o700)
+                expected = child_expectations.get(name)
+                if (
+                    not stat.S_ISDIR(metadata.st_mode)
+                    or metadata.st_uid != os.getuid()
+                    or stat.S_IMODE(metadata.st_mode) != 0o700
+                    or expected is not None
+                    and (metadata.st_dev, metadata.st_ino) != (expected.st_dev, expected.st_ino)
+                ):
+                    raise BatchScopeError("allowance child directory ownership, type, mode, or identity is unsafe")
             self._parent_identity = os.fstat(self._parent_fd)
             self._root_identity = os.fstat(self._root_fd)
             self._allowances_identity = os.fstat(self._allowances_fd)
