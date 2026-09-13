@@ -89,3 +89,4 @@
 - Final Task 9/8/7 focused regression: 221 tests passed in 5.188s.
 - Final full regression: 516 tests passed in 18.606s; Python compilation and `git diff --check` passed.
 - Residual load-bearing boundary: `PostInvokePersistenceError` retains raw evidence only in process memory until the exception is released; crash recovery intentionally has digest/length and provider identities, not replayable raw output. Novel secrets in non-auth-shaped ordinary business fields remain outside pattern-based redaction and must not be added to the closed executor state contract.
+- Final archive follow-up: adapter ambiguity and directory-fsync tests were committed separately; evaluation now re-verifies the content-addressed artifact before binding. Final full discovery passed 517 tests in 18.540s, focused executor/task/ledger passed 48 tests, and the worktree was clean.
