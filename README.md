@@ -8,14 +8,14 @@
 
 ## Status and purpose
 
-**Production candidate 0.2.0; final publication is in progress.**
+**Production-ready release 0.2.0.**
 
 The offline implementation gate is satisfied, but production acceptance is
 tracked separately in
 [`docs/superpowers/plans/2026-09-12-production-readiness-hardening.md`](docs/superpowers/plans/2026-09-12-production-readiness-hardening.md).
 The minimum-specification canary, local installation, input-file containment,
-official validation, and final security review are complete. Remote publication
-and public-marketplace reinstall remain.
+official validation, final security review, remote publication, and fresh
+public-marketplace reinstall are complete.
 
 ```text
 Creative intent -> prompt contract -> live CLI capability discovery

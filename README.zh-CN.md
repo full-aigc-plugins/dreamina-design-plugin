@@ -8,12 +8,12 @@
 
 ## 状态与定位
 
-**生产候选版本 0.2.0；正在完成最终公开发布。**
+**生产就绪版本 0.2.0。**
 
 离线实施门禁已经满足，但生产验收由
 [`docs/superpowers/plans/2026-09-12-production-readiness-hardening.md`](docs/superpowers/plans/2026-09-12-production-readiness-hardening.md)
-单独跟踪。最低规格 canary、本地安装、输入文件边界、官方验证和最终安全复审已经完成；
-仅剩远端发布与公开 marketplace 重装。
+单独跟踪。最低规格 canary、本地安装、输入文件边界、官方验证、最终安全复审、
+远端发布与公开 marketplace 重装均已完成。
 
 ```text
 创作意图 -> Prompt 契约 -> 实时发现 CLI 能力

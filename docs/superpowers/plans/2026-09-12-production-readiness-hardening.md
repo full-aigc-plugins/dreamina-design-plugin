@@ -49,10 +49,10 @@ historical feature baseline.
 - [x] Install the local candidate through a disposable marketplace and prove all 14 Skills are discovered and cached with executable bodies.
 - [x] Complete final security re-review after native approve/deny paths, trusted CLI enrollment, and canary; zero Critical/High/direct production-blocking Medium findings remain.
 - [x] Run one separately approved minimum-specification canary and preserve submit/query/download/artifact/cost evidence.
-- [ ] Update version/cachebuster, commit, push, reinstall from the public marketplace, and prove local/tracking/remote SHA equality.
+- [x] Publish version 0.2.0, reinstall from the public marketplace, verify 14 complete Skills and no-argument trusted MCP runtime, and prove local/tracking/remote SHA equality.
 
 ## Production completion gate
 
-Production readiness is **not achieved** until every checkbox above is complete.
-Offline tests, `plan_gate = SATISFIED`, Skill discovery, or a local commit alone
-cannot satisfy this gate.
+Production readiness was achieved on 2026-09-13 after every checkbox above was
+completed with offline, runtime, security, canary, publication, and fresh public
+installation evidence.
