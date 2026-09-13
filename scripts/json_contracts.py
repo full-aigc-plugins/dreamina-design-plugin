@@ -133,6 +133,13 @@ def _validate(
             raise ContractValidationError(f"{path} has too few items")
         if len(value) > int(schema.get("maxItems", len(value))):
             raise ContractValidationError(f"{path} has too many items")
+        if schema.get("uniqueItems") is True:
+            seen: set[tuple[Any, ...]] = set()
+            for item in value:
+                identity = _json_identity(item, path=path)
+                if identity in seen:
+                    raise ContractValidationError(f"{path} has duplicate items")
+                seen.add(identity)
         items = schema.get("items")
         if isinstance(items, Mapping):
             for index, item in enumerate(value):
@@ -242,3 +249,28 @@ def _is_number(value: Any) -> bool:
         and not isinstance(value, bool)
         and (not isinstance(value, float) or math.isfinite(value))
     )
+
+
+def _json_identity(value: Any, *, path: str) -> tuple[Any, ...]:
+    """Return a deterministic, type-preserving identity for one JSON value."""
+    if value is None:
+        return ("null",)
+    if isinstance(value, bool):
+        return ("boolean", value)
+    if _is_number(value):
+        return ("number", value)
+    if isinstance(value, str):
+        return ("string", value)
+    if isinstance(value, list):
+        return ("array", tuple(_json_identity(item, path=path) for item in value))
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise ContractValidationError(f"{path} contains a non-JSON value")
+        return (
+            "object",
+            tuple(
+                (key, _json_identity(value[key], path=path))
+                for key in sorted(value)
+            ),
+        )
+    raise ContractValidationError(f"{path} contains a non-JSON value")

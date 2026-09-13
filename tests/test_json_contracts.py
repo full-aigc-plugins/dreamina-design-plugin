@@ -131,6 +131,40 @@ class JsonContractTests(unittest.TestCase):
                     with self.subTest(value=value), self.assertRaises(ContractValidationError):
                         validate_contract(value, "number.schema.json")
 
+    def test_contract_unique_items_rejects_duplicate_json_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            (root / "unique.schema.json").write_text(
+                json.dumps({"type": "array", "uniqueItems": True}),
+                encoding="utf-8",
+            )
+            duplicate_payloads = (
+                ["same", "same"],
+                [{"a": 1, "b": [2, 3]}, {"b": [2, 3], "a": 1}],
+                [[{"nested": None}], [{"nested": None}]],
+            )
+            with mock.patch("scripts.json_contracts.SCHEMAS_ROOT", root):
+                for payload in duplicate_payloads:
+                    with self.subTest(payload=payload), self.assertRaises(
+                        ContractValidationError
+                    ):
+                        validate_contract(payload, "unique.schema.json")
+
+    def test_contract_unique_items_preserves_json_scalar_types(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            (root / "unique.schema.json").write_text(
+                json.dumps({"type": "array", "uniqueItems": True}),
+                encoding="utf-8",
+            )
+            with mock.patch("scripts.json_contracts.SCHEMAS_ROOT", root):
+                validate_contract([True, 1, False, 0], "unique.schema.json")
+                for value in (float("nan"), float("inf"), object()):
+                    with self.subTest(value=value), self.assertRaises(
+                        ContractValidationError
+                    ):
+                        validate_contract([value], "unique.schema.json")
+
 
 if __name__ == "__main__":
     unittest.main()
