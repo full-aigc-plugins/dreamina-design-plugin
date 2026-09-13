@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
@@ -237,20 +238,29 @@ class VideoGenerationPlanner:
             raise PlanningError("persisted planning requires a VideoProjectStore")
         if self._capability_provider is None:
             raise PlanningError("production planning requires a trusted capability provider")
-        evidence = self._capability_provider.capture()
+        from scripts.trusted_capability_provider import TrustedCapabilityProvider
+        if not isinstance(self._capability_provider, TrustedCapabilityProvider):
+            raise PlanningError("production planning requires TrustedCapabilityProvider")
+        try:
+            evidence = json.loads(json.dumps(self._capability_provider.capture(), ensure_ascii=False, allow_nan=False))
+        except (TypeError, ValueError) as exc:
+            raise PlanningError("trusted capability evidence is not canonical JSON") from exc
         if not isinstance(evidence, Mapping) or set(evidence) != {"snapshot", "identity_receipt"}:
             raise PlanningError("trusted capability evidence must be complete and closed")
         snapshot = evidence["snapshot"]
         receipt = evidence["identity_receipt"]
         if not isinstance(snapshot, Mapping) or not isinstance(receipt, Mapping):
             raise PlanningError("trusted capability evidence is invalid")
-        expected_receipt = {
+        receipt_core = {
             "cli_version": snapshot.get("cli_version"),
             "cli_commit": snapshot.get("cli_commit"),
             "snapshot_fingerprint": canonical_fingerprint(snapshot),
             "captured_at": snapshot.get("captured_at"),
         }
-        if dict(receipt) != expected_receipt:
+        if any(receipt.get(key) != value for key, value in receipt_core.items()) or set(receipt) != {
+            "cli_path", "cli_sha256", "device", "inode", "size_bytes", "mode", "owner_uid",
+            "cli_version", "cli_commit", "captured_at", "snapshot_fingerprint",
+        }:
             raise PlanningError("capability identity receipt does not bind the snapshot")
         from scripts.video_redesign_service import VideoRedesignService
         from scripts.video_rights_service import VideoRightsService
