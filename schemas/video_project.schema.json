@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/video_project.schema.json",
+  "title": "Dreamina Video Project",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "project_id", "title", "creative_mode", "audio_policy", "state", "created_at", "updated_at", "history"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "project_id": {"type": "string", "pattern": "^vp_[a-f0-9]{24}$"},
+    "title": {"type": "string", "minLength": 1, "maxLength": 200},
+    "creative_mode": {"type": "string", "enum": ["reference_faithful", "original_redesign"]},
+    "audio_policy": {"type": "string", "enum": ["preserve", "replace", "silent"]},
+    "state": {"type": "string", "enum": ["created", "analyzing", "analysis_review", "designing", "design_review", "quoted", "awaiting_approval", "generating", "evaluating", "composing", "final_review", "completed", "blocked", "manual_review"]},
+    "created_at": {"type": "string", "minLength": 1},
+    "updated_at": {"type": "string", "minLength": 1},
+    "history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state", "recorded_at", "evidence"],
+        "properties": {
+          "state": {"type": "string"},
+          "recorded_at": {"type": "string", "minLength": 1},
+          "evidence": {"type": "object"}
+        }
+      }
+    }
+  }
+}

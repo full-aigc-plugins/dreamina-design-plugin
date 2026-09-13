@@ -32,6 +32,8 @@ EXPECTED_SCHEMAS = (
     "approval_receipt.schema.json",
     "operation_receipt.schema.json",
     "artifact_receipt.schema.json",
+    "video_project.schema.json",
+    "source_receipt.schema.json",
 )
 
 CREDENTIAL_KEYS = (
