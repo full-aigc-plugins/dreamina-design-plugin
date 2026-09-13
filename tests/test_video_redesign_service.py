@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import stat
 import tempfile
 import threading
 import unittest
@@ -151,11 +152,28 @@ class VideoRedesignServiceTests(unittest.TestCase):
         with self.assertRaises(RedesignBindingError):
             self.redesign.commit_version(candidate, rights_receipt_id=None)
 
-    def test_prepared_candidate_remains_transient(self):
+    def test_prepared_candidate_is_private_and_content_addressed(self):
         candidate = self.redesign.prepare_candidate(self.project_id, "v001", self.payload())
         root = self.store.project_root(self.project_id) / "prepared_candidate"
-        self.assertFalse(root.exists())
-        self.assertEqual(candidate["creative_mode"], "original_redesign")
+        target = root / f"{candidate['design_fingerprint']}.json"
+        self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8")), candidate)
+
+    def test_prepared_candidate_publication_rejects_project_directory_swap(self):
+        project_root = self.store.project_root(self.project_id)
+        detached = project_root.parent / f"{self.project_id}.detached"
+        real_link = os.link
+
+        def replace_project_before_publish(*args, **kwargs):
+            os.rename(project_root, detached)
+            project_root.mkdir(mode=0o700)
+            return real_link(*args, **kwargs)
+
+        with patch("scripts.video_project_store.os.link", side_effect=replace_project_before_publish):
+            with self.assertRaises(RedesignBindingError):
+                self.redesign.prepare_candidate(self.project_id, "v001", self.payload())
+        self.assertFalse((project_root / "prepared_candidate").exists())
 
     def test_recomputed_candidate_cannot_bypass_originality_policy_at_commit(self):
         candidate = self.redesign.prepare_candidate(self.project_id, "v001", self.payload())
