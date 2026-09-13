@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
 from scripts.approval_guard import ApprovalGuard
+from scripts.account_service import AccountService
+from scripts.auth_service import AuthFlowStore, AuthService
+from scripts.diagnostic_service import DiagnosticService
 from scripts.dreamina_adapter import DreaminaAdapter
+from scripts.environment_service import EnvironmentService
 from scripts.image_service import ImageService, build_request_fingerprint
 from scripts.native_approval import NativeApprovalProvider
 from scripts.reference_policy import ReferencePolicy
+from scripts.session_service import SessionService
+from scripts.task_service import TaskService
 from scripts.trusted_cli import TrustedCliStore
 from scripts.video_service import VideoService, build_video_request_fingerprint
 
@@ -21,20 +28,24 @@ PROTOCOL_VERSION = "2025-06-18"
 
 
 def _tool_definitions() -> list[dict[str, Any]]:
-    return [
+    tools = [
         {
             "name": "dreamina_capability_snapshot",
             "description": "Read the verified Dreamina CLI capability snapshot without generation.",
             "inputSchema": {"type": "object", "properties": {"detail": {"type": "string", "enum": ["summary", "full"], "default": "summary"}}, "additionalProperties": False},
             "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         },
+        _tool("dreamina_cli_status", "Inspect Dreamina CLI installation, version, and command help.", {"command": {"type":"string","enum":["login","relogin","logout","user_credit","text2image","image2image","image_upscale","text2video","image2video","frames2video","multiframe2video","multimodal2video","query_result","list_task","session","version"]}, "detail":{"type":"string","enum":["summary","full"],"default":"summary"}}, read_only=True),
+        _tool("dreamina_cli_install_or_upgrade", "Install or upgrade Dreamina CLI from the fixed official HTTPS installer.", {"action":{"type":"string","enum":["install","upgrade"]}}, required=["action"], destructive=True),
+        _tool("dreamina_auth", "Run a typed Dreamina login, login check, relogin, or logout workflow.", {"action":{"type":"string","enum":["login","login_headless","check_login","relogin","logout"]},"flow_id":{"type":"string","minLength":16,"maxLength":128},"poll_seconds":{"type":"integer","minimum":0,"maximum":300,"default":0}}, required=["action"], destructive=True),
+        _tool("dreamina_account", "Read redacted Dreamina account and credit readiness.", {}, read_only=True),
         {
             "name": "dreamina_submit_image",
             "description": "Submit one explicitly approved paid Dreamina image request and persist recovery state.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "mode": {"type": "string", "enum": ["text2image", "image2image"]},
+                    "mode": {"type": "string", "enum": ["text2image", "image2image", "image_upscale"]},
                     "prompt": {"type": "string", "minLength": 1, "maxLength": 4000},
                     "model": {"type": "string"},
                     "resolution_type": {"type": "string"},
@@ -43,7 +54,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "references": {"type": "array", "items": {"type": "object"}, "maxItems": 10},
                     "approved_roots": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["mode", "prompt", "model", "resolution_type"],
+                "required": ["mode", "resolution_type"],
                 "additionalProperties": False,
             },
             "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True},
@@ -54,22 +65,34 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "mode": {"type": "string", "enum": ["text2video", "image2video", "frames2video", "multimodal2video"]},
+                    "mode": {"type": "string", "enum": ["text2video", "image2video", "frames2video", "multiframe2video", "multimodal2video"]},
                     "prompt": {"type": "string", "maxLength": 4000},
                     "model": {"type": "string"},
                     "video_resolution": {"type": "string"},
                     "ratio": {"type": "string"},
                     "duration_seconds": {"type": "integer", "minimum": 1, "maximum": 30},
                     "references": {"type": "array", "items": {"type": "object"}, "maxItems": 50},
+                    "transitions": {"type":"array","items":{"type":"object","properties":{"prompt":{"type":"string","minLength":1,"maxLength":1000},"duration_seconds":{"type":"integer","minimum":1,"maximum":8}},"required":["prompt","duration_seconds"],"additionalProperties":False},"maxItems":19},
                     "approved_roots": {"type": "array", "items": {"type": "string"}},
                     "web_prerequisite_acknowledged": {"type": "boolean"},
                 },
-                "required": ["mode", "prompt", "model", "video_resolution"],
+                "required": ["mode", "prompt", "video_resolution"],
                 "additionalProperties": False,
             },
             "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True},
         },
+        _tool("dreamina_query_task", "Query a Dreamina submit ID and optionally download into an approved root without resubmitting.", {"submit_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,128}$"},"poll_seconds":{"type":"integer","minimum":0,"maximum":300,"default":0},"download_dir":{"type":"string"},"approved_roots":{"type":"array","items":{"type":"string"},"maxItems":10}}, required=["submit_id"], read_only=False),
+        _tool("dreamina_list_tasks", "List Dreamina tasks with bounded documented filters.", {"filters":{"type":"object","properties":{"gen_status":{"type":"string"},"aigc_type":{"type":"string"},"session":{"type":"string"}},"additionalProperties":False},"limit":{"type":"integer","minimum":1,"maximum":100,"default":20}}, read_only=True),
+        _tool("dreamina_session", "Create, list, search, rename, or delete a Dreamina Session.", {"action":{"type":"string","enum":["create","list","search","rename","delete"]},"name":{"type":"string","minLength":1,"maxLength":200},"session_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,128}$"},"query":{"type":"string","minLength":1,"maxLength":200}}, required=["action"], destructive=True),
+        _tool("dreamina_diagnose", "Read bounded redacted Dreamina CLI logs from the fixed log directory.", {"command":{"type":"string","maxLength":4096},"error":{"type":"string","maxLength":16384},"submit_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,128}$"},"since_minutes":{"type":"integer","minimum":1,"maximum":1440,"default":60},"max_files":{"type":"integer","minimum":1,"maximum":10,"default":3}}, required=["command","error"], read_only=True),
     ]
+    return tools
+
+
+def _tool(name: str, description: str, properties: Mapping[str, Any], *, required: list[str] | None = None, read_only: bool = False, destructive: bool = False) -> dict[str, Any]:
+    schema={"type":"object","properties":dict(properties),"additionalProperties":False}
+    if required: schema["required"]=required
+    return {"name":name,"description":description,"inputSchema":schema,"annotations":{"readOnlyHint":read_only,"destructiveHint":destructive,"idempotentHint":read_only,"openWorldHint":False}}
 
 
 class DreaminaMcpTools:
@@ -78,8 +101,12 @@ class DreaminaMcpTools:
     def __init__(self, *, state_root: Path | None = None, approval_provider: Any | None = None) -> None:
         self.state_root = state_root or (Path.home() / ".local" / "share" / "codex-dreamina-design")
         self.approval_provider = approval_provider or NativeApprovalProvider()
+        self.auth_flow_store = AuthFlowStore()
 
     def call(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        definitions={tool["name"]:tool for tool in _tool_definitions()}
+        if name not in definitions: raise ValueError(f"unknown tool: {name}")
+        _validate_schema(args,definitions[name]["inputSchema"],path="arguments")
         if name == "dreamina_capability_snapshot":
             with _adapter(args) as adapter:
                 snapshot = adapter.capability_snapshot()
@@ -92,6 +119,20 @@ class DreaminaMcpTools:
                     "model_count": len(snapshot.get("models", [])),
                     "captured_at": snapshot["captured_at"],
                 }
+        if name == "dreamina_cli_install_or_upgrade":
+            service=EnvironmentService(None,trust_store=TrustedCliStore())
+            return service.install_or_upgrade(str(args["action"]),approval_provider=self.approval_provider)
+        if name == "dreamina_diagnose":
+            return DiagnosticService().diagnose(command=str(args["command"]),error=str(args["error"]),submit_id=args.get("submit_id"),since_minutes=int(args.get("since_minutes",60)),max_files=int(args.get("max_files",3)))
+        if name in {"dreamina_cli_status","dreamina_account","dreamina_auth","dreamina_query_task","dreamina_list_tasks","dreamina_session"}:
+            with _adapter(args) as adapter:
+                if name == "dreamina_cli_status": return EnvironmentService(adapter).status(command=args.get("command"),detail=str(args.get("detail","summary")))
+                account=AccountService(adapter)
+                if name == "dreamina_account": return account.user_credit()
+                if name == "dreamina_auth": return AuthService(adapter,account,self.approval_provider,self.auth_flow_store).execute(str(args["action"]),flow_id=args.get("flow_id"),poll_seconds=int(args.get("poll_seconds",0)))
+                if name == "dreamina_query_task": return TaskService(adapter).query(str(args["submit_id"]),poll_seconds=int(args.get("poll_seconds",0)),download_dir=_approved_download_dir(args))
+                if name == "dreamina_list_tasks": return TaskService(adapter).list_tasks(args.get("filters",{}),limit=int(args.get("limit",20)))
+                return SessionService(adapter,self.approval_provider).execute(str(args["action"]),name=args.get("name"),session_id=args.get("session_id"),query=args.get("query"))
         if name == "dreamina_submit_image":
             return self._submit_image(args)
         if name == "dreamina_submit_video":
@@ -105,7 +146,7 @@ class DreaminaMcpTools:
             session_id, guard = self._approval_context("image")
             service = ImageService(snapshot=snapshot, ledger_dir=self.state_root / "operations", reference_policy=policy)
             request = service.build_request(
-                mode=str(args["mode"]), prompt=str(args["prompt"]), model=str(args["model"]),
+                mode=str(args["mode"]), prompt=str(args.get("prompt") or "") or None, model=str(args.get("model") or "") or None,
                 resolution_type=str(args["resolution_type"]), count=int(args.get("count", 1)),
                 ratio=args.get("ratio"), references=list(args.get("references", [])),
             )
@@ -123,10 +164,10 @@ class DreaminaMcpTools:
             if args.get("web_prerequisite_acknowledged") is True:
                 service.record_web_prerequisite_acknowledgement()
             request = service.build_request(
-                mode=str(args["mode"]), prompt=str(args.get("prompt", "")), model=str(args["model"]),
+                mode=str(args["mode"]), prompt=str(args.get("prompt", "")), model=str(args.get("model")) if args.get("model") is not None else None,
                 video_resolution=str(args["video_resolution"]), ratio=args.get("ratio"),
                 duration_seconds=int(args["duration_seconds"]) if args.get("duration_seconds") is not None else None,
-                references=list(args.get("references", [])),
+                references=list(args.get("references", [])), transitions=list(args.get("transitions", [])),
             )
             scope = _scope(request)
             approver = self.approval_provider.confirm(request)
@@ -160,6 +201,45 @@ def _reference_policy(args: Mapping[str, Any]) -> ReferencePolicy | None:
     return ReferencePolicy(approved_roots=roots)
 
 
+def _approved_download_dir(args: Mapping[str, Any]) -> str | None:
+    value=args.get("download_dir")
+    if value is None: return None
+    roots=[Path(root).resolve() for root in args.get("approved_roots",[])]
+    if not roots: raise ValueError("approved_roots is required with download_dir")
+    destination=Path(str(value)).resolve()
+    if not any(destination==root or root in destination.parents for root in roots): raise ValueError("download_dir escapes approved roots")
+    if destination.is_symlink(): raise ValueError("download_dir must not be a symlink")
+    if destination.is_dir() and any(destination.iterdir()): raise ValueError("download_dir must be empty to verify newly downloaded artifacts")
+    destination.mkdir(parents=True,exist_ok=True)
+    return str(destination)
+
+
+def _validate_schema(value: Any, schema: Mapping[str, Any], *, path: str) -> None:
+    expected=schema.get("type")
+    if expected=="object":
+        if not isinstance(value,Mapping): raise ValueError(f"{path} must be an object")
+        properties=schema.get("properties",{})
+        unknown=set(value)-set(properties)
+        if unknown and schema.get("additionalProperties") is False: raise ValueError(f"{path} has unknown properties: {sorted(unknown)}")
+        for required in schema.get("required",[]):
+            if required not in value: raise ValueError(f"{path}.{required} is required")
+        for key,item in value.items():
+            if key in properties: _validate_schema(item,properties[key],path=f"{path}.{key}")
+    elif expected=="array":
+        if not isinstance(value,list): raise ValueError(f"{path} must be an array")
+        if len(value)>int(schema.get("maxItems",len(value))): raise ValueError(f"{path} has too many items")
+        for index,item in enumerate(value): _validate_schema(item,schema.get("items",{}),path=f"{path}[{index}]")
+    elif expected=="string":
+        if not isinstance(value,str): raise ValueError(f"{path} must be a string")
+        if len(value)<int(schema.get("minLength",0)) or len(value)>int(schema.get("maxLength",len(value))): raise ValueError(f"{path} length is invalid")
+        if "pattern" in schema and re.fullmatch(str(schema["pattern"]),value) is None: raise ValueError(f"{path} format is invalid")
+    elif expected=="integer":
+        if isinstance(value,bool) or not isinstance(value,int): raise ValueError(f"{path} must be an integer")
+        if value<int(schema.get("minimum",value)) or value>int(schema.get("maximum",value)): raise ValueError(f"{path} is outside allowed range")
+    elif expected=="boolean" and not isinstance(value,bool): raise ValueError(f"{path} must be a boolean")
+    if "enum" in schema and value not in schema["enum"]: raise ValueError(f"{path} is not an allowed value")
+
+
 def _scope(request: Mapping[str, Any]) -> dict[str, Any]:
     values = {
         "count": int(request.get("count", 1)), "model": request.get("model"),
@@ -183,7 +263,7 @@ def _handle(message: Mapping[str, Any], tools: DreaminaMcpTools) -> dict | None:
     method = message.get("method")
     request_id = message.get("id")
     if method == "initialize":
-        return _response(request_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "dreamina-design", "version": "0.2.0"}})
+        return _response(request_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "dreamina-design", "version": "0.3.0"}})
     if method == "notifications/initialized":
         return None
     if method == "tools/list":

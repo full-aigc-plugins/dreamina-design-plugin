@@ -8,8 +8,16 @@
       "default_tools_approval_mode": "prompt",
       "tools": {
         "dreamina_capability_snapshot": {"approval_mode": "approve"},
+        "dreamina_cli_status": {"approval_mode": "approve"},
+        "dreamina_cli_install_or_upgrade": {"approval_mode": "prompt"},
+        "dreamina_auth": {"approval_mode": "prompt"},
+        "dreamina_account": {"approval_mode": "approve"},
         "dreamina_submit_image": {"approval_mode": "prompt"},
-        "dreamina_submit_video": {"approval_mode": "prompt"}
+        "dreamina_submit_video": {"approval_mode": "prompt"},
+        "dreamina_query_task": {"approval_mode": "approve"},
+        "dreamina_list_tasks": {"approval_mode": "approve"},
+        "dreamina_session": {"approval_mode": "prompt"},
+        "dreamina_diagnose": {"approval_mode": "approve"}
       },
       "env_vars": ["HOME", "TMPDIR", "LANG", "LC_ALL", "PATH"],
       "startup_timeout_sec": 10,

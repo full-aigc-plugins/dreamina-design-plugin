@@ -1,5 +1,5 @@
 import unittest
-from scripts.auth_service import AuthService
+from scripts.auth_service import AuthFlowStore, AuthService
 from scripts.native_approval import ApprovalDeniedError
 
 class Adapter:
@@ -14,13 +14,15 @@ class Provider:
         return 'ok'
 
 class AuthServiceTests(unittest.TestCase):
-    def test_headless_uses_fixed_argv_and_redacts_device_code(self):
-        a=Adapter(); result=AuthService(a,Account(),Provider()).execute('login_headless')
-        self.assertEqual(a.calls,[['login','--headless']]); self.assertNotIn('secret',str(result))
-    def test_check_login_uses_bounded_poll(self):
-        a=Adapter(); AuthService(a,Account(),Provider()).execute('check_login',device_code='abc',poll_seconds=30)
+    def test_headless_returns_flow_id_not_device_code(self):
+        a=Adapter(); result=AuthService(a,Account(),Provider(),AuthFlowStore()).execute('login_headless')
+        self.assertEqual(a.calls,[['login','--headless']]); self.assertIn('flow_id',result); self.assertNotIn('secret',str(result)); self.assertNotIn('device_code',result)
+    def test_check_login_consumes_flow_once(self):
+        a=Adapter(); store=AuthFlowStore(); flow=store.issue('abc')
+        service=AuthService(a,Account(),Provider(),store); service.execute('check_login',flow_id=flow,poll_seconds=30)
         self.assertEqual(a.calls,[['login','checklogin','--device_code','abc','--poll','30']])
+        with self.assertRaises(ValueError): service.execute('check_login',flow_id=flow,poll_seconds=0)
     def test_logout_denial_never_invokes_cli(self):
         a=Adapter()
-        with self.assertRaises(ApprovalDeniedError): AuthService(a,Account(),Provider(True)).execute('logout')
+        with self.assertRaises(ApprovalDeniedError): AuthService(a,Account(),Provider(True),AuthFlowStore()).execute('logout')
         self.assertEqual(a.calls,[])

@@ -79,3 +79,7 @@ $ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ## 许可证
 
 Apache-2.0，见 [LICENSE](LICENSE)。
+0.3.0 版本提供 11 个强类型 MCP 工具，覆盖即梦 CLI 官方完整生命周期：状态、
+可信安装更新、OAuth 登录、账户检查、全部图片/视频模式、任务查询/列表/下载、
+Session CRUD 和有界脱敏日志诊断。高风险与付费操作必须显式确认，不开放任意
+Shell 或 argv 执行。

@@ -24,6 +24,7 @@ class McpConfigurationTests(unittest.TestCase):
         self.assertEqual(server["tools"]["dreamina_capability_snapshot"]["approval_mode"], "approve")
         self.assertEqual(server["tools"]["dreamina_submit_image"]["approval_mode"], "prompt")
         self.assertEqual(server["tools"]["dreamina_submit_video"]["approval_mode"], "prompt")
+        self.assertEqual(len(server["tools"]), 11)
         manifest = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["mcpServers"], "./.mcp.json")
 
@@ -38,6 +39,16 @@ class McpConfigurationTests(unittest.TestCase):
             self.assertFalse(annotations["readOnlyHint"])
             self.assertTrue(annotations["destructiveHint"])
             self.assertFalse(annotations["idempotentHint"])
+
+
+    def test_handlers_reject_unknown_properties(self) -> None:
+        with self.assertRaises(ValueError):
+            DreaminaMcpTools().call("dreamina_account", {"shell": "echo unsafe"})
+
+    def test_auth_schema_exposes_flow_id_not_device_code(self) -> None:
+        tool = {item["name"]: item for item in _tool_definitions()}["dreamina_auth"]
+        self.assertIn("flow_id", tool["inputSchema"]["properties"])
+        self.assertNotIn("device_code", tool["inputSchema"]["properties"])
 
 
 class McpStdioTests(unittest.TestCase):
@@ -60,7 +71,7 @@ class McpStdioTests(unittest.TestCase):
         responses = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual(responses[0]["result"]["protocolVersion"], "2025-06-18")
         names = {tool["name"] for tool in responses[1]["result"]["tools"]}
-        self.assertEqual(names, {"dreamina_capability_snapshot", "dreamina_submit_image", "dreamina_submit_video"})
+        self.assertEqual(names, {"dreamina_capability_snapshot", "dreamina_cli_status", "dreamina_cli_install_or_upgrade", "dreamina_auth", "dreamina_account", "dreamina_submit_image", "dreamina_submit_video", "dreamina_query_task", "dreamina_list_tasks", "dreamina_session", "dreamina_diagnose"})
 
 
 class PaidToolHandlerTests(unittest.TestCase):

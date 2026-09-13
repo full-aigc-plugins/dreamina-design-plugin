@@ -173,21 +173,23 @@ git commit -m "feat: automate Dreamina status and account checks"
 
 **Interfaces:**
 - Consumes: `DreaminaAdapter.run_text`, `AccountService.user_credit`, `NativeApprovalProvider.confirm`, redaction functions.
-- Produces: `AuthService.execute(action: str, *, device_code: str | None, poll_seconds: int) -> dict[str, object]`.
+- Produces: `AuthFlowStore` with ten-minute, single-use, memory-only flow records.
+- Produces: `AuthService.execute(action: str, *, flow_id: str | None, poll_seconds: int) -> dict[str, object]`.
 
 - [ ] **Step 1: Write failing exact-argv and authorization tests**
 
 ```python
 def test_headless_login_uses_fixed_argv_and_does_not_persist_device_code(self):
-    result = service.execute("login_headless", device_code=None, poll_seconds=0)
+    result = service.execute("login_headless", flow_id=None, poll_seconds=0)
     self.assertEqual(adapter.calls, [["login", "--headless"]])
     self.assertEqual(result["requires_user_action"], True)
-    self.assertFalse(state_root.exists())
+    self.assertIn("flow_id", result)
+    self.assertNotIn("device_code", result)
 
 def test_logout_denial_never_invokes_cli(self):
     provider.confirm.side_effect = ApprovalDeniedError("denied")
     with self.assertRaises(ApprovalDeniedError):
-        service.execute("logout", device_code=None, poll_seconds=0)
+        service.execute("logout", flow_id=None, poll_seconds=0)
     self.assertEqual(adapter.calls, [])
 ```
 
@@ -199,21 +201,25 @@ Expected: fail because `AuthService` is missing.
 
 - [ ] **Step 3: Implement closed action dispatch**
 
-Map actions exactly to:
+Map actions exactly to fixed argv. `login_headless` extracts the CLI device code
+into `AuthFlowStore` and returns a random opaque flow ID; `check_login` consumes
+that flow ID to build the CLI argv:
 
 ```python
 {
     "login": ["login"],
     "login_headless": ["login", "--headless"],
-    "check_login": ["login", "checklogin", "--device_code", device_code, "--poll", str(poll_seconds)],
+    "check_login": ["login", "checklogin", "--device_code", flow_store.consume(flow_id), "--poll", str(poll_seconds)],
     "relogin": ["relogin"],
     "logout": ["logout"],
 }
 ```
 
-Bound polling to 0–300 seconds. Require native confirmation for `relogin` and
-`logout`. Verify successful login/relogin/check with `user_credit`. Redact
-sensitive fields before returning and never write them to disk.
+Bound polling to 0–300 seconds. Flow IDs expire after 600 seconds, are consumed
+once, live only in the MCP process, and are not restored after restart. Require
+native confirmation for `relogin` and `logout`. Verify successful
+login/relogin/check with `user_credit`. Redact sensitive fields before returning
+and never write them to disk.
 
 - [ ] **Step 4: Run GREEN and denial/timeout tests**
 

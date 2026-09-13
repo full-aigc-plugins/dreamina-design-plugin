@@ -65,7 +65,7 @@ class PluginIdentityTests(unittest.TestCase):
     def test_manifest_identity_is_codex_dreamina_design(self) -> None:
         manifest = load_json(MANIFEST)
         self.assertEqual(manifest["name"], "codex-dreamina-design")
-        self.assertEqual(manifest["version"], "0.2.1")
+        self.assertEqual(manifest["version"], "0.3.0")
         self.assertFalse(manifest.get("skills", "").endswith("/*"))
         self.assertTrue(manifest["skills"].endswith("/"))
 

@@ -85,3 +85,8 @@ The source repository migration is complete at `full-aigc-skills/dreamina-skills
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE).
+Version 0.3.0 exposes eleven typed MCP tools covering the official Dreamina CLI
+lifecycle: status, verified installation/update, OAuth flows, account readiness,
+all documented image/video modes, task query/list/download, Session CRUD, and
+bounded redacted log diagnosis. High-risk and paid operations require explicit
+server-side confirmation; arbitrary shell or argv execution is not exposed.

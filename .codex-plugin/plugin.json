@@ -1,6 +1,6 @@
 {
   "name": "codex-dreamina-design",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Dreamina image and video design workflows with runtime CLI discovery and resumable operations.",
   "author": {"name": "Full Stack Skills / PartMe.AI", "url": "https://github.com/partme-ai"},
   "homepage": "https://github.com/partme-ai/codex-dreamina-design-plugin",

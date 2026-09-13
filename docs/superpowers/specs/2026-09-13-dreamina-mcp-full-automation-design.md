@@ -128,10 +128,14 @@ Typed authentication tool with actions:
   the external browser.
 - `login_headless`: starts headless flow and returns only the minimum
   user-facing verification fields.
-- `check_login`: accepts a device code and bounded poll duration.
+- `check_login`: accepts an opaque `flow_id` and bounded poll duration.
 - `relogin`: native confirmation, then clear and restart local OAuth state.
 - `logout`: native confirmation before clearing local OAuth state.
 
+For headless login, the MCP process keeps the CLI `device_code` only in memory
+for at most ten minutes and returns a random single-use `flow_id`, the
+verification URI, and the user-visible code. `check_login` consumes `flow_id`
+and never accepts or returns a raw device code. Process exit drops every flow.
 Device codes are never persisted in plugin state or logs. Login success must be
 verified with `user_credit`; failure returns a concrete next action.
 

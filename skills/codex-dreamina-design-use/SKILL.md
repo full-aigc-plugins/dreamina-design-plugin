@@ -22,6 +22,21 @@ Invoke this Skill when a user asks Codex to:
   multimodal-to-video);
 * resume an in-flight Dreamina task and download verified artifacts;
 * look up the current Dreamina CLI capability snapshot.
+* install, authenticate, inspect account readiness, manage Sessions, query
+  tasks, download results, or diagnose Dreamina CLI logs through automation.
+
+## MCP automation first
+
+Prefer the packaged `dreamina_design` MCP tools over composing terminal
+commands. It exposes capability/status, verified install or upgrade,
+memory-only headless authentication flows, account checks, all image/video
+modes (including upscale and multi-frame), task query/list/download, Session
+CRUD, and redacted diagnostics.
+
+Installation/upgrade, authentication changes, paid generation, and Session
+mutations pause for Codex and/or native user confirmation. Never bypass that
+pause. Headless login returns a short-lived `flow_id`; use it for
+`check_login` and never request or persist a raw device code.
 
 ## Routing rules
 
