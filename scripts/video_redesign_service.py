@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import stat
 from datetime import datetime, timezone
 from typing import Any, Mapping, TypedDict
 
@@ -83,7 +81,10 @@ class VideoRedesignService:
             "video_redesign.schema.json",
         )
         candidate = {**core, "design_fingerprint": fingerprint}
-        self._persist_prepared_candidate(candidate)
+        try:
+            self._store.publish_prepared_candidate(project_id, fingerprint, candidate)
+        except VersionReconciliationError as exc:
+            raise RedesignBindingError("prepared candidate publication was not safe") from exc
         return candidate
 
     def commit_version(
@@ -218,28 +219,9 @@ class VideoRedesignService:
             raise RedesignBindingError("candidate no longer matches immutable analysis evidence")
         audit = candidate.get("similarity_audit", {})
         preserved, replaced = audit.get("preserved", []), audit.get("replaced", [])
-        if set(preserved) | set(replaced) != REUSE_DIMENSIONS or set(preserved) & set(replaced) or len(preserved) + len(replaced) != len(REUSE_DIMENSIONS):
+        declared = set(candidate.get("payload", {}).get("preserve", []))
+        if set(preserved) != declared or set(preserved) | set(replaced) != REUSE_DIMENSIONS or set(preserved) & set(replaced) or len(preserved) + len(replaced) != len(REUSE_DIMENSIONS):
             raise RedesignBindingError("similarity audit must partition every reuse dimension exactly once")
-
-    def _persist_prepared_candidate(self, candidate: Mapping[str, Any]) -> None:
-        root = self._store.project_root(candidate["project_id"]) / "prepared_candidate"
-        root.mkdir(mode=0o700, exist_ok=True)
-        root_meta = os.stat(root, follow_symlinks=False)
-        if not stat.S_ISDIR(root_meta.st_mode) or root_meta.st_mode & 0o777 != 0o700:
-            raise RedesignBindingError("prepared candidate storage is not private")
-        target = root / f"{candidate['design_fingerprint']}.json"
-        if target.exists():
-            try:
-                target_meta = os.stat(target, follow_symlinks=False)
-                if not stat.S_ISREG(target_meta.st_mode) or target_meta.st_mode & 0o777 != 0o600:
-                    raise OSError("prepared candidate is not a private regular file")
-                existing = json.loads(target.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                raise RedesignBindingError("prepared candidate artifact is unreadable") from exc
-            if existing != candidate:
-                raise RedesignBindingError("prepared candidate fingerprint collision")
-            return
-        self._store._atomic_write(target, candidate)
 
     def _find_receipt(self, project_id: str, receipt_id: str) -> dict[str, Any]:
         try:
@@ -254,13 +236,10 @@ class VideoRedesignService:
             raise RedesignBindingError("rights receipt was not safely resolved") from exc
 
     def _read(self, project_id: str, family: str, version: str, schema: str) -> dict[str, Any]:
-        target = self._store.project_root(project_id) / family / f"{version}.json"
         try:
-            value = json.loads(target.read_text(encoding="utf-8"))
-            validate_contract(value, schema)
-        except (OSError, json.JSONDecodeError, ContractValidationError) as exc:
+            return self._store.read_version(project_id, family, version, schema)
+        except (ValueError, VersionReconciliationError) as exc:
             raise RedesignBindingError(f"required passed {family} version is unavailable") from exc
-        return value
 
     @staticmethod
     def _audit(preserve: list[str]) -> SimilarityAudit:

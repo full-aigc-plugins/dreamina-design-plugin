@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-import stat
 import os
 import tempfile
 import threading
@@ -100,6 +99,45 @@ class VideoRedesignServiceTests(unittest.TestCase):
         with self.assertRaises(RedesignBindingError):
             self.redesign.prepare_candidate(self.project_id, "v001", self.payload(machine_fingerprint="0" * 64))
 
+    def test_analysis_and_annotation_reads_reject_symlink_and_replacement_races(self):
+        project_root = self.store.project_root(self.project_id)
+        for family in ("analysis", "annotation"):
+            with self.subTest(family=family):
+                target = project_root / family / "v001.json"
+                original = target.read_bytes()
+                outside = Path(self.temp.name) / f"{family}-outside.json"
+                outside.write_bytes(original)
+                target.unlink()
+                target.symlink_to(outside)
+                with self.assertRaises(RedesignBindingError):
+                    self.redesign.prepare_candidate(self.project_id, "v001", self.payload())
+                target.unlink()
+                target.write_bytes(original)
+                target.chmod(0o600)
+
+        from scripts.json_contracts import validate_contract as real_validate
+
+        for family, schema_name in (("analysis", "shot_analysis.schema.json"), ("annotation", "shot_annotation.schema.json")):
+            target = project_root / family / "v001.json"
+            replacement = target.with_name(".replacement.json")
+            replacement.write_bytes(target.read_bytes())
+            replacement.chmod(0o600)
+            replaced = False
+
+            def replace_after_validation(document, current_schema):
+                nonlocal replaced
+                real_validate(document, current_schema)
+                if current_schema == schema_name and not replaced:
+                    os.replace(replacement, target)
+                    replaced = True
+
+            with self.subTest(family=family), patch(
+                "scripts.video_project_store.validate_contract", side_effect=replace_after_validation
+            ):
+                with self.assertRaises(RedesignBindingError):
+                    self.redesign.prepare_candidate(self.project_id, "v001", self.payload())
+            self.assertTrue(replaced)
+
     def test_candidate_payload_is_closed_before_rights_confirmation(self):
         with self.assertRaises(ContractValidationError):
             self.redesign.prepare_candidate(
@@ -113,13 +151,11 @@ class VideoRedesignServiceTests(unittest.TestCase):
         with self.assertRaises(RedesignBindingError):
             self.redesign.commit_version(candidate, rights_receipt_id=None)
 
-    def test_prepared_candidate_is_private_and_content_addressed(self):
+    def test_prepared_candidate_remains_transient(self):
         candidate = self.redesign.prepare_candidate(self.project_id, "v001", self.payload())
         root = self.store.project_root(self.project_id) / "prepared_candidate"
-        target = root / f"{candidate['design_fingerprint']}.json"
-        self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o700)
-        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
-        self.assertEqual(json.loads(target.read_text(encoding="utf-8")), candidate)
+        self.assertFalse(root.exists())
+        self.assertEqual(candidate["creative_mode"], "original_redesign")
 
     def test_recomputed_candidate_cannot_bypass_originality_policy_at_commit(self):
         candidate = self.redesign.prepare_candidate(self.project_id, "v001", self.payload())

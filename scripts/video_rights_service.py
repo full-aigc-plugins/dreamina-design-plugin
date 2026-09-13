@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import stat
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
@@ -37,7 +35,7 @@ def _utc_now() -> str:
 
 def _instant(value: str) -> datetime:
     if not isinstance(value, str) or re.fullmatch(
-        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z",
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})",
         value,
     ) is None:
         raise ContractValidationError("expiry must be an RFC 3339 timestamp")
@@ -90,7 +88,12 @@ class VideoRightsService:
         }
         if canonical_fingerprint(candidate_core) != fingerprint:
             raise ContractValidationError("design candidate changed after fingerprinting")
-        self._require_prepared_candidate(project_id, design_candidate)
+        try:
+            prepared = self._store.read_prepared_candidate(project_id, fingerprint)
+        except (ValueError, VersionReconciliationError) as exc:
+            raise ContractValidationError("candidate was not safely prepared by this project") from exc
+        if prepared != design_candidate:
+            raise ContractValidationError("candidate differs from its prepared artifact")
         try:
             from scripts.video_redesign_service import VideoRedesignService
 
@@ -104,11 +107,6 @@ class VideoRightsService:
         required = {"declarant", "rights_basis", "evidence", "allowed_media", "allowed_reuse", "purpose", "audience", "territory", "expires_at"}
         if set(assertion_copy) != required:
             raise ContractValidationError("rights assertion fields must be complete and closed")
-        asserted_at = self._now()
-        asserted = _instant(asserted_at)
-        expires = _instant(assertion_copy["expires_at"])
-        if expires <= asserted:
-            raise ContractValidationError("rights expiry must be later than assertion time")
         confirmation_request = {
             "action": "assert-video-replication-rights", "project_id": project_id,
             "source_sha256": source_sha256, "creative_mode": "authorized_replication",
@@ -118,6 +116,11 @@ class VideoRightsService:
             return self._reconcile_indeterminate(
                 project_id, indeterminate_commit, confirmation_request
             )
+        asserted_at = self._now()
+        asserted = _instant(asserted_at)
+        expires = _instant(assertion_copy["expires_at"])
+        if expires <= asserted:
+            raise ContractValidationError("rights expiry must be later than assertion time")
         # Validate before showing or persisting by supplying only the storage-generated fields.
         provisional = {
             "schema_version": "1.0", "version": "v001",
@@ -140,53 +143,6 @@ class VideoRightsService:
             raise RightsScopeError("native confirmer changed the exact rights request")
         provisional["native_confirmation"] = confirmation
         return self._store.write_version(project_id, "rights_receipt", {key: value for key, value in provisional.items() if key != "version"}, schema_name="video_rights_receipt.schema.json")
-
-    def _require_prepared_candidate(
-        self, project_id: str, candidate: Mapping[str, Any]
-    ) -> None:
-        fingerprint = candidate["design_fingerprint"]
-        root = self._store.project_root(project_id) / "prepared_candidate"
-        filename = f"{fingerprint}.json"
-        descriptors: list[int] = []
-        try:
-            root_descriptor = os.open(
-                root,
-                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-            )
-            descriptors.append(root_descriptor)
-            root_meta = os.fstat(root_descriptor)
-            target_descriptor = os.open(
-                filename,
-                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-                dir_fd=root_descriptor,
-            )
-            descriptors.append(target_descriptor)
-            target_meta = os.fstat(target_descriptor)
-            if (
-                not stat.S_ISDIR(root_meta.st_mode)
-                or root_meta.st_mode & 0o777 != 0o700
-                or not stat.S_ISREG(target_meta.st_mode)
-                or target_meta.st_mode & 0o777 != 0o600
-            ):
-                raise OSError("prepared candidate storage is not private and regular")
-            read_descriptor = os.dup(target_descriptor)
-            with os.fdopen(read_descriptor, "r", encoding="utf-8") as handle:
-                stored = json.load(handle)
-            current = os.stat(filename, dir_fd=root_descriptor, follow_symlinks=False)
-            if (current.st_dev, current.st_ino, current.st_size, current.st_mode) != (
-                target_meta.st_dev, target_meta.st_ino, target_meta.st_size, target_meta.st_mode
-            ):
-                raise OSError("prepared candidate changed during verification")
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ContractValidationError("candidate was not prepared by this project") from exc
-        finally:
-            for descriptor in reversed(descriptors):
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
-        if stored != candidate:
-            raise ContractValidationError("candidate differs from its prepared artifact")
 
     def _reconcile_indeterminate(
         self,
@@ -232,15 +188,27 @@ class VideoRightsService:
     def assert_scope(self, receipt: Mapping[str, Any], *, required: set[str], binding: Mapping[str, Any]) -> None:
         try:
             validate_contract(receipt, "video_rights_receipt.schema.json")
-            exact = all(receipt.get(key) == binding.get(key) for key in ("project_id", "source_sha256", "creative_mode", "design_fingerprint"))
+            required_binding = {
+                "project_id", "source_sha256", "creative_mode", "design_fingerprint",
+                "required_media", "purpose", "audience", "territory",
+            }
+            if set(binding) != required_binding:
+                raise TypeError("rights binding must be complete and closed")
+            exact = all(receipt[key] == binding[key] for key in ("project_id", "source_sha256", "creative_mode", "design_fingerprint"))
             allowed = set(receipt["allowed_reuse"])
-            required_media_value = binding.get("required_media", ())
-            if isinstance(required_media_value, (str, bytes)):
+            required_media_value = binding["required_media"]
+            if (
+                not isinstance(required_media_value, list)
+                or not required_media_value
+                or any(not isinstance(item, str) or not item for item in required_media_value)
+            ):
                 raise TypeError("required media must be a collection")
             required_media = set(required_media_value)
             media_covered = required_media <= set(receipt["allowed_media"])
             context_covered = all(
-                key not in binding or binding[key] == receipt[key]
+                isinstance(binding[key], str)
+                and bool(binding[key])
+                and binding[key] == receipt[key]
                 for key in ("purpose", "audience", "territory")
             )
             valid_required = required <= REUSE_DIMENSIONS

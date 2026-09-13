@@ -40,7 +40,13 @@ class VideoRightsServiceTests(unittest.TestCase):
         self.design_candidate = VideoRedesignService(self.store).prepare_candidate(
             self.project_id, "v001", self._payload()
         )
-        self.binding = {"project_id": self.project_id, "source_sha256": "a" * 64, "creative_mode": "authorized_replication", "design_fingerprint": self.design_candidate["design_fingerprint"]}
+        self.binding = {
+            "project_id": self.project_id, "source_sha256": "a" * 64,
+            "creative_mode": "authorized_replication",
+            "design_fingerprint": self.design_candidate["design_fingerprint"],
+            "required_media": ["video"], "purpose": "campaign remake",
+            "audience": "registered customers", "territory": "US",
+        }
         self.valid_assertion = {
             "declarant": "rights-holder@example.test", "rights_basis": "written license",
             "evidence": [{"reference": "license-2026-09", "sha256": "c" * 64}],
@@ -141,7 +147,7 @@ class VideoRightsServiceTests(unittest.TestCase):
         for expires_at in (
             "2026-09-14T00:00:00Z",
             "2026-09-14 01:00:00+00:00",
-            "2026-09-14T01:00:00+00:00",
+            "2026-09-14T01:00:00",
         ):
             assertion = {**self.valid_assertion, "expires_at": expires_at}
             with self.subTest(expires_at=expires_at), self.assertRaises(ContractValidationError):
@@ -149,6 +155,13 @@ class VideoRightsServiceTests(unittest.TestCase):
                     self.project_id, self.source_receipt, self.design_candidate, assertion
                 )
         self.assertEqual(self.confirmer.requests, [])
+
+    def test_expiry_accepts_rfc3339_numeric_offset_and_compares_instants(self):
+        assertion = {**self.valid_assertion, "expires_at": "2026-09-14T02:00:00+01:00"}
+        receipt = self.rights.record_assertion(
+            self.project_id, self.source_receipt, self.design_candidate, assertion
+        )
+        self.assertEqual(receipt["expires_at"], "2026-09-14T02:00:00+01:00")
 
     def test_mutating_confirmer_cannot_change_confirmed_or_persisted_bytes(self):
         rights = VideoRightsService(
@@ -172,6 +185,58 @@ class VideoRightsServiceTests(unittest.TestCase):
             binding = {**self.binding, **changes}
             with self.subTest(changes=changes), self.assertRaises(RightsScopeError):
                 self.rights.assert_scope(receipt, required={"likeness"}, binding=binding)
+
+    def test_public_scope_requires_every_complete_typed_binding_field(self):
+        receipt = self.rights.record_assertion(
+            self.project_id, self.source_receipt, self.design_candidate, self.valid_assertion
+        )
+        complete = dict(self.binding)
+        self.rights.assert_scope(receipt, required={"likeness"}, binding=complete)
+        for missing in (
+            "project_id", "source_sha256", "creative_mode", "design_fingerprint",
+            "required_media", "purpose", "audience", "territory",
+        ):
+            binding = dict(complete); del binding[missing]
+            with self.subTest(missing=missing), self.assertRaises(RightsScopeError):
+                self.rights.assert_scope(receipt, required={"likeness"}, binding=binding)
+        for invalid_media in ([], "video", [""], [1]):
+            binding = {**complete, "required_media": invalid_media}
+            with self.subTest(required_media=invalid_media), self.assertRaises(RightsScopeError):
+                self.rights.assert_scope(receipt, required={"likeness"}, binding=binding)
+
+    def test_indeterminate_retry_reconciles_after_expiry_without_side_effects(self):
+        clock = ["2026-09-14T00:00:00Z"]
+        rights = VideoRightsService(self.store, self.confirmer, now=lambda: clock[0])
+        original = self.store._atomic_write
+        captured = None
+
+        def fail_after_publish(path, payload, *, indeterminate_error=None):
+            nonlocal captured
+            original(path, payload, indeterminate_error=None)
+            captured = indeterminate_error
+            raise indeterminate_error
+
+        self.store._atomic_write = fail_after_publish
+        with self.assertRaises(VersionCommitIndeterminateError):
+            rights.record_assertion(
+                self.project_id, self.source_receipt, self.design_candidate, self.valid_assertion
+            )
+        self.store._atomic_write = original
+        clock[0] = "2028-01-01T00:00:00Z"
+        receipt = rights.record_assertion(
+            self.project_id, self.source_receipt, self.design_candidate,
+            self.valid_assertion, indeterminate_commit=captured,
+        )
+        self.assertEqual(receipt["version"], "v001")
+        self.assertEqual(len(self.confirmer.requests), 1)
+        versions = self.store.project_root(self.project_id) / "rights_receipt"
+        self.assertEqual([path.name for path in versions.glob("v*.json")], ["v001.json"])
+        with self.assertRaises(RightsScopeError):
+            rights.assert_scope(receipt, required={"likeness"}, binding={
+                **self.binding, "required_media": ["video"],
+                "purpose": "campaign remake", "audience": "registered customers",
+                "territory": "US",
+            })
 
     def test_native_confirmation_binds_assertion_and_candidate_before_persistence(self):
         receipt = self.rights.record_assertion(self.project_id, self.source_receipt, self.design_candidate, self.valid_assertion)
