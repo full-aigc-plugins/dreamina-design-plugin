@@ -78,7 +78,7 @@ def synthetic_video_snapshot() -> dict:
         ],
         "resolutions": {"video": ["480P", "720P", "1080P"]},
         "ratios": ["16:9", "9:16", "1:1"],
-        "mode_limits": {"multiframe2video": {"min_references": 2, "max_references": 20, "duration_min_seconds": 1, "duration_max_seconds": 8}},
+        "mode_limits": {"multiframe2video": {"min_references": 2, "max_references": 20, "request_duration_min_seconds": 2, "request_duration_max_seconds": 30, "transition_duration_min_seconds": 1, "transition_duration_max_seconds": 8}},
     }
 
 
@@ -110,6 +110,7 @@ def issue_approval(root: Path, request: dict, scope: dict):
             "approved_at": "2026-09-12T00:00:00Z",
             "approver": "test",
         },
+        fingerprint_builder=build_video_request_fingerprint,
     )
     return guard, session_id, approval_id
 
@@ -164,12 +165,12 @@ class FingerprintTests(unittest.TestCase):
         request = {"mode": "text2video", "prompt": "p", "model": "seedance-2.5", "video_resolution": "720P", "ratio": "16:9", "duration_seconds": 8}
         self.assertEqual(build_video_request_fingerprint(request), canonical_fingerprint(request))
 
-    def test_unicode_fingerprint_preserves_legacy_direct_approval_encoding(self) -> None:
+    def test_unicode_fingerprint_uses_shared_canonical_approval_encoding(self) -> None:
         request = {"mode": "text2video", "prompt": "晨雾中的蓝色工作室", "model": "seedance-2.5", "video_resolution": "720P", "ratio": "16:9", "duration_seconds": 4}
-        self.assertEqual(build_video_request_fingerprint(request), "f12e3b94d504052c1448f9faf982a393129e73bcfcccc85a834667d48628fb86")
+        self.assertEqual(build_video_request_fingerprint(request), canonical_fingerprint(request))
         with tempfile.TemporaryDirectory() as tmp:
             guard, session_id, approval_id = issue_approval(Path(tmp), request, {})
-            guard.consume_approval(session_id, request=request, approval_id=approval_id)
+            guard.consume_approval(session_id, request=request, approval_id=approval_id, fingerprint_builder=build_video_request_fingerprint)
 
 
 class TextToVideoTests(unittest.TestCase):

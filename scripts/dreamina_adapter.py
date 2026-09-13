@@ -430,12 +430,15 @@ def _parse_command_help(command_help: Mapping[str, str]) -> dict:
         reference_count_match = re.search(r"Upload\s+(\d+)\s+to\s+(\d+)\s+local images", help_text)
         if mode == "multiframe2video" and reference_count_match:
             transition_bounds = re.search(r"transition duration\s+(\d+)-(\d+)s", help_text)
-            if transition_bounds:
+            request_bounds = re.search(r"request duration\s+(\d+)-(\d+)s", help_text)
+            if transition_bounds and request_bounds:
                 mode_limits[mode] = {
                     "min_references": int(reference_count_match.group(1)),
                     "max_references": int(reference_count_match.group(2)),
-                    "duration_min_seconds": int(transition_bounds.group(1)),
-                    "duration_max_seconds": int(transition_bounds.group(2)),
+                    "request_duration_min_seconds": int(request_bounds.group(1)),
+                    "request_duration_max_seconds": int(request_bounds.group(2)),
+                    "transition_duration_min_seconds": int(transition_bounds.group(1)),
+                    "transition_duration_max_seconds": int(transition_bounds.group(2)),
                 }
         for entry in models.values():
             if mode not in entry["modes"]:

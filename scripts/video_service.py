@@ -25,13 +25,13 @@ Responsibilities:
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from scripts.dreamina_adapter import DreaminaResult
+from scripts.json_contracts import canonical_fingerprint
 
 
 class VideoServiceError(Exception):
@@ -107,7 +107,7 @@ def _canonical_bytes(payload: Mapping[str, Any]) -> bytes:
 
 def build_video_request_fingerprint(payload: Mapping[str, Any]) -> str:
     """SHA-256 hex digest over canonical JSON serialization."""
-    return hashlib.sha256(_canonical_bytes(payload)).hexdigest()
+    return canonical_fingerprint(payload)
 
 
 class VideoService:
@@ -211,9 +211,11 @@ class VideoService:
                 )
             if normalized_transitions and len(normalized_transitions) != len(normalized_refs) - 1:
                 raise VideoServiceError("multiframe2video requires exactly N-1 transitions")
+            limits = self._mode_limits[mode]
             for transition in normalized_transitions:
-                if not str(transition.get("prompt", "")).strip() or not 1 <= int(transition.get("duration_seconds", 0)) <= 8:
-                    raise VideoServiceError("transition requires prompt and duration_seconds 1..8")
+                seconds = int(transition.get("duration_seconds", 0))
+                if not str(transition.get("prompt", "")).strip() or not int(limits["transition_duration_min_seconds"]) <= seconds <= int(limits["transition_duration_max_seconds"]):
+                    raise VideoServiceError("transition violates advertised duration limits")
 
         request: dict[str, Any] = {
             "mode": mode,
@@ -233,14 +235,14 @@ class VideoService:
 
     def _multiframe_spec(self) -> _VideoModelSpec:
         limits = self._mode_limits.get("multiframe2video") if isinstance(self._mode_limits, Mapping) else None
-        required = ("min_references", "max_references", "duration_min_seconds", "duration_max_seconds")
+        required = ("min_references", "max_references", "request_duration_min_seconds", "request_duration_max_seconds", "transition_duration_min_seconds", "transition_duration_max_seconds")
         if not isinstance(limits, Mapping) or any(key not in limits for key in required):
             raise UnsupportedCapabilityError("snapshot missing multiframe2video mode limits")
         return _VideoModelSpec(
             name="__snapshot_mode__", modes=frozenset({"multiframe2video"}),
             resolutions=self._video_resolutions, ratios=frozenset(),
-            duration_min_seconds=int(limits["duration_min_seconds"]),
-            duration_max_seconds=int(limits["duration_max_seconds"]),
+            duration_min_seconds=int(limits["request_duration_min_seconds"]),
+            duration_max_seconds=int(limits["request_duration_max_seconds"]),
             web_prerequisite_required=False, audio_reference_max_seconds=None,
             ratio_forbidden_modes=frozenset({"multiframe2video"}),
             max_references=int(limits["max_references"]),
@@ -353,7 +355,8 @@ class VideoService:
         )
         try:
             approval_guard.consume_approval(
-                session_id, request=request, approval_id=approval_id
+                session_id, request=request, approval_id=approval_id,
+                fingerprint_builder=build_video_request_fingerprint,
             )
         except ApprovalGuardError as exc:
             self._operation_ledger.abort_submission_intent(

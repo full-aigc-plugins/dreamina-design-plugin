@@ -316,7 +316,7 @@ class VideoGenerationPlanner:
             bounds = mode_limits.get(mode) if isinstance(mode_limits, Mapping) else None
             if not isinstance(bounds, Mapping) or not all(
                 key in bounds
-                for key in ("min_references", "max_references", "duration_min_seconds", "duration_max_seconds")
+                for key in ("min_references", "max_references", "request_duration_min_seconds", "request_duration_max_seconds", "transition_duration_min_seconds", "transition_duration_max_seconds")
             ):
                 raise UnsupportedCapabilityError(
                     "snapshot missing advertised duration bounds or reference bounds for multiframe2video"
@@ -325,7 +325,7 @@ class VideoGenerationPlanner:
             if (
                 isinstance(duration, bool)
                 or not isinstance(duration, int)
-                or not int(bounds["duration_min_seconds"]) <= duration <= int(bounds["duration_max_seconds"])
+                or not int(bounds["request_duration_min_seconds"]) <= duration <= int(bounds["request_duration_max_seconds"])
             ):
                 raise UnsupportedCapabilityError(
                     f"duration_seconds not advertised for multiframe2video: {duration}"

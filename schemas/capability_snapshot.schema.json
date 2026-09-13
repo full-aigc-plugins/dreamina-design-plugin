@@ -90,12 +90,14 @@
         "multiframe2video": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["min_references", "max_references", "duration_min_seconds", "duration_max_seconds"],
+          "required": ["min_references", "max_references", "request_duration_min_seconds", "request_duration_max_seconds", "transition_duration_min_seconds", "transition_duration_max_seconds"],
           "properties": {
             "min_references": {"type": "integer", "minimum": 1},
             "max_references": {"type": "integer", "minimum": 1},
-            "duration_min_seconds": {"type": "integer", "minimum": 1},
-            "duration_max_seconds": {"type": "integer", "minimum": 1}
+            "request_duration_min_seconds": {"type": "integer", "minimum": 1},
+            "request_duration_max_seconds": {"type": "integer", "minimum": 1},
+            "transition_duration_min_seconds": {"type": "integer", "minimum": 1},
+            "transition_duration_max_seconds": {"type": "integer", "minimum": 1}
           }
         }
       }

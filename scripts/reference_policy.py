@@ -47,6 +47,7 @@ class ReferencePolicy:
         approved_roots: Iterable[Path],
         max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
         max_media_bytes: int = DEFAULT_MAX_MEDIA_BYTES,
+        durable_root: Path | None = None,
     ) -> None:
         self._roots = tuple(Path(root).resolve(strict=True) for root in approved_roots)
         if not self._roots or any(not root.is_dir() for root in self._roots):
@@ -55,6 +56,10 @@ class ReferencePolicy:
             raise ValueError("reference size limits must be positive")
         self._max_image_bytes = max_image_bytes
         self._max_media_bytes = max_media_bytes
+        self._durable_root = Path(durable_root).resolve() if durable_root is not None else None
+        if self._durable_root is not None:
+            self._durable_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(self._durable_root, 0o700)
         self._staging_root = Path(tempfile.mkdtemp(prefix="dreamina-references-"))
         os.chmod(self._staging_root, 0o700)
         atexit.register(shutil.rmtree, self._staging_root, True)
@@ -73,8 +78,33 @@ class ReferencePolicy:
         return normalized
 
     def validate_for_quote(self, reference: Mapping[str, Any]) -> dict[str, Any]:
-        """Validate stable enrolled media without creating ephemeral request paths."""
-        normalized, _ = self._inspect(reference)
+        """Publish and validate a private content-addressed durable reference."""
+        if self._durable_root is None:
+            raise ReferencePolicyError("durable_root is required for quote references")
+        normalized, resolved = self._inspect(reference)
+        target = self._durable_root / f"{normalized['sha256']}{resolved.suffix.lower()}"
+        if not target.exists():
+            fd, temp_name = tempfile.mkstemp(prefix=".reference-", dir=self._durable_root)
+            try:
+                with os.fdopen(fd, "wb") as writer, resolved.open("rb") as reader:
+                    shutil.copyfileobj(reader, writer, length=1024 * 1024)
+                    writer.flush()
+                    os.fsync(writer.fileno())
+                os.chmod(temp_name, 0o400)
+                if _sha256_path(Path(temp_name)) != normalized["sha256"]:
+                    raise ReferencePolicyError("reference changed during durable publication")
+                os.replace(temp_name, target)
+            finally:
+                try:
+                    os.unlink(temp_name)
+                except FileNotFoundError:
+                    pass
+        metadata = target.stat(follow_symlinks=False)
+        if target.is_symlink() or not target.is_file() or metadata.st_mode & 0o777 != 0o400:
+            raise ReferencePolicyError("durable reference is not a private regular file")
+        if _sha256_path(target) != normalized["sha256"]:
+            raise ReferencePolicyError("durable reference digest mismatch")
+        normalized["path"] = str(target)
         return normalized
 
     def _inspect(self, reference: Mapping[str, Any]) -> tuple[dict[str, Any], Path]:
@@ -140,6 +170,14 @@ def _is_within(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 __all__ = ["ReferencePolicy", "ReferencePolicyError"]

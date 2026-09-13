@@ -179,7 +179,7 @@ class DreaminaMcpTools:
             )
             scope = _scope(request)
             approver = self.approval_provider.confirm(request)
-            approval_id = guard.record_approval(session_id, request=request, receipt=_approved_receipt(build_video_request_fingerprint(request), scope, approver))
+            approval_id = guard.record_approval(session_id, request=request, receipt=_approved_receipt(build_video_request_fingerprint(request), scope, approver), fingerprint_builder=build_video_request_fingerprint)
             return service.submit(request, adapter=adapter, approval_guard=guard, session_id=session_id, approval_id=approval_id, web_prerequisite_cleared=bool(args.get("web_prerequisite_acknowledged")))
 
     def _approval_context(self, kind: str) -> tuple[str, ApprovalGuard]:
