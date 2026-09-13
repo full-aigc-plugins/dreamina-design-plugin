@@ -9,11 +9,14 @@ by submit ID instead of resubmitted blindly.
 from __future__ import annotations
 
 import json
+import os
+import stat
 import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -22,6 +25,7 @@ try:  # pragma: no cover - exercised by RED phase
     from scripts.operation_ledger import (  # type: ignore  # noqa: E402
         AmbiguousSubmissionError,
         CancelNotSupportedError,
+        DurableCommitIndeterminateError,
         OperationLedger,
         OperationNotFoundError,
     )
@@ -29,6 +33,7 @@ except ModuleNotFoundError:  # pragma: no cover
     OperationLedger = None  # type: ignore[assignment]
     AmbiguousSubmissionError = None  # type: ignore[assignment]
     CancelNotSupportedError = None  # type: ignore[assignment]
+    DurableCommitIndeterminateError = None  # type: ignore[assignment]
     OperationNotFoundError = None  # type: ignore[assignment]
 
 
@@ -45,6 +50,19 @@ class SubmitIdPersistenceTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.ledger = OperationLedger(root=Path(self.tmp.name) / "ops")
+
+    def test_post_replace_directory_fsync_failure_is_typed_and_visible(self) -> None:
+        real_fsync = os.fsync
+        def fail_directory(descriptor):
+            if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                raise OSError("injected directory fsync failure")
+            return real_fsync(descriptor)
+        with patch("scripts.operation_ledger.os.fsync", side_effect=fail_directory):
+            with self.assertRaises(DurableCommitIndeterminateError):
+                self.ledger.save_batch(project_id="vp_" + "1" * 24,
+                                       batch_version="v001", payload={"state": "ready"})
+        self.assertEqual(self.ledger.load_batch(project_id="vp_" + "1" * 24,
+                                               batch_version="v001"), {"state": "ready"})
 
     def test_record_and_lookup_submit_id(self) -> None:
         self.ledger.record(
