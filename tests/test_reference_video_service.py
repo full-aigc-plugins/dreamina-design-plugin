@@ -396,6 +396,12 @@ class ReferenceVideoServiceTests(unittest.TestCase):
         with self.assertRaises(MediaOutputError):
             self.service.build_contact_sheets(analysis["analysis_id"], cols=3, rows=1)
 
+    def test_verified_manifest_read_is_bounded(self) -> None:
+        oversized = self.root / "oversized-manifest.json"
+        oversized.write_bytes(b"x" * (1024 * 1024 + 1))
+        with self.assertRaisesRegex(MediaOutputError, "size limit"):
+            ReferenceVideoService._read_verified_file(oversized)
+
     def test_manifest_path_swap_after_fd_read_fails_closed(self) -> None:
         analysis = self.seed()
         frames = self.service.extract_frames(analysis["analysis_id"], frame_width=480)

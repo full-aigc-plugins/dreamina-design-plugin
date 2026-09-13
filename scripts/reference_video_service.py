@@ -24,6 +24,8 @@ MOTION_TIME = re.compile(r"pts_time[:=](?P<time>[0-9]+(?:\.[0-9]+)?)")
 MOTION_VALUE = re.compile(
     r"lavfi\.signalstats\.YAVG[=:](?P<value>[0-9]+(?:\.[0-9]+)?)"
 )
+MAX_MANIFEST_BYTES = 1024 * 1024
+MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -520,20 +522,28 @@ class ReferenceVideoService:
     @staticmethod
     def _verified_sha256(path: Path) -> str:
         """Hash one regular, non-symlink file while holding its verified descriptor."""
-        _, digest = ReferenceVideoService._verify_stable_file(path, capture_bytes=False)
+        _, digest, _ = ReferenceVideoService._verify_stable_file(
+            path,
+            capture_bytes=False,
+            max_bytes=MAX_ARTIFACT_BYTES,
+        )
         return digest
 
     @staticmethod
     def _read_verified_file(path: Path) -> tuple[bytes, str]:
         """Read one file from a verified descriptor and prove its path stayed bound."""
-        content, digest = ReferenceVideoService._verify_stable_file(path, capture_bytes=True)
+        content, digest, _ = ReferenceVideoService._verify_stable_file(
+            path,
+            capture_bytes=True,
+            max_bytes=MAX_MANIFEST_BYTES,
+        )
         assert content is not None
         return content, digest
 
     @staticmethod
     def _verify_stable_file(
-        path: Path, *, capture_bytes: bool
-    ) -> tuple[bytes | None, str]:
+        path: Path, *, capture_bytes: bool, max_bytes: int
+    ) -> tuple[bytes | None, str, tuple[int, int, int]]:
         try:
             before = path.lstat()
             if not stat.S_ISREG(before.st_mode):
@@ -549,7 +559,13 @@ class ReferenceVideoService:
             opened = os.fstat(descriptor)
             if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
                 raise MediaOutputError("content-addressed artifact changed during open")
+            if opened.st_size > max_bytes:
+                raise MediaOutputError("verified file exceeds size limit")
+            bytes_read = 0
             while chunk := os.read(descriptor, 1024 * 1024):
+                bytes_read += len(chunk)
+                if bytes_read > max_bytes:
+                    raise MediaOutputError("verified file exceeds size limit")
                 if chunks is not None:
                     chunks.append(chunk)
                 digest.update(chunk)
@@ -571,7 +587,8 @@ class ReferenceVideoService:
             != (opened.st_dev, opened.st_ino, opened.st_size)
         ):
             raise MediaOutputError("content-addressed artifact path changed during verification")
-        return (b"".join(chunks) if chunks is not None else None), digest.hexdigest()
+        identity = (opened.st_dev, opened.st_ino, opened.st_size)
+        return (b"".join(chunks) if chunks is not None else None), digest.hexdigest(), identity
 
     @staticmethod
     def _temporary_path(parent: Path, *, suffix: str) -> Path:
