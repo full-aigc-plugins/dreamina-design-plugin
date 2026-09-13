@@ -250,8 +250,15 @@ MEDIA_TOOL_KINDS = frozenset({"ffmpeg", "ffprobe", "whisper", "narration"})
 @dataclass(frozen=True)
 class TrustedMediaTool:
     kind: str
-    path: str
+    source_path: str
     sha256: str
+    staged_path: str
+
+@dataclass(frozen=True)
+class MediaResult:
+    exit_code: int
+    stdout: str
+    stderr: str
 
 class MediaAdapter:
     def run(self, kind: str, argv: Sequence[str], *, timeout_seconds: int) -> MediaResult:
@@ -574,7 +581,7 @@ git commit -m "feat: gate semantic shot analysis"
 
 **Interfaces:**
 - Consumes: passed analysis version, source digest, creative mode, user assertion, evidence references, design payload, and native confirmer.
-- Produces: `VideoRightsService.record_assertion(project_id, source_receipt, assertion)`, `assert_scope(receipt, required, binding)`, `VideoRedesignService.create_version(project_id, analysis_version, payload, rights_receipt_id)`, and `SimilarityAudit`.
+- Produces: `VideoRedesignService.prepare_candidate(project_id, analysis_version, payload)`, `VideoRightsService.record_assertion(project_id, source_receipt, design_candidate, assertion)`, `assert_scope(receipt, required, binding)`, `VideoRedesignService.commit_version(candidate, rights_receipt_id)`, and `SimilarityAudit`.
 
 - [ ] **Step 1: Write failing rights and originality tests**
 
@@ -582,17 +589,17 @@ git commit -m "feat: gate semantic shot analysis"
 def test_original_redesign_forbids_source_face_voice_brand_dialogue_music_reuse(self):
     payload = build_redesign(preserve=["likeness", "voice", "brand", "dialogue", "music"])
     with self.assertRaises(OriginalityPolicyError):
-        self.redesign.create_version(self.project_id, "v001", payload, rights_receipt_id=None)
+        self.redesign.prepare_candidate(self.project_id, "v001", payload)
 
 def test_replication_requires_declarant_basis_scope_expiry_and_evidence(self):
     for missing in ("declarant", "rights_basis", "expires_at", "evidence"):
         with self.subTest(missing=missing), self.assertRaises(ContractValidationError):
             assertion = dict(self.valid_assertion)
             del assertion[missing]
-            self.rights.record_assertion(self.project_id, self.source_receipt, assertion)
+            self.rights.record_assertion(self.project_id, self.source_receipt, self.design_candidate, assertion)
 
 def test_rights_receipt_is_bound_to_source_project_mode_and_design(self):
-    receipt = self.rights.record_assertion(self.project_id, self.source_receipt, self.valid_assertion)
+    receipt = self.rights.record_assertion(self.project_id, self.source_receipt, self.design_candidate, self.valid_assertion)
     with self.assertRaises(RightsScopeError):
         self.rights.assert_scope(receipt, required={"likeness"}, binding={"project_id": "vp_other", "source_sha256": self.source_sha256, "design_fingerprint": self.design_fingerprint})
 
@@ -603,10 +610,11 @@ def test_expired_or_narrower_audio_scope_fails_closed(self):
 def test_redesign_cannot_change_measured_analysis(self):
     payload = build_redesign(machine_fingerprint="0" * 64)
     with self.assertRaises(RedesignBindingError):
-        self.redesign.create_version(self.project_id, "v001", payload, rights_receipt_id=None)
+        self.redesign.prepare_candidate(self.project_id, "v001", payload)
 
 def test_similarity_audit_lists_every_preserved_and_replaced_dimension(self):
-    design = self.redesign.create_version(self.project_id, "v001", build_redesign(), rights_receipt_id=None)
+    candidate = self.redesign.prepare_candidate(self.project_id, "v001", build_redesign())
+    design = self.redesign.commit_version(candidate, rights_receipt_id=None)
     covered = set(design["similarity_audit"]["preserved"]) | set(design["similarity_audit"]["replaced"])
     self.assertEqual(covered, REUSE_DIMENSIONS)
 ```
@@ -631,7 +639,7 @@ class VideoRightsService:
             raise RightsScopeError("rights receipt does not cover requested reuse")
 ```
 
-For `original_redesign`, enforce a replacement declaration for likeness, voice, dialogue, music, brands, artwork, settings, costume, and distinctive props. For `authorized_replication`, persist only user-supplied evidence references and their hashes; never claim independent legal verification.
+For `original_redesign`, enforce a replacement declaration for likeness, voice, dialogue, music, brands, artwork, settings, costume, and distinctive props. For `authorized_replication`, first compute the design candidate fingerprint, then bind the user assertion and native confirmation to that candidate before committing the version. Persist only user-supplied evidence references and their hashes; never claim independent legal verification.
 
 - [ ] **Step 4: Run rights, approval, and redesign tests**
 
@@ -767,10 +775,11 @@ def test_scope_expansion_invalidates_allowance(self):
     with self.assertRaises(BatchScopeError):
         self.allowances.assert_quote(self.allowance_id, expanded)
 
-def test_reservations_cannot_exceed_total_credit_ceiling(self):
-    self.reserve_all_approved_attempts()
+def test_declared_total_cannot_be_lower_than_sum_of_request_ceilings(self):
+    corrupt = copy.deepcopy(self.quote)
+    corrupt["total_credit_ceiling"] -= 1
     with self.assertRaises(BudgetExceededError):
-        self.allowances.reserve(self.allowance_id, shot_id="S01", attempt=99, request_fingerprint=self.extra_fingerprint)
+        self.allowances.activate(corrupt, self.approver)
 
 def test_parallel_reservation_for_same_attempt_has_one_winner(self):
     results = self.run_parallel_reservations(self.allowance_id, "S01", 1, self.base_fingerprint)
@@ -956,7 +965,10 @@ def decide(measured: Mapping[str, Any], semantic: Mapping[str, Any], allowance: 
     if not failures:
         return {"action": "accepted", "failed_gates": []}
     repair = select_closed_repair_directive(failures)
-    fingerprint = next_prequoted_retry(allowance, repair)
+    try:
+        fingerprint = next_prequoted_retry(allowance, repair)
+    except LookupError:
+        return {"action": "manual_review", "failed_gates": [gate["name"] for gate in failures]}
     return {"action": "retry", "repair_directive": repair, "request_fingerprint": fingerprint, "failed_gates": [gate["name"] for gate in failures]}
 ```
 
@@ -1083,7 +1095,7 @@ def test_filter_graph_is_derived_only_from_closed_options(self):
 def test_raw_filter_codec_and_extra_argv_fields_are_rejected(self):
     for forbidden in ("filter_complex", "codec", "extra_args"):
         with self.subTest(forbidden=forbidden), self.assertRaises(CompositionPlanError):
-            service.build_plan(**{forbidden: "unsafe"})
+            service.build_plan(build_composition_plan(**{forbidden: "unsafe"}))
 ```
 
 Cover cuts, crossfades, dip-to-black, normalization, scale/pad/crop, 24/25/30 CFR, narration, music, effects, ducking, fades, loudness, subtitle mux, subtitle burn-in, silence, and even-dimension validation.
@@ -1161,6 +1173,7 @@ def test_report_has_required_viewport_breakpoints_and_no_private_source_path(sel
     html = report_service.render(report_payload)
     self.assertIn("@media (max-width: 767px)", html)
     self.assertIn("@media (min-width: 768px)", html)
+    self.assertIn("@media (min-width: 1200px)", html)
     self.assertNotIn(str(PRIVATE_SOURCE_PATH), html)
 ```
 
@@ -1453,7 +1466,7 @@ Expected: all commands PASS; paid canary and Marketplace install may remain expl
 - [ ] **Step 5: Commit the `0.4.0` release candidate**
 
 ```bash
-git add .codex-plugin/plugin.json scripts/dreamina_mcp_server.py README.md README.zh-CN.md PRIVACY.md TERMS.md THIRD_PARTY_NOTICES.md docs scripts/validate_distribution.py scripts/validate_distribution_v7.py tests/test_distribution.py tests/test_distribution_v7.py tests/test_contracts.py
+git add .codex-plugin/plugin.json scripts/dreamina_mcp_server.py README.md README.zh-CN.md PRIVACY.md TERMS.md THIRD_PARTY_NOTICES.md docs/Codex-Dreamina-Design-Plugin-Architecture.md docs/Codex-Dreamina-Design-Plugin-Architecture.zh_CN.md docs/Codex-Dreamina-Design-Plugin-Technical-Solution.md docs/Codex-Dreamina-Design-Plugin-Technical-Solution.zh_CN.md docs/verification/reference-video-offline.md scripts/validate_distribution.py scripts/validate_distribution_v7.py tests/test_distribution.py tests/test_distribution_v7.py tests/test_contracts.py
 git commit -m "docs: prepare Dreamina video production 0.4.0"
 ```
 
@@ -1552,7 +1565,7 @@ Expected: tests and validators PASS; worktree is clean; local, tracking, and Git
 - [ ] **Step 7: Commit evidence changes after the authorized run**
 
 ```bash
-git add scripts/run_reference_video_acceptance.py tests/test_run_reference_video_acceptance.py docs/verification docs/superpowers/plans/2026-09-14-reference-video-redirection.md
+git add scripts/run_reference_video_acceptance.py tests/test_run_reference_video_acceptance.py docs/verification/reference-video-offline.md docs/verification/reference-video-runtime-2026-09-14.md docs/verification/reference-video-paid-canary-2026-09-14.md docs/verification/reference-video-installed-2026-09-14.md docs/superpowers/plans/2026-09-14-reference-video-redirection.md
 git commit -m "test: record Dreamina video production acceptance"
 ```
 
