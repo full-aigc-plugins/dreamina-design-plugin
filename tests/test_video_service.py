@@ -275,6 +275,16 @@ class ImageToVideoTests(unittest.TestCase):
         self.assertEqual(len(req["references"]), 1)
         self.assertEqual(req["references"][0]["role"], "subject")
 
+    def test_image2video_accepts_one_validated_style_reference(self) -> None:
+        req = self.service.build_request(
+            mode="image2video", prompt="x", model="seedance-2.5",
+            video_resolution="720P", ratio="16:9",
+            references=[{"path": "/style.png", "role": "style", "sha256": "a" * 64}],
+        )
+        self.assertEqual(req["references"], [
+            {"path": "/style.png", "role": "style", "sha256": "a" * 64}
+        ])
+
     def test_image2video_rejects_extra_reference_before_subject(self) -> None:
         with self.assertRaises(InvalidReferenceError):
             self.service.build_request(

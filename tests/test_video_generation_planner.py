@@ -29,11 +29,12 @@ def snapshot() -> dict:
             "max_references": 8, "audio_reference_max_seconds": 30,
         }],
         "resolutions": {"video": ["720P"]}, "ratios": ["16:9"],
+        "durations": {"min_seconds": 1, "max_seconds": 30},
     }
 
 
 def ref(name: str, role: str, **extra) -> dict:
-    return {"path": f"/validated/{name}", "role": role, "sha256": name[0] * 64, **extra}
+    return {"path": f"/validated/{name}", "role": role, "sha256": "a" * 64, **extra}
 
 
 def shot(**overrides) -> dict:
@@ -76,6 +77,7 @@ class VideoGenerationPlannerTests(unittest.TestCase):
         cases = [
             (shot(kind="establishing", references=[]), "text2video"),
             (shot(references=[ref("subject.png", "subject")]), "image2video"),
+            (shot(references=[ref("style.png", "style")]), "image2video"),
             (shot(references=[ref("first.png", "frame"), ref("last.png", "frame")]), "frames2video"),
             (shot(storyboard=[ref("a.png", "frame"), ref("b.png", "frame"), ref("c.png", "frame")], references=[]), "multiframe2video"),
             (shot(references=[ref("clip.mp4", "reference"), ref("audio.wav", "audio", duration_seconds=4)]), "multimodal2video"),
@@ -91,6 +93,8 @@ class VideoGenerationPlannerTests(unittest.TestCase):
             "be80d8b1ee18282cff980f0b99579e6b48189fdacd07fc8c17866ce06047257f",
         ])
         self.assertEqual(quote["total_credit_ceiling"], 14)
+        self.assertEqual(quote["item_count"], 1)
+        self.assertEqual(quote["task_count"], 2)
         self.assertEqual(len(quote["items"][0]["attempts"]), 2)
         for attempt in quote["items"][0]["attempts"]:
             self.assertEqual(attempt["request_fingerprint"], canonical_fingerprint(attempt["request"]))
@@ -114,6 +118,63 @@ class VideoGenerationPlannerTests(unittest.TestCase):
         ):
             with self.subTest(change=change), self.assertRaises(UnsupportedCapabilityError):
                 self.planner.plan(design([shot(**change)]), self.snapshot, self.cost)
+
+    def test_snapshot_must_advertise_every_constraint_used_by_planning(self):
+        missing_model_bounds = copy.deepcopy(self.snapshot)
+        del missing_model_bounds["models"][0]["duration_max_seconds"]
+        with self.assertRaisesRegex(UnsupportedCapabilityError, "duration bounds"):
+            self.planner.plan(design(), missing_model_bounds, self.cost)
+
+        missing_multiframe_bounds = copy.deepcopy(self.snapshot)
+        del missing_multiframe_bounds["durations"]
+        storyboard = [ref("a.png", "frame"), ref("b.png", "frame")]
+        with self.assertRaisesRegex(UnsupportedCapabilityError, "duration bounds"):
+            self.planner.plan(
+                design([shot(storyboard=storyboard, references=[], duration_seconds=4)]),
+                missing_multiframe_bounds,
+                self.cost,
+            )
+
+        missing_reference_limit = copy.deepcopy(self.snapshot)
+        del missing_reference_limit["models"][0]["max_references"]
+        with self.assertRaisesRegex(UnsupportedCapabilityError, "reference limit"):
+            self.planner.plan(
+                design([shot(references=[ref("subject.png", "subject")])]),
+                missing_reference_limit,
+                self.cost,
+            )
+
+        missing_audio_limit = copy.deepcopy(self.snapshot)
+        del missing_audio_limit["models"][0]["audio_reference_max_seconds"]
+        with self.assertRaisesRegex(UnsupportedCapabilityError, "audio reference duration"):
+            self.planner.plan(
+                design([shot(references=[ref("audio.wav", "audio", duration_seconds=4)])]),
+                missing_audio_limit,
+                self.cost,
+            )
+
+    def test_quote_counts_and_fingerprint_are_validated_against_materialized_tasks(self):
+        quote = self.planner.plan(design(), self.snapshot, self.cost)
+        self.planner.validate_quote(quote)
+        for field in ("item_count", "task_count"):
+            tampered = copy.deepcopy(quote)
+            tampered[field] += 1
+            with self.subTest(field=field), self.assertRaisesRegex(PlanningError, field):
+                self.planner.validate_quote(tampered)
+        tampered = copy.deepcopy(quote)
+        tampered["items"][0]["attempts"][0]["credit_ceiling"] += 1
+        with self.assertRaisesRegex(PlanningError, "attempt credit_ceiling"):
+            self.planner.validate_quote(tampered)
+
+    def test_storyboard_cannot_silently_discard_other_references(self):
+        with self.assertRaisesRegex(PlanningError, "storyboard cannot be combined"):
+            self.planner.plan_shot(
+                shot(
+                    storyboard=[ref("a.png", "frame"), ref("b.png", "frame")],
+                    references=[ref("audio.wav", "audio", duration_seconds=4)],
+                ),
+                self.snapshot,
+            )
 
     def test_max_attempts_and_retry_vocabulary_are_closed(self):
         for attempts in (0, 4):

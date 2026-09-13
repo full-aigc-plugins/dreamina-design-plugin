@@ -65,7 +65,7 @@ class VideoWebPrerequisiteRequired(VideoServiceError):
 REFERENCE_LIMIT = 8
 VIDEO_REFERENCE_ROLES = {"style", "subject", "frame", "audio", "reference"}
 MODE_REQUIRED_REFERENCES = {
-    "image2video": {"subject"},
+    "image2video": {"subject", "style"},
     "frames2video": {"frame"},
     "multiframe2video": {"frame"},
 }
@@ -285,9 +285,11 @@ class VideoService:
                 f"mode {mode} requires references with at least one of {sorted(required_roles)}"
             )
         if mode == "image2video" and (
-            len(normalized) != 1 or normalized[0]["role"] != "subject"
+            len(normalized) != 1 or normalized[0]["role"] not in {"subject", "style"}
         ):
-            raise InvalidReferenceError("image2video requires exactly one subject reference")
+            raise InvalidReferenceError(
+                "image2video requires exactly one subject or style reference"
+            )
         if mode == "frames2video" and (
             len(normalized) != 2 or any(r["role"] != "frame" for r in normalized)
         ):
