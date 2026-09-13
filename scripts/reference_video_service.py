@@ -459,8 +459,8 @@ class ReferenceVideoService:
         selected: dict[str, Any] | None = None
         for candidate in candidates:
             try:
-                cls._verified_sha256(candidate)
-                manifest = json.loads(candidate.read_text(encoding="utf-8"))
+                manifest_bytes, _ = cls._read_verified_file(candidate)
+                manifest = json.loads(manifest_bytes.decode("utf-8"))
             except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
                 raise MediaOutputError("artifact manifest is unreadable") from exc
             if manifest.get("input_fingerprint") != input_fingerprint:
@@ -520,6 +520,20 @@ class ReferenceVideoService:
     @staticmethod
     def _verified_sha256(path: Path) -> str:
         """Hash one regular, non-symlink file while holding its verified descriptor."""
+        _, digest = ReferenceVideoService._verify_stable_file(path, capture_bytes=False)
+        return digest
+
+    @staticmethod
+    def _read_verified_file(path: Path) -> tuple[bytes, str]:
+        """Read one file from a verified descriptor and prove its path stayed bound."""
+        content, digest = ReferenceVideoService._verify_stable_file(path, capture_bytes=True)
+        assert content is not None
+        return content, digest
+
+    @staticmethod
+    def _verify_stable_file(
+        path: Path, *, capture_bytes: bool
+    ) -> tuple[bytes | None, str]:
         try:
             before = path.lstat()
             if not stat.S_ISREG(before.st_mode):
@@ -530,11 +544,14 @@ class ReferenceVideoService:
         except OSError as exc:
             raise MediaOutputError("content-addressed artifact cannot be opened safely") from exc
         digest = hashlib.sha256()
+        chunks: list[bytes] | None = [] if capture_bytes else None
         try:
             opened = os.fstat(descriptor)
             if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
                 raise MediaOutputError("content-addressed artifact changed during open")
             while chunk := os.read(descriptor, 1024 * 1024):
+                if chunks is not None:
+                    chunks.append(chunk)
                 digest.update(chunk)
             after = os.fstat(descriptor)
             if (
@@ -544,7 +561,17 @@ class ReferenceVideoService:
                 raise MediaOutputError("content-addressed artifact changed during hashing")
         finally:
             os.close(descriptor)
-        return digest.hexdigest()
+        try:
+            final_path = path.lstat()
+        except OSError as exc:
+            raise MediaOutputError("content-addressed artifact path disappeared") from exc
+        if (
+            not stat.S_ISREG(final_path.st_mode)
+            or (final_path.st_dev, final_path.st_ino, final_path.st_size)
+            != (opened.st_dev, opened.st_ino, opened.st_size)
+        ):
+            raise MediaOutputError("content-addressed artifact path changed during verification")
+        return (b"".join(chunks) if chunks is not None else None), digest.hexdigest()
 
     @staticmethod
     def _temporary_path(parent: Path, *, suffix: str) -> Path:

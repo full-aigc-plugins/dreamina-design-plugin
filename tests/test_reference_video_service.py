@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import statistics
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.media_adapter import MediaAdapter, MediaOutputError, MediaResult
 from scripts.reference_video_service import ReferenceVideoService
@@ -97,6 +99,23 @@ class ReferenceVideoServiceTests(unittest.TestCase):
         return self.service.seed(
             self.project_id, scene_threshold=0.30, min_shot_seconds=0.30, track_hz=5
         )
+
+    @staticmethod
+    def swap_path_after_second_fstat(target: Path, replacement: Path):
+        original_fstat = os.fstat
+        target_inode = target.lstat().st_ino
+        calls = 0
+
+        def racing_fstat(descriptor):
+            nonlocal calls
+            result = original_fstat(descriptor)
+            if result.st_ino == target_inode:
+                calls += 1
+                if calls == 2:
+                    os.replace(replacement, target)
+            return result
+
+        return racing_fstat
 
     def test_synthetic_fixture_has_hard_cut_dissolve_and_no_audio(self) -> None:
         ffmpeg = shutil.which("ffmpeg")
@@ -376,6 +395,32 @@ class ReferenceVideoServiceTests(unittest.TestCase):
         frame_path.symlink_to(replacement)
         with self.assertRaises(MediaOutputError):
             self.service.build_contact_sheets(analysis["analysis_id"], cols=3, rows=1)
+
+    def test_manifest_path_swap_after_fd_read_fails_closed(self) -> None:
+        analysis = self.seed()
+        frames = self.service.extract_frames(analysis["analysis_id"], frame_width=480)
+        frame_path = Path(frames["S01"]["a"]["path"])
+        manifest = next(frame_path.parents[2].glob("frame_manifests/*/*.json"))
+        replacement = self.root / "replacement-manifest.json"
+        replacement.write_bytes(manifest.read_bytes())
+        manifest_input = json.loads(manifest.read_text(encoding="utf-8"))["input"]
+        racing_fstat = self.swap_path_after_second_fstat(manifest, replacement)
+        with patch("scripts.reference_video_service.os.fstat", side_effect=racing_fstat):
+            with self.assertRaises(MediaOutputError):
+                self.service._load_artifact_manifest(
+                    frame_path.parents[2] / "frame_manifests", manifest_input
+                )
+
+    def test_artifact_path_swap_after_fd_hash_fails_closed(self) -> None:
+        analysis = self.seed()
+        frames = self.service.extract_frames(analysis["analysis_id"], frame_width=480)
+        frame_path = Path(frames["S01"]["a"]["path"])
+        replacement = self.root / "replacement-frame.png"
+        replacement.write_bytes(frame_path.read_bytes())
+        racing_fstat = self.swap_path_after_second_fstat(frame_path, replacement)
+        with patch("scripts.reference_video_service.os.fstat", side_effect=racing_fstat):
+            with self.assertRaises(MediaOutputError):
+                self.service.build_contact_sheets(analysis["analysis_id"], cols=3, rows=1)
 
         self.adapter.encoder_variant = "fresh"
         frames = self.service.extract_frames(analysis["analysis_id"], frame_width=480)
