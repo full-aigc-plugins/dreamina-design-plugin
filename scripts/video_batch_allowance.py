@@ -188,9 +188,11 @@ class LocalQuoteResolver:
             os.fchmod(self._root_fd, 0o700)
             self._identity = os.fstat(self._root_fd)
             self._pinned_parent_fd = parent_fd
-        except Exception:
+        except Exception as exc:
             self.close()
-            raise
+            if isinstance(exc, BatchScopeError):
+                raise
+            raise BatchScopeError("quote directory initialization is unsafe") from exc
 
     @staticmethod
     def identity(quote: Mapping[str, Any]) -> dict[str, Any]:
@@ -283,23 +285,38 @@ class VideoBatchAllowance:
         self._activations = self._root / "activations"
         self._seal_key_store = seal_key_store
         self._quote_resolver = quote_resolver
+        self._owns_seal_key_store = seal_key_store is None
+        self._owns_quote_resolver = quote_resolver is None
         self._project_store = project_store
         self._rights_service = rights_service
         self._thread_lock = threading.RLock()
-        for directory in (self._root, self._allowances, self._activations):
-            if directory.is_symlink():
-                raise BatchScopeError("allowance directory must not be a symlink")
-            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-            metadata = directory.stat()
-            if metadata.st_uid != os.getuid() or not stat.S_ISDIR(metadata.st_mode):
-                raise BatchScopeError("allowance directory ownership or type is unsafe")
-            os.chmod(directory, 0o700)
         directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        self._root_fd = self._allowances_fd = self._activations_fd = None
+        self._parent_fd = self._root_fd = self._allowances_fd = self._activations_fd = None
         try:
-            self._root_fd = os.open(self._root, directory_flags)
+            self._root.parent.mkdir(parents=True, exist_ok=True)
+            self._parent_fd = os.open(self._root.parent, directory_flags)
+            try:
+                os.mkdir(self._root.name, 0o700, dir_fd=self._parent_fd)
+            except FileExistsError:
+                pass
+            self._root_fd = os.open(self._root.name, directory_flags, dir_fd=self._parent_fd)
+            root_metadata = os.fstat(self._root_fd)
+            if not stat.S_ISDIR(root_metadata.st_mode) or root_metadata.st_uid != os.getuid():
+                raise BatchScopeError("allowance root ownership or type is unsafe")
+            os.fchmod(self._root_fd, 0o700)
+            for name in ("allowances", "activations"):
+                try:
+                    os.mkdir(name, 0o700, dir_fd=self._root_fd)
+                except FileExistsError:
+                    pass
             self._allowances_fd = os.open("allowances", directory_flags, dir_fd=self._root_fd)
             self._activations_fd = os.open("activations", directory_flags, dir_fd=self._root_fd)
+            for descriptor in (self._allowances_fd, self._activations_fd):
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid():
+                    raise BatchScopeError("allowance child directory ownership or type is unsafe")
+                os.fchmod(descriptor, 0o700)
+            self._parent_identity = os.fstat(self._parent_fd)
             self._root_identity = os.fstat(self._root_fd)
             self._allowances_identity = os.fstat(self._allowances_fd)
             self._activations_identity = os.fstat(self._activations_fd)
@@ -307,13 +324,15 @@ class VideoBatchAllowance:
                 self._seal_key_store = FileSealKeyStore()
             if self._quote_resolver is None:
                 self._quote_resolver = LocalQuoteResolver(self._root, parent_fd=self._root_fd)
-        except Exception:
+        except Exception as exc:
             self.close()
-            raise
+            if isinstance(exc, BatchScopeError):
+                raise
+            raise BatchScopeError("allowance directory initialization is unsafe") from exc
 
     def close(self) -> None:
         """Close every pinned descriptor owned by this allowance store."""
-        for field in ("_activations_fd", "_allowances_fd", "_root_fd"):
+        for field in ("_activations_fd", "_allowances_fd", "_root_fd", "_parent_fd"):
             descriptor = getattr(self, field, None)
             if descriptor is not None:
                 try:
@@ -321,8 +340,10 @@ class VideoBatchAllowance:
                 except OSError:
                     pass
                 setattr(self, field, None)
-        if isinstance(self._quote_resolver, LocalQuoteResolver):
+        if self._owns_quote_resolver and isinstance(self._quote_resolver, LocalQuoteResolver):
             self._quote_resolver.close()
+        if self._owns_seal_key_store and isinstance(self._seal_key_store, FileSealKeyStore):
+            self._seal_key_store.close()
 
     def activate(self, quote: Mapping[str, Any], approver: Any) -> str:
         """Obtain native approval once and persist the exact batch allowance."""
@@ -767,7 +788,15 @@ class VideoBatchAllowance:
             return False
 
     def _assert_root_identity(self) -> None:
-        current = self._root.lstat()
+        current_parent = self._root.parent.lstat()
+        pinned_parent = os.fstat(self._parent_fd)
+        if (
+            not stat.S_ISDIR(current_parent.st_mode)
+            or (current_parent.st_dev, current_parent.st_ino) != (pinned_parent.st_dev, pinned_parent.st_ino)
+            or (pinned_parent.st_dev, pinned_parent.st_ino) != (self._parent_identity.st_dev, self._parent_identity.st_ino)
+        ):
+            raise BatchScopeError("allowance parent identity changed")
+        current = os.stat(self._root.name, dir_fd=self._parent_fd, follow_symlinks=False)
         pinned = os.fstat(self._root_fd)
         if (
             not stat.S_ISDIR(current.st_mode)
