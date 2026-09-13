@@ -231,6 +231,89 @@ class VideoProjectStoreTests(unittest.TestCase):
         with self.assertRaises(VersionReconciliationError):
             self.store.reconcile_version(project["project_id"], "analysis", "v001", fingerprint, None)
 
+    def test_reconcile_version_rejects_project_or_family_directory_replacement(self) -> None:
+        """Catches pathname traversal escaping the directories verified before open."""
+        for replaced_level in ("project", "family"):
+            with self.subTest(replaced_level=replaced_level):
+                isolated_root = Path(self.tmp.name) / f"projects-{replaced_level}"
+                store = VideoProjectStore(isolated_root)
+                project = store.create(
+                    title="directory race",
+                    creative_mode="original_redesign",
+                    audio_policy="silent",
+                )
+                document = store.write_version(
+                    project["project_id"], "analysis", {"schema_version": "1.0"}
+                )
+                project_root = isolated_root / project["project_id"]
+                family_root = project_root / "analysis"
+                target = family_root / "v001.json"
+                fingerprint = canonical_fingerprint(document)
+                real_open = os.open
+                replaced = False
+
+                def replace_before_target_open(path, flags, mode=0o777, *, dir_fd=None):
+                    nonlocal replaced
+                    if not replaced and Path(path).name == "v001.json":
+                        if replaced_level == "family":
+                            old = project_root / "analysis-old"
+                            os.rename(family_root, old)
+                            family_root.mkdir(mode=0o700)
+                            replacement = family_root / "v001.json"
+                        else:
+                            old = isolated_root / f"{project['project_id']}-old"
+                            os.rename(project_root, old)
+                            project_root.mkdir(mode=0o700)
+                            replacement_family = project_root / "analysis"
+                            replacement_family.mkdir(mode=0o700)
+                            replacement = replacement_family / "v001.json"
+                        replacement.write_text(json.dumps(document), encoding="utf-8")
+                        replacement.chmod(0o600)
+                        replaced = True
+                    if dir_fd is None:
+                        return real_open(path, flags, mode)
+                    return real_open(path, flags, mode, dir_fd=dir_fd)
+
+                with patch("scripts.video_project_store.os.open", side_effect=replace_before_target_open):
+                    with self.assertRaises(VersionReconciliationError):
+                        store.reconcile_version(
+                            project["project_id"], "analysis", "v001", fingerprint, None
+                        )
+                self.assertTrue(replaced)
+
+    def test_reconcile_version_fails_closed_when_path_is_replaced_after_read(self) -> None:
+        """Catches returning stale bytes after the exact version path is atomically replaced."""
+        project = self.store.create(
+            title="replace-race", creative_mode="original_redesign", audio_policy="silent"
+        )
+        document = self.store.write_version(
+            project["project_id"], "analysis", {"schema_version": "1.0", "value": "original"}
+        )
+        family_root = self.root / project["project_id"] / "analysis"
+        target = family_root / "v001.json"
+        replacement = family_root / ".replacement.json"
+        replacement_document = {
+            "schema_version": "1.0", "value": "replaced-after-read", "version": "v001"
+        }
+        real_json_load = json.load
+
+        def replace_after_read(handle):
+            loaded = real_json_load(handle)
+            replacement.write_text(json.dumps(replacement_document), encoding="utf-8")
+            replacement.chmod(0o600)
+            os.replace(replacement, target)
+            return loaded
+
+        with patch("scripts.video_project_store.json.load", side_effect=replace_after_read):
+            with self.assertRaises(VersionReconciliationError):
+                self.store.reconcile_version(
+                    project["project_id"], "analysis", "v001",
+                    canonical_fingerprint(document), None,
+                )
+
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8")), replacement_document)
+        self.assertEqual([path.name for path in family_root.glob("v*.json")], ["v001.json"])
+
 
 if __name__ == "__main__":
     unittest.main()

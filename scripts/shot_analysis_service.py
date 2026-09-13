@@ -9,8 +9,16 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from scripts.json_contracts import validate_contract
-from scripts.video_project_store import VideoProjectStore
+from scripts.json_contracts import (
+    ContractValidationError,
+    canonical_fingerprint,
+    validate_contract,
+)
+from scripts.video_project_store import (
+    VersionCommitIndeterminateError,
+    VersionReconciliationError,
+    VideoProjectStore,
+)
 
 
 SHOT_SIZES = frozenset({"extreme_wide", "wide", "full", "medium", "close_up", "extreme_close_up", "none"})
@@ -38,12 +46,43 @@ class ShotAnalysisService:
     def __init__(self, project_store: VideoProjectStore) -> None:
         self._store = project_store
 
-    def validate_and_persist(self, project_id: str, analysis_version: str, annotations: Mapping[str, Any]) -> dict[str, Any]:
+    def validate_and_persist(
+        self,
+        project_id: str,
+        analysis_version: str,
+        annotations: Mapping[str, Any],
+        *,
+        indeterminate_commit: VersionCommitIndeterminateError | None = None,
+    ) -> dict[str, Any]:
         analysis = self._load_analysis(project_id, analysis_version)
-        candidate = dict(annotations)
-        candidate.setdefault("transcript", None)
-        schema_candidate = {**candidate, "version": "v001", "analysis_version": analysis_version}
-        validate_contract(schema_candidate, "shot_annotation.schema.json")
+        try:
+            candidate = dict(annotations)
+            candidate.setdefault("transcript", None)
+            schema_candidate = {
+                **candidate, "version": "v001", "analysis_version": analysis_version
+            }
+            validate_contract(schema_candidate, "shot_annotation.schema.json")
+        except (ContractValidationError, TypeError, ValueError):
+            blocked = GateResult(
+                "schema",
+                "failed",
+                ("annotation does not satisfy the closed semantic schema",),
+            )
+            skipped = [
+                GateResult(name, "skipped", ("schema gate blocked evaluation",))
+                for name in (
+                    "machine_fingerprint", "timeline", "duration", "shot_ids",
+                    "boundary_provenance", "keyframes", "taxonomy",
+                    "frame_specificity", "description_dedup", "cast_subjects",
+                    "category_evidence", "motion_camera", "rhythm_completeness",
+                    "transcript_provenance",
+                )
+            ]
+            return {
+                "status": "failed",
+                "gates": [asdict(blocked), *(asdict(gate) for gate in skipped)],
+                "annotation_version": None,
+            }
 
         checks: list[tuple[str, Callable[[], Sequence[str]]]] = [
             ("schema", lambda: ()),
@@ -71,7 +110,44 @@ class ShotAnalysisService:
         result: dict[str, Any] = {"status": "failed" if blocking else "passed", "gates": [asdict(g) for g in gates], "annotation_version": None}
         if not blocking:
             document = {**candidate, "analysis_version": analysis_version}
-            persisted = self._store.write_version(project_id, "annotation", document, schema_name="shot_annotation.schema.json")
+            if indeterminate_commit is None:
+                persisted = self._store.write_version(
+                    project_id,
+                    "annotation",
+                    document,
+                    schema_name="shot_annotation.schema.json",
+                )
+            else:
+                expected_path = (
+                    self._store.project_root(project_id)
+                    / "annotation"
+                    / f"{indeterminate_commit.version}.json"
+                )
+                candidate_document = {
+                    **document,
+                    "version": indeterminate_commit.version,
+                }
+                if (
+                    indeterminate_commit.project_id != project_id
+                    or indeterminate_commit.family != "annotation"
+                    or indeterminate_commit.path != expected_path
+                    or canonical_fingerprint(candidate_document)
+                    != indeterminate_commit.payload_fingerprint
+                ):
+                    raise VersionReconciliationError(
+                        project_id=project_id,
+                        family="annotation",
+                        version=indeterminate_commit.version,
+                        path=expected_path,
+                        reason="retry does not match the exact indeterminate annotation commit",
+                    )
+                persisted = self._store.reconcile_version(
+                    project_id,
+                    "annotation",
+                    indeterminate_commit.version,
+                    indeterminate_commit.payload_fingerprint,
+                    "shot_annotation.schema.json",
+                )
             result["annotation_version"] = persisted["version"]
             if self._store.get(project_id)["state"] == "analyzing":
                 self._store.transition(project_id, expected="analyzing", next_state="analysis_review", evidence={"analysis_version": analysis_version, "annotation_version": persisted["version"], "machine_fingerprint": analysis["machine_fingerprint"]})

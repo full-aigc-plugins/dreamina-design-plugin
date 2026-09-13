@@ -8,9 +8,12 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.json_contracts import ContractValidationError
 from scripts.shot_analysis_service import REQUIRED_GATES, ShotAnalysisService
-from scripts.video_project_store import VersionCommitIndeterminateError, VideoProjectStore
+from scripts.video_project_store import (
+    VersionCommitIndeterminateError,
+    VersionReconciliationError,
+    VideoProjectStore,
+)
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "reference_video" / "valid-annotations.json"
@@ -64,8 +67,10 @@ class ShotAnalysisServiceTests(unittest.TestCase):
     def gate(result, name):
         return next(gate for gate in result["gates"] if gate["name"] == name)
 
-    def validate(self, annotations=None, version="v001"):
-        return self.service.validate_and_persist(self.project_id, version, annotations or self.annotations)
+    def validate(self, annotations=None, version="v001", **kwargs):
+        return self.service.validate_and_persist(
+            self.project_id, version, annotations or self.annotations, **kwargs
+        )
 
     def test_valid_silent_annotation_records_all_named_gates_and_review_transition(self):
         result = self.validate()
@@ -79,16 +84,48 @@ class ShotAnalysisServiceTests(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertEqual(self.store.get(self.project_id)["state"], "analysis_review")
 
-    def test_schema_rejects_machine_fields_and_low_confidence_without_review_note(self):
+    def test_schema_failure_returns_all_fifteen_gates_without_persisting_or_transitioning(self):
+        """Catches schema validation escaping before the complete gate report is built."""
+        payload = copy.deepcopy(self.annotations)
+        payload["shots"][0]["start_seconds"] = 9.0
+
+        result = self.validate(payload)
+
+        self.assertEqual(
+            [gate["name"] for gate in result["gates"]],
+            [
+                "schema", "machine_fingerprint", "timeline", "duration", "shot_ids",
+                "boundary_provenance", "keyframes", "taxonomy", "frame_specificity",
+                "description_dedup", "cast_subjects", "category_evidence", "motion_camera",
+                "rhythm_completeness", "transcript_provenance",
+            ],
+        )
+        self.assertEqual(result["gates"][0], {
+            "name": "schema", "status": "failed",
+            "violations": ("annotation does not satisfy the closed semantic schema",),
+        })
+        self.assertEqual(
+            [gate["status"] for gate in result["gates"][1:]],
+            ["skipped"] * 14,
+        )
+        self.assertEqual(
+            [gate["violations"] for gate in result["gates"][1:]],
+            [("schema gate blocked evaluation",)] * 14,
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertIsNone(result["annotation_version"])
+        self.assertFalse((self.store.project_root(self.project_id) / "annotation").exists())
+        self.assertEqual(self.store.get(self.project_id)["state"], "analyzing")
+
+    def test_schema_gate_fails_machine_fields_and_low_confidence_without_review_note(self):
         for field, value in (("start_seconds", 9.0), ("motion_median", 3.0), ("boundary_source", "scene")):
             payload = copy.deepcopy(self.annotations)
             payload["shots"][0][field] = value
-            with self.subTest(field=field), self.assertRaises(ContractValidationError):
-                self.validate(payload)
+            with self.subTest(field=field):
+                self.assertEqual(self.gate(self.validate(payload), "schema")["status"], "failed")
         payload = copy.deepcopy(self.annotations)
         payload["shots"][0]["confidence"] = .64
-        with self.assertRaises(ContractValidationError):
-            self.validate(payload)
+        self.assertEqual(self.gate(self.validate(payload), "schema")["status"], "failed")
 
     def test_machine_fingerprint_gate_passes_exact_binding_and_defeats_stale_binding(self):
         self.assertEqual(self.gate(self.validate(), "machine_fingerprint")["status"], "passed")
@@ -213,6 +250,56 @@ class ShotAnalysisServiceTests(unittest.TestCase):
         annotation_root = self.store.project_root(self.project_id) / "annotation"
         self.assertEqual(raised.exception.family, "annotation")
         self.assertEqual(raised.exception.version, "v001")
+        self.assertEqual([path.name for path in annotation_root.glob("v*.json")], ["v001.json"])
+        self.assertEqual(self.store.get(self.project_id)["state"], "analyzing")
+
+    def test_retry_reconciles_exact_indeterminate_annotation_without_allocating_v002(self):
+        """Catches a genuine retry allocating a fresh annotation version."""
+        calls = 0
+        real_fsync = os.fsync
+
+        def fail_directory_fsync(descriptor: int) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("injected annotation directory fsync failure")
+            real_fsync(descriptor)
+
+        with patch("scripts.video_project_store.os.fsync", side_effect=fail_directory_fsync):
+            with self.assertRaises(VersionCommitIndeterminateError) as raised:
+                self.validate()
+
+        result = self.validate(indeterminate_commit=raised.exception)
+
+        annotation_root = self.store.project_root(self.project_id) / "annotation"
+        self.assertEqual(result["annotation_version"], "v001")
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual([path.name for path in annotation_root.glob("v*.json")], ["v001.json"])
+        self.assertEqual(self.store.get(self.project_id)["state"], "analysis_review")
+
+    def test_retry_with_changed_annotation_stays_typed_blocking_and_does_not_transition(self):
+        """Catches reconciliation accepting input other than the exact committed document."""
+        calls = 0
+        real_fsync = os.fsync
+
+        def fail_directory_fsync(descriptor: int) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("injected annotation directory fsync failure")
+            real_fsync(descriptor)
+
+        with patch("scripts.video_project_store.os.fsync", side_effect=fail_directory_fsync):
+            with self.assertRaises(VersionCommitIndeterminateError) as raised:
+                self.validate()
+        changed = copy.deepcopy(self.annotations)
+        changed["shots"][0]["frame_description"] = (
+            "A presenter stands beside a different illuminated control display."
+        )
+
+        with self.assertRaises(VersionReconciliationError):
+            self.validate(changed, indeterminate_commit=raised.exception)
+        annotation_root = self.store.project_root(self.project_id) / "annotation"
         self.assertEqual([path.name for path in annotation_root.glob("v*.json")], ["v001.json"])
         self.assertEqual(self.store.get(self.project_id)["state"], "analyzing")
 

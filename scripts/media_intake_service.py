@@ -298,11 +298,11 @@ class MediaIntakeService:
         try:
             os.fchmod(lock_descriptor, 0o600)
             fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+            os.chmod(attempt_path, 0o400)
             try:
                 os.link(attempt_path, final, follow_symlinks=False)
             except FileExistsError:
                 pass
-            os.chmod(final, 0o400)
             self._verify_staged(final, digest, copied_size)
             directory = os.open(source_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             try:

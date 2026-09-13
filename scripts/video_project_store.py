@@ -9,7 +9,7 @@ import re
 import secrets
 import stat
 import tempfile
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping
@@ -202,52 +202,125 @@ class VideoProjectStore:
             raise ValueError("invalid version identity")
         if re.fullmatch(r"[a-f0-9]{64}", expected_fingerprint) is None:
             raise ValueError("invalid expected fingerprint")
-        # Inode checks below detect races without creating a lock file or
-        # mutating the version directory.
-        with nullcontext():
-            family_root = self.project_root(project_id) / family
-            target = family_root / f"{version}.json"
+        self._validate_project_id(project_id)
+        target = self._root / project_id / family / f"{version}.json"
+        descriptors: list[int] = []
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            root_descriptor = os.open(self._root, directory_flags)
+            descriptors.append(root_descriptor)
+            root_metadata = self._require_directory(root_descriptor, 0o700, "store root")
+
+            project_descriptor = os.open(project_id, directory_flags, dir_fd=root_descriptor)
+            descriptors.append(project_descriptor)
+            project_metadata = self._require_directory(
+                project_descriptor, 0o700, "project directory"
+            )
+
+            family_descriptor = os.open(family, directory_flags, dir_fd=project_descriptor)
+            descriptors.append(family_descriptor)
+            family_metadata = self._require_directory(
+                family_descriptor, 0o700, "version family"
+            )
+
+            file_descriptor = os.open(
+                f"{version}.json",
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=family_descriptor,
+            )
+            descriptors.append(file_descriptor)
+            file_metadata = os.fstat(file_descriptor)
+            if not stat.S_ISREG(file_metadata.st_mode):
+                raise OSError("version is not a regular file")
+            if file_metadata.st_mode & 0o777 != 0o600:
+                raise OSError("version is not private")
+
+            read_descriptor = os.dup(file_descriptor)
             try:
-                family_metadata = family_root.lstat()
-                target_metadata = target.lstat()
-                if not stat.S_ISDIR(family_metadata.st_mode) or family_root.is_symlink():
-                    raise OSError("version family is not a regular directory")
-                if family_metadata.st_mode & 0o777 != 0o700:
-                    raise OSError("version family is not private")
-                if not stat.S_ISREG(target_metadata.st_mode) or target.is_symlink():
-                    raise OSError("version is not a regular file")
-                if target_metadata.st_mode & 0o777 != 0o600:
-                    raise OSError("version is not private")
-                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-                descriptor = os.open(target, flags)
+                with os.fdopen(read_descriptor, "r", encoding="utf-8") as handle:
+                    read_descriptor = -1
+                    document = json.load(handle)
+            finally:
+                if read_descriptor >= 0:
+                    os.close(read_descriptor)
+            if not isinstance(document, dict) or document.get("version") != version:
+                raise ValueError("version token mismatch")
+            if schema_name is not None:
+                validate_contract(document, schema_name)
+            if canonical_fingerprint(document) != expected_fingerprint:
+                raise ValueError("payload fingerprint mismatch")
+
+            # Re-open every pathname from its pinned parent. Any replacement,
+            # even one containing identical bytes, makes reconciliation unsafe.
+            self._require_same_identity(
+                os.stat(self._root, follow_symlinks=False), root_metadata, "store root"
+            )
+            self._require_same_identity(
+                os.stat(project_id, dir_fd=root_descriptor, follow_symlinks=False),
+                project_metadata,
+                "project directory",
+            )
+            self._require_same_identity(
+                os.stat(family, dir_fd=project_descriptor, follow_symlinks=False),
+                family_metadata,
+                "version family",
+            )
+            self._require_same_identity(
+                os.stat(
+                    f"{version}.json", dir_fd=family_descriptor, follow_symlinks=False
+                ),
+                file_metadata,
+                "version",
+            )
+            return document
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise VersionReconciliationError(
+                project_id=project_id,
+                family=family,
+                version=version,
+                path=target,
+                reason=str(exc),
+            ) from exc
+        finally:
+            for descriptor in reversed(descriptors):
                 try:
-                    opened = os.fstat(descriptor)
-                    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
-                        target_metadata.st_dev,
-                        target_metadata.st_ino,
-                    ):
-                        raise OSError("version changed while opening")
-                    with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
-                        descriptor = -1
-                        document = json.load(handle)
-                finally:
-                    if descriptor >= 0:
-                        os.close(descriptor)
-                if not isinstance(document, dict) or document.get("version") != version:
-                    raise ValueError("version token mismatch")
-                if schema_name is not None:
-                    validate_contract(document, schema_name)
-                if canonical_fingerprint(document) != expected_fingerprint:
-                    raise ValueError("payload fingerprint mismatch")
-                return document
-            except (OSError, ValueError, json.JSONDecodeError) as exc:
-                raise VersionReconciliationError(
-                    project_id=project_id,
-                    family=family,
-                    version=version,
-                    path=target,
-                    reason=str(exc),
-                ) from exc
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _require_directory(descriptor: int, mode: int, label: str) -> os.stat_result:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise OSError(f"{label} is not a directory")
+        if metadata.st_mode & 0o777 != mode:
+            raise OSError(f"{label} is not private")
+        return metadata
+
+    @staticmethod
+    def _require_same_identity(
+        current: os.stat_result, expected: os.stat_result, label: str
+    ) -> None:
+        current_identity = (
+            current.st_dev,
+            current.st_ino,
+            current.st_size,
+            stat.S_IFMT(current.st_mode),
+            current.st_mode & 0o777,
+        )
+        expected_identity = (
+            expected.st_dev,
+            expected.st_ino,
+            expected.st_size,
+            stat.S_IFMT(expected.st_mode),
+            expected.st_mode & 0o777,
+        )
+        if current_identity != expected_identity:
+            raise OSError(f"{label} changed during reconciliation")
 
     def project_root(self, project_id: str) -> Path:
         self._validate_project_id(project_id)
