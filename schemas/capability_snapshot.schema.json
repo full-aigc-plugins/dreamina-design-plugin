@@ -99,6 +99,16 @@
           }
         }
       }
+    },
+    "pricing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["credit_ceiling_per_attempt", "source", "captured_at"],
+      "properties": {
+        "credit_ceiling_per_attempt": {"type": "integer", "minimum": 1},
+        "source": {"type": "string", "minLength": 1},
+        "captured_at": {"type": "string", "format": "date-time"}
+      }
     }
   }
 }
