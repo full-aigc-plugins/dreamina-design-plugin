@@ -241,7 +241,7 @@ class VideoGenerationPlanner:
             raise PlanningError("production planning requires a trusted capability provider")
         provider = self._capability_provider_factory()
         from scripts.trusted_capability_provider import TrustedCapabilityProvider
-        if not isinstance(provider, TrustedCapabilityProvider):
+        if type(provider) is not TrustedCapabilityProvider:
             raise PlanningError("production planning requires TrustedCapabilityProvider")
         try:
             evidence = json.loads(json.dumps(provider.capture(), ensure_ascii=False, allow_nan=False))

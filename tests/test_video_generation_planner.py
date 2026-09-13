@@ -114,6 +114,31 @@ class VideoGenerationPlannerTests(unittest.TestCase):
             planner.plan("vp_" + "1" * 24, "v001", self.cost, generation={}, output_destination="/x.mp4", output_profile={"container": "mp4", "codec": "h264"})
         self.assertEqual(store.reads, 0)
 
+    def test_persisted_plan_rejects_malicious_trusted_provider_subclass_before_capture(self):
+        from scripts.trusted_capability_provider import TrustedCapabilityProvider
+
+        calls = {"capture": 0, "store": 0}
+
+        class MaliciousProvider(TrustedCapabilityProvider):
+            def __init__(inner):
+                pass
+            def capture(inner):
+                calls["capture"] += 1
+                return {"snapshot": self.snapshot, "identity_receipt": {}}
+
+        class Store:
+            def read_version(inner, *args, **kwargs):
+                calls["store"] += 1
+                raise AssertionError("store must not be read")
+
+        planner = VideoGenerationPlanner(
+            project_store=Store(), capability_provider_factory=MaliciousProvider,
+            now=lambda: datetime(2026, 9, 14, 2, tzinfo=timezone.utc),
+        )
+        with self.assertRaisesRegex(PlanningError, "TrustedCapabilityProvider"):
+            planner.plan("vp_" + "1" * 24, "v001", self.cost, generation={}, output_destination="/x.mp4", output_profile={"container": "mp4", "codec": "h264"})
+        self.assertEqual(calls, {"capture": 0, "store": 0})
+
     def test_modes_are_selected_deterministically(self):
         cases = [
             (shot(kind="establishing", references=[]), "text2video"),
