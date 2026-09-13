@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/shot_annotation.schema.json",
+  "title": "Dreamina Semantic Shot Annotation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "version", "analysis_version", "machine_fingerprint", "shots", "transcript"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "analysis_version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "machine_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "shots": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "shot_size", "category", "category_evidence", "camera", "frame_description", "rhythm_role", "rhythm_evidence", "subjects", "on_screen_text", "dialogue", "narration", "music", "sound", "confidence", "review_note"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^S[0-9]{2,}$"},
+          "shot_size": {"type": "string", "minLength": 1},
+          "category": {"type": "string", "minLength": 1},
+          "category_evidence": {"type": "string"},
+          "camera": {"type": "string", "minLength": 1},
+          "frame_description": {"type": "string", "minLength": 1},
+          "rhythm_role": {"type": ["string", "null"]},
+          "rhythm_evidence": {"type": ["string", "null"]},
+          "subjects": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["id", "name"], "properties": {"id": {"type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$"}, "name": {"type": "string", "minLength": 1}}}},
+          "on_screen_text": {"type": "array", "items": {"type": "string"}},
+          "dialogue": {"type": "array", "items": {"type": "string"}},
+          "narration": {"type": "array", "items": {"type": "string"}},
+          "music": {"type": "array", "items": {"type": "string"}},
+          "sound": {"type": "array", "items": {"type": "string"}},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+          "review_note": {"type": "string"}
+        },
+        "if": {"properties": {"confidence": {"maximum": 0.649999999}}},
+        "then": {"properties": {"review_note": {"minLength": 1}}}
+      }
+    },
+    "transcript": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["policy", "provider", "segments"],
+      "properties": {
+        "policy": {"type": "string", "enum": ["asr", "user_supplied_script"]},
+        "provider": {"type": "string"},
+        "segments": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["start_seconds", "end_seconds", "text", "confidence"], "properties": {"start_seconds": {"type": "number", "minimum": 0}, "end_seconds": {"type": "number", "minimum": 0}, "text": {"type": "string", "minLength": 1}, "confidence": {"type": "number", "minimum": 0, "maximum": 1}}}}
+      }
+    }
+  }
+}

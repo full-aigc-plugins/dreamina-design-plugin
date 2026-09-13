@@ -35,6 +35,7 @@ EXPECTED_SCHEMAS = (
     "video_project.schema.json",
     "source_receipt.schema.json",
     "shot_analysis.schema.json",
+    "shot_annotation.schema.json",
 )
 
 CREDENTIAL_KEYS = (
