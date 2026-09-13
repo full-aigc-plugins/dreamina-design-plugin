@@ -366,7 +366,7 @@ class DreaminaAdapter:
             modes = schema_payload.get("modes")
             if isinstance(modes, list):
                 snapshot["modes"] = modes
-            for key in ("models", "resolutions", "ratios", "durations"):
+            for key in ("models", "resolutions", "ratios", "durations", "mode_limits"):
                 if key in schema_payload:
                     snapshot[key] = schema_payload[key]
         return snapshot
@@ -397,6 +397,7 @@ def _parse_command_help(command_help: Mapping[str, str]) -> dict:
     resolutions = {"image": set(), "video": set()}
     ratios: set[str] = set()
     duration_bounds: list[int] = []
+    mode_limits: dict[str, dict[str, int]] = {}
     for mode, help_text in command_help.items():
         model_match = re.search(
             r"(?m)(?:^- model_version(?: values)?:|--model_version\s+\w+\s+supported values:|flag values:)\s*([^\n)]+)",
@@ -427,6 +428,15 @@ def _parse_command_help(command_help: Mapping[str, str]) -> dict:
             duration_bounds.extend((int(lower), int(upper)))
         count_match = re.search(r"generate_num:\s*(\d+)-(\d+)", help_text)
         reference_count_match = re.search(r"Upload\s+(\d+)\s+to\s+(\d+)\s+local images", help_text)
+        if mode == "multiframe2video" and reference_count_match:
+            transition_bounds = re.search(r"transition duration\s+(\d+)-(\d+)s", help_text)
+            if transition_bounds:
+                mode_limits[mode] = {
+                    "min_references": int(reference_count_match.group(1)),
+                    "max_references": int(reference_count_match.group(2)),
+                    "duration_min_seconds": int(transition_bounds.group(1)),
+                    "duration_max_seconds": int(transition_bounds.group(2)),
+                }
         for entry in models.values():
             if mode not in entry["modes"]:
                 continue
@@ -499,6 +509,8 @@ def _parse_command_help(command_help: Mapping[str, str]) -> dict:
             "min_seconds": min(duration_bounds),
             "max_seconds": max(duration_bounds),
         }
+    if mode_limits:
+        result["mode_limits"] = mode_limits
     return result
 
 

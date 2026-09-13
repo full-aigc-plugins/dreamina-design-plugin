@@ -4,6 +4,7 @@ import copy
 import unittest
 
 from scripts.json_contracts import canonical_fingerprint, validate_contract
+from scripts.video_service import build_video_request_fingerprint
 
 try:
     from scripts.video_generation_planner import (
@@ -29,7 +30,7 @@ def snapshot() -> dict:
             "max_references": 8, "audio_reference_max_seconds": 30,
         }],
         "resolutions": {"video": ["720P"]}, "ratios": ["16:9"],
-        "durations": {"min_seconds": 1, "max_seconds": 30},
+        "mode_limits": {"multiframe2video": {"min_references": 2, "max_references": 20, "duration_min_seconds": 1, "duration_max_seconds": 8}},
     }
 
 
@@ -97,7 +98,7 @@ class VideoGenerationPlannerTests(unittest.TestCase):
         self.assertEqual(quote["task_count"], 2)
         self.assertEqual(len(quote["items"][0]["attempts"]), 2)
         for attempt in quote["items"][0]["attempts"]:
-            self.assertEqual(attempt["request_fingerprint"], canonical_fingerprint(attempt["request"]))
+            self.assertEqual(attempt["request_fingerprint"], build_video_request_fingerprint(attempt["request"]))
         validate_contract(quote, "video_batch_quote.schema.json")
 
     def test_unknown_price_blocks_instead_of_inventing_cost(self):
@@ -126,7 +127,7 @@ class VideoGenerationPlannerTests(unittest.TestCase):
             self.planner.plan(design(), missing_model_bounds, self.cost)
 
         missing_multiframe_bounds = copy.deepcopy(self.snapshot)
-        del missing_multiframe_bounds["durations"]
+        del missing_multiframe_bounds["mode_limits"]
         storyboard = [ref("a.png", "frame"), ref("b.png", "frame")]
         with self.assertRaisesRegex(UnsupportedCapabilityError, "duration bounds"):
             self.planner.plan(
@@ -134,6 +135,32 @@ class VideoGenerationPlannerTests(unittest.TestCase):
                 missing_multiframe_bounds,
                 self.cost,
             )
+
+    def test_unicode_base_and_retry_use_shared_canonical_fingerprint(self):
+        quote = self.planner.plan(
+            design([shot(prompt="晨雾中的蓝色工作室")]), self.snapshot, self.cost
+        )
+        self.assertEqual(quote["items"][0]["request_fingerprints"], [
+            "0a8030925a839f0877da3effcf931da689a2aa114fc0c58b818eedd10f7c72f3",
+            "b69ae47f788ea137e1057859e72a7afd1cd94311c6f5e2fff4fd630478340fa2",
+        ])
+
+    def test_cost_timestamps_require_strict_rfc3339_timezone(self):
+        valid = ("2026-09-14T01:02:03Z", "2026-09-14T09:02:03+08:00")
+        invalid = ("now", "2026-09-14 01:02:03", "2026-09-14T01:02:03", "2026-02-30T01:02:03Z")
+        for value in valid:
+            candidate = dict(self.cost, recorded_at=value)
+            with self.subTest(valid=value):
+                self.assertEqual(self.planner.plan(design(), self.snapshot, candidate)["quoted_at"], value)
+        for value in invalid:
+            candidate = dict(self.cost, recorded_at=value)
+            with self.subTest(invalid=value), self.assertRaisesRegex(CostBasisError, "RFC3339"):
+                self.planner.plan(design(), self.snapshot, candidate)
+
+        live = copy.deepcopy(self.snapshot)
+        live["pricing"] = {"credit_ceiling_per_attempt": 2, "source": "cli", "captured_at": "bad"}
+        with self.assertRaisesRegex(CostBasisError, "RFC3339"):
+            self.planner.plan(design(), live, None)
 
         missing_reference_limit = copy.deepcopy(self.snapshot)
         del missing_reference_limit["models"][0]["max_references"]

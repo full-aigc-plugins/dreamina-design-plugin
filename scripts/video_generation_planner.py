@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import re
+from datetime import datetime
 from typing import Any, Mapping, Sequence
 
 from scripts.json_contracts import canonical_fingerprint, validate_contract
@@ -29,6 +31,20 @@ REPAIR_DIRECTIVES = {
     "temporal_stability": "Keep geometry and texture temporally stable without flicker or morphing.",
 }
 
+_RFC3339 = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+)
+
+
+def _require_rfc3339(value: Any, *, label: str) -> str:
+    if not isinstance(value, str) or _RFC3339.fullmatch(value) is None:
+        raise CostBasisError(f"{label} must be a strict RFC3339 timestamp with timezone")
+    try:
+        datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+    except ValueError as exc:
+        raise CostBasisError(f"{label} must be a valid RFC3339 timestamp") from exc
+    return value
+
 
 def quote_total(items: Sequence[Mapping[str, Any]]) -> int:
     """Return the literal sum of all pre-enumerated attempt ceilings."""
@@ -42,6 +58,7 @@ def quote_total(items: Sequence[Mapping[str, Any]]) -> int:
 def validate_batch_quote(quote: Mapping[str, Any]) -> None:
     """Validate the closed schema and every derived quote integrity field."""
     validate_contract(quote, "video_batch_quote.schema.json")
+    _require_rfc3339(quote["quoted_at"], label="quoted_at")
     items = quote["items"]
     if quote["item_count"] != len(items):
         raise PlanningError("item_count does not match items")
@@ -57,7 +74,7 @@ def validate_batch_quote(quote: Mapping[str, Any]) -> None:
         for attempt in item["attempts"]:
             if attempt["credit_ceiling"] != item["credit_ceiling"]:
                 raise PlanningError("attempt credit_ceiling does not match item")
-            if attempt["request_fingerprint"] != canonical_fingerprint(attempt["request"]):
+            if attempt["request_fingerprint"] != build_video_request_fingerprint(attempt["request"]):
                 raise PlanningError("request_fingerprint does not match request")
     core = {key: copy.deepcopy(value) for key, value in quote.items() if key != "quote_fingerprint"}
     if quote["quote_fingerprint"] != canonical_fingerprint(core):
@@ -188,18 +205,20 @@ class VideoGenerationPlanner:
     ) -> None:
         """Reject planner inputs whose validation would rely on service defaults."""
         if mode == "multiframe2video":
-            bounds = snapshot.get("durations")
+            mode_limits = snapshot.get("mode_limits")
+            bounds = mode_limits.get(mode) if isinstance(mode_limits, Mapping) else None
             if not isinstance(bounds, Mapping) or not all(
-                key in bounds for key in ("min_seconds", "max_seconds")
+                key in bounds
+                for key in ("min_references", "max_references", "duration_min_seconds", "duration_max_seconds")
             ):
                 raise UnsupportedCapabilityError(
-                    "snapshot missing advertised duration bounds for multiframe2video"
+                    "snapshot missing advertised duration bounds or reference bounds for multiframe2video"
                 )
             duration = shot.get("duration_seconds")
             if (
                 isinstance(duration, bool)
                 or not isinstance(duration, int)
-                or not int(bounds["min_seconds"]) <= duration <= int(bounds["max_seconds"])
+                or not int(bounds["duration_min_seconds"]) <= duration <= int(bounds["duration_max_seconds"])
             ):
                 raise UnsupportedCapabilityError(
                     f"duration_seconds not advertised for multiframe2video: {duration}"
@@ -249,13 +268,16 @@ class VideoGenerationPlanner:
             ceiling = cost_basis.get("credit_ceiling")
             if isinstance(ceiling, bool) or not isinstance(ceiling, int) or ceiling < 1:
                 raise CostBasisError("explicit operator ceiling must be a positive integer")
-            return ceiling, copy.deepcopy(dict(cost_basis))
+            normalized = copy.deepcopy(dict(cost_basis))
+            _require_rfc3339(normalized["recorded_at"], label="recorded_at")
+            return ceiling, normalized
         pricing = snapshot.get("pricing")
         if isinstance(pricing, Mapping):
             ceiling = pricing.get("credit_ceiling_per_attempt")
             if isinstance(ceiling, int) and not isinstance(ceiling, bool) and ceiling > 0 and pricing.get("source") and pricing.get("captured_at"):
+                captured_at = _require_rfc3339(pricing["captured_at"], label="captured_at")
                 return ceiling, {
                     "kind": "live_snapshot", "credit_ceiling": ceiling, "currency": "credits",
-                    "source": pricing["source"], "recorded_at": pricing["captured_at"],
+                    "source": pricing["source"], "recorded_at": captured_at,
                 }
         raise CostBasisError("live machine-readable price unavailable; explicit operator ceiling required")

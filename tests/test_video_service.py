@@ -62,7 +62,7 @@ def synthetic_video_snapshot() -> dict:
     return {
         "cli_version": "1.4.18",
         "captured_at": "2026-09-12T00:00:00Z",
-        "modes": ["text2video", "image2video", "frames2video", "multimodal2video"],
+        "modes": ["text2video", "image2video", "frames2video", "multiframe2video", "multimodal2video"],
         "models": [
             {
                 "name": "seedance-2.5",
@@ -77,6 +77,7 @@ def synthetic_video_snapshot() -> dict:
         ],
         "resolutions": {"video": ["480P", "720P", "1080P"]},
         "ratios": ["16:9", "9:16", "1:1"],
+        "mode_limits": {"multiframe2video": {"min_references": 2, "max_references": 20, "duration_min_seconds": 1, "duration_max_seconds": 8}},
     }
 
 
@@ -161,6 +162,13 @@ class FingerprintTests(unittest.TestCase):
         from scripts.json_contracts import canonical_fingerprint
         request = {"mode": "text2video", "prompt": "p", "model": "seedance-2.5", "video_resolution": "720P", "ratio": "16:9", "duration_seconds": 8}
         self.assertEqual(build_video_request_fingerprint(request), canonical_fingerprint(request))
+
+    def test_unicode_fingerprint_uses_shared_canonical_approval_encoding(self) -> None:
+        request = {"mode": "text2video", "prompt": "晨雾中的蓝色工作室", "model": "seedance-2.5", "video_resolution": "720P", "ratio": "16:9", "duration_seconds": 4}
+        self.assertEqual(build_video_request_fingerprint(request), canonical_fingerprint(request))
+        with tempfile.TemporaryDirectory() as tmp:
+            guard, session_id, approval_id = issue_approval(Path(tmp), request, {})
+            guard.consume_approval(session_id, request=request, approval_id=approval_id)
 
 
 class TextToVideoTests(unittest.TestCase):
@@ -618,6 +626,14 @@ class SubmitSemanticsTests(unittest.TestCase):
 
 
 class MultiFrameVideoTests(unittest.TestCase):
+    def test_multiframe_requires_live_mode_limits(self) -> None:
+        snapshot = synthetic_video_snapshot()
+        del snapshot["mode_limits"]
+        with tempfile.TemporaryDirectory() as tmp:
+            service = VideoService(snapshot=snapshot, ledger_dir=Path(tmp), reference_policy=_TestReferencePolicy())
+            with self.assertRaisesRegex(UnsupportedCapabilityError, "mode limits"):
+                service.build_request(mode="multiframe2video", prompt="story", model=None, video_resolution="720P", duration_seconds=3, references=[{"path":"/a.png","role":"frame"},{"path":"/b.png","role":"frame"}])
+
     def test_multiframe_argv_preserves_order_and_transitions(self) -> None:
         argv = VideoService._request_to_argv({"mode":"multiframe2video","prompt":"story","video_resolution":"720p","duration_seconds":3,"references":[{"path":"/a.png","role":"frame"},{"path":"/b.png","role":"frame"}],"transitions":[{"prompt":"pan","duration_seconds":3}]})
         self.assertEqual(argv, ["multiframe2video","--prompt","story","--video_resolution","720p","--duration","3","--images","/a.png,/b.png","--transition-prompt","pan","--transition-duration","3"])

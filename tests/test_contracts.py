@@ -97,6 +97,12 @@ class SchemaPresenceTests(unittest.TestCase):
         pattern = schema["properties"]["cli_version"]["pattern"]
         self.assertIsNotNone(re.fullmatch(pattern, "ec1b9fa-dirty"))
 
+    def test_capability_schema_declares_closed_multiframe_mode_limits(self) -> None:
+        schema = load_json(SCHEMAS_DIR / "capability_snapshot.schema.json")
+        self.assertIn("multiframe2video", schema["properties"]["modes"]["items"]["enum"])
+        limits = schema["properties"]["mode_limits"]
+        self.assertFalse(limits["additionalProperties"])
+
 
 class ClosedSchemaTests(unittest.TestCase):
     def test_rights_and_redesign_reuse_dimensions_are_exact_and_closed(self) -> None:

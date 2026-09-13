@@ -25,13 +25,13 @@ Responsibilities:
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from scripts.dreamina_adapter import DreaminaResult
+from scripts.json_contracts import canonical_fingerprint
 
 
 class VideoServiceError(Exception):
@@ -107,7 +107,7 @@ def _canonical_bytes(payload: Mapping[str, Any]) -> bytes:
 
 def build_video_request_fingerprint(payload: Mapping[str, Any]) -> str:
     """SHA-256 hex digest over canonical JSON serialization."""
-    return hashlib.sha256(_canonical_bytes(payload)).hexdigest()
+    return canonical_fingerprint(payload)
 
 
 class VideoService:
@@ -120,6 +120,7 @@ class VideoService:
         self._modes = frozenset(snapshot.get("modes", []))
         self._ratios = frozenset(snapshot.get("ratios", []))
         self._video_resolutions = frozenset(snapshot.get("resolutions", {}).get("video", []))
+        self._mode_limits = snapshot.get("mode_limits", {})
         self._models = {
             entry["name"]: _VideoModelSpec.from_snapshot(entry)
             for entry in snapshot.get("models", [])
@@ -171,7 +172,7 @@ class VideoService:
             raise UnsupportedCapabilityError(f"mode not in snapshot: {mode}")
         spec = self._models.get(model)
         if mode == "multiframe2video" and model is None:
-            spec = _VideoModelSpec(name="__fixed__", modes=frozenset({mode}), resolutions=self._video_resolutions, ratios=frozenset(), duration_min_seconds=1, duration_max_seconds=8, web_prerequisite_required=False, audio_reference_max_seconds=None, ratio_forbidden_modes=frozenset({mode}), max_references=20)
+            spec = self._multiframe_spec()
         if spec is None:
             raise UnsupportedCapabilityError(f"unknown model: {model}")
         if mode not in spec.modes:
@@ -204,8 +205,10 @@ class VideoService:
         if mode == "multiframe2video":
             if ratio is not None or model is not None:
                 raise UnsupportedCapabilityError("multiframe2video does not accept model or ratio")
-            if not 2 <= len(normalized_refs) <= 20 or any(ref["role"] != "frame" for ref in normalized_refs):
-                raise InvalidReferenceError("multiframe2video requires 2..20 ordered frame references")
+            if not spec.max_references >= len(normalized_refs) >= int(self._mode_limits[mode]["min_references"]) or any(ref["role"] != "frame" for ref in normalized_refs):
+                raise InvalidReferenceError(
+                    f"multiframe2video requires {self._mode_limits[mode]['min_references']}..{spec.max_references} ordered frame references"
+                )
             if normalized_transitions and len(normalized_transitions) != len(normalized_refs) - 1:
                 raise VideoServiceError("multiframe2video requires exactly N-1 transitions")
             for transition in normalized_transitions:
@@ -227,6 +230,21 @@ class VideoService:
         if normalized_transitions:
             request["transitions"] = normalized_transitions
         return request
+
+    def _multiframe_spec(self) -> _VideoModelSpec:
+        limits = self._mode_limits.get("multiframe2video") if isinstance(self._mode_limits, Mapping) else None
+        required = ("min_references", "max_references", "duration_min_seconds", "duration_max_seconds")
+        if not isinstance(limits, Mapping) or any(key not in limits for key in required):
+            raise UnsupportedCapabilityError("snapshot missing multiframe2video mode limits")
+        return _VideoModelSpec(
+            name="__snapshot_mode__", modes=frozenset({"multiframe2video"}),
+            resolutions=self._video_resolutions, ratios=frozenset(),
+            duration_min_seconds=int(limits["duration_min_seconds"]),
+            duration_max_seconds=int(limits["duration_max_seconds"]),
+            web_prerequisite_required=False, audio_reference_max_seconds=None,
+            ratio_forbidden_modes=frozenset({"multiframe2video"}),
+            max_references=int(limits["max_references"]),
+        )
 
     @staticmethod
     def _validate_references(
@@ -313,7 +331,7 @@ class VideoService:
             raise MissingApprovalError("approval receipt is required before submission")
         spec = self._models.get(request.get("model"))
         if spec is None and request["mode"] == "multiframe2video":
-            spec = _VideoModelSpec(name="__fixed__", modes=frozenset({"multiframe2video"}), resolutions=self._video_resolutions, ratios=frozenset(), duration_min_seconds=1, duration_max_seconds=8, web_prerequisite_required=False, audio_reference_max_seconds=None, ratio_forbidden_modes=frozenset({"multiframe2video"}), max_references=20)
+            spec = self._multiframe_spec()
         if spec.web_prerequisite_required and not self._web_prerequisite_acknowledged:
             # The caller can pass web_prerequisite_cleared=True to indicate the
             # web console step has been observed in the same session, but we
