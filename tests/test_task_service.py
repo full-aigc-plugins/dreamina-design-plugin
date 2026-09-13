@@ -1,4 +1,8 @@
+import os
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 from scripts.task_service import TaskService
 
 class Adapter:
@@ -27,3 +31,65 @@ class TaskServiceTests(unittest.TestCase):
             class Variant:
                 def run(self, args): return type('R', (), {'exit_code': 0, 'payload': {'gen_status': raw}})()
             self.assertEqual(TaskService(Variant()).query('external-1')['status'], expected)
+
+    def test_download_directory_replacement_after_enumeration_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            target = parent / "download-001"
+            target.mkdir(mode=0o700)
+
+            class Downloading(Adapter):
+                def run(self, args):
+                    (target / "clip.mp4").write_bytes(b"\0\0\0\x18ftypisom" + b"x" * 20)
+                    return super().run(args)
+
+            real_listdir = os.listdir
+            calls = 0
+
+            def replace_after_listdir(path):
+                nonlocal calls
+                names = real_listdir(path)
+                calls += 1
+                if calls == 2:
+                    target.rename(parent / "pinned-original")
+                    target.mkdir(mode=0o700)
+                return names
+
+            with patch("scripts.task_service.os.listdir", side_effect=replace_after_listdir):
+                with self.assertRaisesRegex(ValueError, "changed"):
+                    TaskService(Downloading()).query("external-1", download_dir=str(target))
+
+    def test_artifact_replacement_after_hash_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "download-001"
+            target.mkdir(mode=0o700)
+
+            class Downloading(Adapter):
+                def run(self, args):
+                    (target / "clip.mp4").write_bytes(b"\0\0\0\x18ftypisom" + b"x" * 20)
+                    return super().run(args)
+
+            real_read = os.read
+            replaced = False
+
+            def replace_after_hash(fd, size):
+                nonlocal replaced
+                chunk = real_read(fd, size)
+                if not chunk and not replaced:
+                    replacement = target / "replacement.mp4"
+                    replacement.write_bytes(b"\0\0\0\x18ftypisom" + b"y" * 20)
+                    replacement.replace(target / "clip.mp4")
+                    replaced = True
+                return chunk
+
+            with patch("scripts.task_service.os.read", side_effect=replace_after_hash):
+                with self.assertRaisesRegex(ValueError, "changed"):
+                    TaskService(Downloading()).query("external-1", download_dir=str(target))
+
+    def test_existing_broad_download_directory_fails_without_chmod(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "download-001"
+            target.mkdir(mode=0o755)
+            with self.assertRaisesRegex(ValueError, "0700"):
+                TaskService(Adapter()).query("external-1", download_dir=str(target))
+            self.assertEqual(target.stat().st_mode & 0o777, 0o755)

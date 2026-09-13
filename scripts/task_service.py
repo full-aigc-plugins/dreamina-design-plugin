@@ -50,10 +50,11 @@ class TaskService:
     def _verified_artifacts(directory_fd: int, before: set[str], target: Path) -> list[dict[str, object]]:
         artifacts = []
         pinned_directory = os.fstat(directory_fd)
+        names = sorted(set(os.listdir(directory_fd)) - before)
         current_directory = target.stat(follow_symlinks=False)
         if (pinned_directory.st_dev, pinned_directory.st_ino) != (current_directory.st_dev, current_directory.st_ino):
             raise ValueError("download directory changed during verification")
-        for name in sorted(set(os.listdir(directory_fd)) - before):
+        for name in names:
             if "/" in name or name in {".", ".."}: raise ValueError("unsafe downloaded artifact name")
             descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
             try:
