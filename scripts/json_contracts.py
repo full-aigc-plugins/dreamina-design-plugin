@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import unquote
@@ -16,6 +17,24 @@ SCHEMAS_ROOT = (Path(__file__).resolve().parents[1] / "schemas").resolve()
 
 class ContractValidationError(ValueError):
     """A versioned public JSON artifact violates its closed schema."""
+
+
+_RFC3339 = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+)
+
+
+def parse_rfc3339(value: Any, *, label: str = "timestamp") -> datetime:
+    """Parse one strict timezone-qualified RFC3339 timestamp and normalize to UTC."""
+    if not isinstance(value, str) or _RFC3339.fullmatch(value) is None:
+        raise ContractValidationError(f"{label} must be a strict RFC3339 timestamp with timezone")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+    except ValueError as exc:
+        raise ContractValidationError(f"{label} must be a valid RFC3339 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ContractValidationError(f"{label} must include a timezone")
+    return parsed.astimezone(timezone.utc)
 
 
 def load_schema(name: str) -> dict[str, Any]:

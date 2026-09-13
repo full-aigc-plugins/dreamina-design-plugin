@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.json_contracts import canonical_fingerprint
+from scripts.json_contracts import ContractValidationError, canonical_fingerprint
 from scripts.video_batch_allowance import (
     AllowanceAlreadyActivatedError,
     AllowanceCommitIndeterminateError,
@@ -24,6 +24,7 @@ from scripts.video_batch_allowance import (
     VideoBatchAllowance,
 )
 from scripts.video_service import build_video_request_fingerprint
+from scripts.video_generation_planner import validate_batch_quote
 
 
 class RecordingApprover:
@@ -982,6 +983,46 @@ class VideoBatchAllowanceTests(unittest.TestCase):
         )
         with self.assertRaises(BatchScopeError):
             allowances.activate(self.quote, AdvancingApprover())
+
+    def test_cost_basis_timestamp_requires_strict_rfc3339_in_quote_and_activation(self) -> None:
+        for value in ("2026-09-14", "2026-09-14 00:00:00+00:00", "2026-09-14T00:00:00", "not-a-time"):
+            with self.subTest(value=value):
+                quote = copy.deepcopy(self.quote)
+                quote["cost_basis"]["recorded_at"] = value
+                quote["quote_fingerprint"] = canonical_fingerprint(
+                    {key: item for key, item in quote.items() if key != "quote_fingerprint"}
+                )
+                with self.assertRaises(ContractValidationError):
+                    validate_batch_quote(quote)
+                with self.assertRaises(BatchScopeError):
+                    self.allowances.activate(quote, self.approver)
+
+    def test_cost_basis_timestamp_accepts_z_and_numeric_offsets_with_freshness(self) -> None:
+        cases = (
+            ("2026-09-14T00:00:00Z", datetime(2026, 9, 14, 1, tzinfo=timezone.utc)),
+            ("2026-09-14T08:00:00+08:00", datetime(2026, 9, 14, 1, tzinfo=timezone.utc)),
+            ("2026-09-13T19:00:00-05:00", datetime(2026, 9, 14, 1, tzinfo=timezone.utc)),
+        )
+        for index, (value, current) in enumerate(cases):
+            with self.subTest(value=value):
+                quote = copy.deepcopy(self.quote)
+                quote["project_id"] = "vp_" + str(index + 6) * 24
+                quote["creative_mode"] = "original_redesign"
+                quote.pop("rights_receipt_id")
+                quote.pop("rights_receipt_fingerprint")
+                quote["cost_basis"]["recorded_at"] = value
+                quote["quoted_at"] = value
+                quote["quote_fingerprint"] = canonical_fingerprint(
+                    {key: item for key, item in quote.items() if key != "quote_fingerprint"}
+                )
+                validate_batch_quote(quote)
+                target = VideoBatchAllowance(
+                    Path(self.temp.name) / f"rfc3339-{index}",
+                    seal_key_store=FileSealKeyStore(Path(self.temp.name) / f"rfc3339-{index}.key"),
+                    project_store=FakeProjectStore(), rights_service=FakeRightsService(),
+                    now=lambda current=current: current,
+                )
+                self.assertTrue(target.activate(quote, self.approver).startswith("ba_"))
 
     def test_sealed_history_rejects_orphans_duplicates_truncation_and_wrong_exhaustion(self) -> None:
         mutations = (

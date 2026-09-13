@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
-from scripts.json_contracts import ContractValidationError, canonical_fingerprint, validate_contract
+from scripts.json_contracts import ContractValidationError, canonical_fingerprint, parse_rfc3339, validate_contract
 from scripts.video_generation_planner import PlanningError, quote_total, validate_batch_quote
 
 
@@ -591,11 +591,11 @@ class VideoBatchAllowance:
         except (ContractValidationError, PlanningError, TypeError, ValueError) as exc:
             raise BatchScopeError("invalid batch quote") from exc
         try:
-            quoted_at = datetime.fromisoformat(str(quote["quoted_at"]).replace("Z", "+00:00")).astimezone(timezone.utc)
-            recorded_at = datetime.fromisoformat(str(quote["cost_basis"]["recorded_at"]).replace("Z", "+00:00")).astimezone(timezone.utc)
+            quoted_at = parse_rfc3339(quote["quoted_at"], label="quoted_at")
+            recorded_at = parse_rfc3339(quote["cost_basis"]["recorded_at"], label="cost_basis.recorded_at")
             current = self._now()
             if isinstance(current, str):
-                current = datetime.fromisoformat(current.replace("Z", "+00:00"))
+                current = parse_rfc3339(current, label="now")
             current = current.astimezone(timezone.utc)
         except (AttributeError, TypeError, ValueError) as exc:
             raise BatchScopeError("quote freshness evidence is invalid") from exc

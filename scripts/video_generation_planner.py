@@ -9,7 +9,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping, Sequence
 
-from scripts.json_contracts import canonical_fingerprint, validate_contract
+from scripts.json_contracts import ContractValidationError, canonical_fingerprint, parse_rfc3339, validate_contract
 from scripts.video_service import (
     DurationOutOfRangeError,
     UnsupportedCapabilityError,
@@ -39,12 +39,10 @@ _RFC3339 = re.compile(
 
 
 def _require_rfc3339(value: Any, *, label: str) -> str:
-    if not isinstance(value, str) or _RFC3339.fullmatch(value) is None:
-        raise CostBasisError(f"{label} must be a strict RFC3339 timestamp with timezone")
     try:
-        datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
-    except ValueError as exc:
-        raise CostBasisError(f"{label} must be a valid RFC3339 timestamp") from exc
+        parse_rfc3339(value, label=label)
+    except ContractValidationError as exc:
+        raise CostBasisError(str(exc)) from exc
     return value
 
 
@@ -60,7 +58,8 @@ def quote_total(items: Sequence[Mapping[str, Any]]) -> int:
 def validate_batch_quote(quote: Mapping[str, Any]) -> None:
     """Validate the closed schema and every derived quote integrity field."""
     validate_contract(quote, "video_batch_quote.schema.json")
-    _require_rfc3339(quote["quoted_at"], label="quoted_at")
+    parse_rfc3339(quote["quoted_at"], label="quoted_at")
+    parse_rfc3339(quote["cost_basis"]["recorded_at"], label="cost_basis.recorded_at")
     items = quote["items"]
     if quote["item_count"] != len(items):
         raise PlanningError("item_count does not match items")
