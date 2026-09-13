@@ -1,4 +1,7 @@
 import unittest
+import tempfile
+from pathlib import Path
+from scripts.native_approval import ApprovalDeniedError
 
 from scripts.environment_service import EnvironmentService
 
@@ -21,3 +24,20 @@ class EnvironmentServiceTests(unittest.TestCase):
 
     def test_status_rejects_unknown_command(self):
         with self.assertRaises(ValueError): EnvironmentService(Adapter()).status(command="shell", detail="summary")
+
+    def test_installer_rejects_unapproved_final_host(self):
+        class Downloader:
+            def fetch(self,url,max_bytes): return b'#!/bin/sh\n', 'https://evil.example/cli'
+        with self.assertRaises(ValueError): EnvironmentService(Adapter(),downloader=Downloader()).install_or_upgrade('install',approval_provider=object())
+
+    def test_installer_denial_never_runs(self):
+        class Downloader:
+            def fetch(self,url,max_bytes): return b'#!/bin/sh\n', url
+        class Provider:
+            def confirm(self,request): raise ApprovalDeniedError('denied')
+        class Runner:
+            calls=[]
+            def run(self,path): self.calls.append(path); return 0,'',''
+        runner=Runner()
+        with self.assertRaises(ApprovalDeniedError): EnvironmentService(Adapter(),downloader=Downloader(),runner=runner).install_or_upgrade('upgrade',approval_provider=Provider())
+        self.assertEqual(runner.calls,[])

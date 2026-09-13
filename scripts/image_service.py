@@ -59,7 +59,7 @@ GLOBAL_MIN_COUNT = 1
 GLOBAL_MAX_COUNT = 10
 REFERENCE_LIMIT = 8
 REFERENCE_ROLES = {"style", "subject", "frame", "audio", "reference"}
-SUBJECT_REQUIRED_MODES = {"image2image"}
+SUBJECT_REQUIRED_MODES = {"image2image", "image_upscale"}
 
 
 def _canonical_bytes(payload: Mapping[str, Any]) -> bytes:
@@ -120,8 +120,8 @@ class ImageService:
         self,
         *,
         mode: str,
-        prompt: str,
-        model: str,
+        prompt: str | None,
+        model: str | None,
         resolution_type: str | None = None,
         count: int = 1,
         ratio: str | None = None,
@@ -131,6 +131,15 @@ class ImageService:
     ) -> dict[str, Any]:
         if mode not in self._modes:
             raise UnsupportedCapabilityError(f"mode not in snapshot: {mode}")
+        if mode == "image_upscale":
+            if prompt or model or ratio is not None or count != 1 or width is not None or height is not None:
+                raise ImageServiceError("image_upscale forbids prompt, model, ratio, count, width, and height")
+            if not resolution_type or resolution_type not in self._image_resolutions:
+                raise UnsupportedCapabilityError("resolution_type not advertised for image_upscale")
+            normalized_refs = self._validate_references(mode=mode, references=references or [], max_references=1, reference_policy=self._reference_policy)
+            if len(normalized_refs) != 1:
+                raise InvalidReferenceError("image_upscale requires exactly one subject reference")
+            return {"mode": mode, "resolution_type": resolution_type, "references": normalized_refs}
         spec = self._models.get(model)
         if spec is None:
             raise UnsupportedCapabilityError(f"unknown model: {model}")
@@ -293,6 +302,8 @@ class ImageService:
 
     @staticmethod
     def _request_to_argv(request: Mapping[str, Any]) -> list[str]:
+        if request["mode"] == "image_upscale":
+            return ["image_upscale", "--image", str(request["references"][0]["path"]), "--resolution_type", str(request["resolution_type"]), "--poll", "0"]
         argv: list[str] = [
             str(request["mode"]),
             "--model_version", str(request["model"]),

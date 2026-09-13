@@ -39,9 +39,11 @@ DEFAULT_MAX_OUTPUT_BYTES = 1 * 1024 * 1024  # 1 MiB
 CAPABILITY_MODES = (
     "text2image",
     "image2image",
+    "image_upscale",
     "text2video",
     "image2video",
     "frames2video",
+    "multiframe2video",
     "multimodal2video",
 )
 

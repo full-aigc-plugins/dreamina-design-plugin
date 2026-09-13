@@ -67,6 +67,7 @@ VIDEO_REFERENCE_ROLES = {"style", "subject", "frame", "audio", "reference"}
 MODE_REQUIRED_REFERENCES = {
     "image2video": {"subject"},
     "frames2video": {"frame"},
+    "multiframe2video": {"frame"},
 }
 
 
@@ -156,15 +157,18 @@ class VideoService:
         *,
         mode: str,
         prompt: str,
-        model: str,
+        model: str | None,
         video_resolution: str | None = None,
         ratio: str | None = None,
         duration_seconds: int | None = None,
         references: list[Mapping[str, Any]] | None = None,
+        transitions: list[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if mode not in self._modes:
             raise UnsupportedCapabilityError(f"mode not in snapshot: {mode}")
         spec = self._models.get(model)
+        if mode == "multiframe2video" and model is None:
+            spec = _VideoModelSpec(name="__fixed__", modes=frozenset({mode}), resolutions=self._video_resolutions, ratios=frozenset(), duration_min_seconds=1, duration_max_seconds=8, web_prerequisite_required=False, audio_reference_max_seconds=None, ratio_forbidden_modes=frozenset({mode}), max_references=20)
         if spec is None:
             raise UnsupportedCapabilityError(f"unknown model: {model}")
         if mode not in spec.modes:
@@ -193,18 +197,32 @@ class VideoService:
             spec=spec,
             reference_policy=self._reference_policy,
         )
+        normalized_transitions = list(transitions or [])
+        if mode == "multiframe2video":
+            if ratio is not None or model is not None:
+                raise UnsupportedCapabilityError("multiframe2video does not accept model or ratio")
+            if not 2 <= len(normalized_refs) <= 20 or any(ref["role"] != "frame" for ref in normalized_refs):
+                raise InvalidReferenceError("multiframe2video requires 2..20 ordered frame references")
+            if normalized_transitions and len(normalized_transitions) != len(normalized_refs) - 1:
+                raise VideoServiceError("multiframe2video requires exactly N-1 transitions")
+            for transition in normalized_transitions:
+                if not str(transition.get("prompt", "")).strip() or not 1 <= int(transition.get("duration_seconds", 0)) <= 8:
+                    raise VideoServiceError("transition requires prompt and duration_seconds 1..8")
 
         request: dict[str, Any] = {
             "mode": mode,
             "prompt": prompt,
-            "model": model,
             "video_resolution": video_resolution,
             "duration_seconds": effective_duration,
         }
+        if model is not None:
+            request["model"] = model
         if ratio is not None:
             request["ratio"] = ratio
         if normalized_refs:
             request["references"] = normalized_refs
+        if normalized_transitions:
+            request["transitions"] = normalized_transitions
         return request
 
     @staticmethod
@@ -285,7 +303,9 @@ class VideoService:
     ) -> dict[str, Any]:
         if approval_guard is None or not session_id or not approval_id:
             raise MissingApprovalError("approval receipt is required before submission")
-        spec = self._models[request["model"]]
+        spec = self._models.get(request.get("model"))
+        if spec is None and request["mode"] == "multiframe2video":
+            spec = _VideoModelSpec(name="__fixed__", modes=frozenset({"multiframe2video"}), resolutions=self._video_resolutions, ratios=frozenset(), duration_min_seconds=1, duration_max_seconds=8, web_prerequisite_required=False, audio_reference_max_seconds=None, ratio_forbidden_modes=frozenset({"multiframe2video"}), max_references=20)
         if spec.web_prerequisite_required and not self._web_prerequisite_acknowledged:
             # The caller can pass web_prerequisite_cleared=True to indicate the
             # web console step has been observed in the same session, but we
@@ -354,6 +374,11 @@ class VideoService:
 
     @staticmethod
     def _request_to_argv(request: Mapping[str, Any]) -> list[str]:
+        if request["mode"] == "multiframe2video":
+            argv = ["multiframe2video", "--prompt", str(request["prompt"]), "--video_resolution", str(request["video_resolution"]), "--duration", str(request["duration_seconds"]), "--images", ",".join(str(ref["path"]) for ref in request.get("references", []))]
+            for transition in request.get("transitions", []):
+                argv.extend(["--transition-prompt", str(transition["prompt"]), "--transition-duration", str(transition["duration_seconds"])])
+            return argv
         argv: list[str] = [
             str(request["mode"]),
             "--model_version", str(request["model"]),

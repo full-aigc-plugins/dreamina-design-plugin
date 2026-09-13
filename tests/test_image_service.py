@@ -444,5 +444,11 @@ class SubmitSemanticsTests(unittest.TestCase):
         self.assertEqual([item["url"] for item in result["items"]], ["https://x/0", "https://x/1"])
 
 
+class ImageUpscaleTests(unittest.TestCase):
+    def test_upscale_argv_contains_only_reference_resolution_and_poll(self) -> None:
+        argv = ImageService._request_to_argv({"mode": "image_upscale", "resolution_type": "4k", "references": [{"path": "/safe/input.png", "role": "subject"}]})
+        self.assertEqual(argv, ["image_upscale", "--image", "/safe/input.png", "--resolution_type", "4k", "--poll", "0"])
+
+
 if __name__ == "__main__":
     unittest.main()

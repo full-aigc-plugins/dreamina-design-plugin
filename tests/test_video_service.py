@@ -602,5 +602,11 @@ class SubmitSemanticsTests(unittest.TestCase):
         self.assertEqual(result["submit_id"], "vsub-2")
 
 
+class MultiFrameVideoTests(unittest.TestCase):
+    def test_multiframe_argv_preserves_order_and_transitions(self) -> None:
+        argv = VideoService._request_to_argv({"mode":"multiframe2video","prompt":"story","video_resolution":"720p","duration_seconds":3,"references":[{"path":"/a.png","role":"frame"},{"path":"/b.png","role":"frame"}],"transitions":[{"prompt":"pan","duration_seconds":3}]})
+        self.assertEqual(argv, ["multiframe2video","--prompt","story","--video_resolution","720p","--duration","3","--images","/a.png,/b.png","--transition-prompt","pan","--transition-duration","3"])
+
+
 if __name__ == "__main__":
     unittest.main()
