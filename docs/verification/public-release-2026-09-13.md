@@ -29,3 +29,9 @@ A fresh ephemeral Codex task used only the public installation and called
 
 The final local/tracking/remote SHA equality is recorded after this evidence
 commit is pushed and the public plugin is reinstalled once more.
+
+## User acceptance
+
+The user explicitly confirmed on 2026-09-13 that functional verification was
+complete and passed. The acceptance scope and evidence boundaries are recorded
+in `docs/verification/user-functional-acceptance-2026-09-13.md`.

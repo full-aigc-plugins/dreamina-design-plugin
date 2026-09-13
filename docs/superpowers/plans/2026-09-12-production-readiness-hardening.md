@@ -55,4 +55,6 @@ historical feature baseline.
 
 Production readiness was achieved on 2026-09-13 after every checkbox above was
 completed with offline, runtime, security, canary, publication, and fresh public
-installation evidence.
+installation evidence. The user subsequently confirmed that functional
+verification was complete and passed; the acceptance record is preserved in
+`docs/verification/user-functional-acceptance-2026-09-13.md`.
