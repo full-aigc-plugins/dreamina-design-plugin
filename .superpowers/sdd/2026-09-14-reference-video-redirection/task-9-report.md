@@ -25,6 +25,11 @@
 
 ## Fix Round 1
 
+- Added a batch-scoped thread/process transaction lock across load, selection, reservation, provider invocation, and durable state progression.
+- Post-invocation failures now use typed identity-carrying evidence; pre-invocation failures do not claim remote ambiguity. Restart reconciliation can recover a known submit ID from allowance history.
+- Query results now enforce zero exit status and a closed normalized set of observed CLI status variants. Downloads use exclusive private directories, pinned no-follow descriptors, bounded streaming hashes, and read-only verified artifacts; crash-left downloads are reconciled.
+- Removed the public Task 9 evaluation mutation surface; the temporary hook is internal pending Task 10's digest-bound typed evaluation receipt.
+
 - Corrected verified downloads to persist `awaiting_evaluation`; retries remain closed until `record_evaluation_decision(..., "retry")` durably records an explicit evaluator decision.
 - Added `BatchAllowanceCommitError`, preserving submit ID, reservation ID, request fingerprint, shot ID, and attempt when allowance terminalization is indeterminate.
 - Provider-known timeout and commit-indeterminate paths persist allowance/reservation bindings in the operation ledger and resume by querying the known submit ID.
@@ -52,3 +57,12 @@
 - RED evidence: first-success and ambiguity results lacked `required_action`, and the predecessor remained `evaluation_retryable` after its retry was submitted.
 - Final focused Task 9/8/7 regression: 144 tests passed in 0.742s.
 - Final full regression: 505 tests passed in 21.180s; `py_compile` and `git diff --check` passed.
+
+## Fix Round 4
+
+- Restored legacy direct-submit exception transparency: after approval consumption and existing intent error bookkeeping, `VideoService.submit` re-raises the exact adapter exception instance and does not leak `PostInvokePersistenceError`.
+- Kept the allowance-aware batch path unchanged: adapter failures still carry submit, allowance, reservation, request fingerprint, shot, and attempt recovery identities through the existing wrapper/executor state.
+- Added a real ApprovalGuard/OperationLedger regression proving one approval-consumption call, persisted `consumed_at`, legacy `manual_review` intent/error state, and absence of allowance/reservation fields.
+- RED evidence: the focused regression received `PostInvokePersistenceError` instead of the sentinel `SentinelAdapterError` object.
+- Final focused Task 9/8/7 regression: 212 tests passed in 11.056s.
+- Final full regression: 509 tests passed in 18.557s; `py_compile` and `git diff --check` passed.
