@@ -319,6 +319,28 @@ class MediaIntakeServiceTests(unittest.TestCase):
         receipt_root = self.store.project_root(self.project_id) / "source_receipt"
         self.assertFalse(receipt_root.exists())
 
+    def test_preexisting_matching_digest_with_broad_mode_is_rejected_without_mutation(self) -> None:
+        """Catches receipt publication for correct bytes stored with non-private permissions."""
+        source_bytes = self.source.read_bytes()
+        digest = hashlib.sha256(source_bytes).hexdigest()
+        source_root = self.store.project_root(self.project_id) / "source"
+        source_root.mkdir(mode=0o700)
+        final = source_root / f"{digest}.mp4"
+        final.write_bytes(source_bytes)
+        final.chmod(0o640)
+        before = final.stat()
+
+        with self.assertRaises(MediaIntakeError):
+            self.intake.intake(self.project_id, self.source, [self.approved_root])
+
+        after = final.stat()
+        self.assertEqual(final.read_bytes(), source_bytes)
+        self.assertEqual((after.st_dev, after.st_ino), (before.st_dev, before.st_ino))
+        self.assertEqual(after.st_mode & 0o777, 0o640)
+        receipt_root = self.store.project_root(self.project_id) / "source_receipt"
+        self.assertFalse(receipt_root.exists())
+        self.assertEqual(self.store.get(self.project_id)["state"], "created")
+
     def test_failure_after_publication_retains_original_private_digest_file(self) -> None:
         source_bytes = self.source.read_bytes()
         digest = hashlib.sha256(source_bytes).hexdigest()

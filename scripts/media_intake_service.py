@@ -328,7 +328,11 @@ class MediaIntakeService:
     def _verify_staged(path: Path, digest: str, expected_size: int) -> None:
         try:
             info = path.lstat()
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            if (
+                stat.S_ISLNK(info.st_mode)
+                or not stat.S_ISREG(info.st_mode)
+                or info.st_mode & 0o777 != 0o400
+            ):
                 raise MediaIntakeError("staged source is missing or changed")
             descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             try:
@@ -351,6 +355,9 @@ class MediaIntakeService:
                     != expected_identity
                     or (path_after.st_dev, path_after.st_ino, path_after.st_size)
                     != expected_identity
+                    or opened.st_mode & 0o777 != 0o400
+                    or opened_after.st_mode & 0o777 != 0o400
+                    or path_after.st_mode & 0o777 != 0o400
                     or bytes_read != expected_size
                 ):
                     raise MediaIntakeError("staged source inode or size changed")
