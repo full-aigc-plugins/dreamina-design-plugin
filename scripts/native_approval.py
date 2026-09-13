@@ -1,4 +1,4 @@
-"""Fail-closed native human confirmation for paid Dreamina submissions."""
+"""Fail-closed native confirmation for paid requests and local trust enrollment."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ class ApprovalDeniedError(PermissionError):
 
 
 class NativeApprovalProvider:
-    """Require a native macOS confirmation dialog for the exact paid request."""
+    """Require a native macOS confirmation dialog for the exact guarded action."""
 
     def confirm(self, request: Mapping[str, Any]) -> str:
         summary = json.dumps(dict(request), ensure_ascii=False, sort_keys=True, indent=2)
@@ -30,6 +30,25 @@ class NativeApprovalProvider:
         )
         self._confirm_dialog("注册可信 Dreamina CLI\n\n" + summary, "信任此文件")
         return "native-cli-trust-confirmed"
+
+    def confirm_media_tool_enrollment(
+        self, *, kind: str, path: str, owner_uid: int, sha256: str
+    ) -> str:
+        """Confirm the exact kind, canonical path, owner, and digest being trusted."""
+        summary = json.dumps(
+            {
+                "action": "trust-media-tool",
+                "kind": kind,
+                "path": path,
+                "owner_uid": owner_uid,
+                "sha256": sha256,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+        self._confirm_dialog("注册可信本地媒体工具\n\n" + summary, "信任此文件")
+        return "native-media-tool-trust-confirmed"
 
     @staticmethod
     def _confirm_dialog(message: str, approve_button: str) -> None:
