@@ -137,13 +137,13 @@ class VideoGenerationPlannerTests(unittest.TestCase):
                 self.cost,
             )
 
-    def test_unicode_base_and_retry_use_shared_canonical_fingerprint(self):
+    def test_unicode_base_and_retry_keep_legacy_video_fingerprint_encoding(self):
         quote = self.planner.plan(
             design([shot(prompt="晨雾中的蓝色工作室")]), self.snapshot, self.cost
         )
         self.assertEqual(quote["items"][0]["request_fingerprints"], [
-            "0a8030925a839f0877da3effcf931da689a2aa114fc0c58b818eedd10f7c72f3",
-            "b69ae47f788ea137e1057859e72a7afd1cd94311c6f5e2fff4fd630478340fa2",
+            "f12e3b94d504052c1448f9faf982a393129e73bcfcccc85a834667d48628fb86",
+            "37ad109f93ea11c00045e4b3431d05b8d244b7715b15fd4f068b1b62c7507080",
         ])
 
     def test_cost_timestamps_require_strict_rfc3339_timezone(self):
