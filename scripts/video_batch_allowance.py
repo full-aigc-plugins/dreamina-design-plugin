@@ -131,8 +131,13 @@ class LocalQuoteResolver:
 
     def __init__(self, root: Path) -> None:
         self._root = Path(root) / "quotes"
+        if self._root.is_symlink():
+            raise BatchScopeError("quote directory must not be a symlink")
         self._root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self._root, 0o700)
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        self._root_fd = os.open(self._root, flags)
+        self._identity = os.fstat(self._root_fd)
 
     @staticmethod
     def identity(quote: Mapping[str, Any]) -> dict[str, Any]:
@@ -141,12 +146,11 @@ class LocalQuoteResolver:
 
     def persist(self, quote: Mapping[str, Any]) -> dict[str, Any]:
         identity = self.identity(quote)
-        path = self._root / identity["path"]
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(path.parent, 0o700)
+        self._assert_identity()
+        name = f"{identity['fingerprint']}.json"
         encoded = json.dumps(dict(quote), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
         try:
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=self._root_fd)
         except FileExistsError:
             if self.resolve(identity) != dict(quote):
                 raise BatchScopeError("persisted quote identity collides with different content")
@@ -155,18 +159,49 @@ class LocalQuoteResolver:
             handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())
+        os.fsync(self._root_fd)
         return identity
 
     def resolve(self, identity: Mapping[str, Any]) -> dict[str, Any]:
-        path = self._root / str(identity["path"])
+        self._assert_identity()
+        fingerprint = identity.get("fingerprint")
+        if not isinstance(fingerprint, str) or re.fullmatch(r"[a-f0-9]{64}", fingerprint) is None:
+            raise BatchScopeError("quote identity is invalid")
+        name = f"{fingerprint}.json"
         try:
-            metadata = path.lstat()
+            descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=self._root_fd)
+            metadata = os.fstat(descriptor)
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600:
                 raise BatchScopeError("persisted quote file is unsafe")
-            quote = json.loads(path.read_text(encoding="utf-8"))
+            with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+                quote = json.load(handle)
+            current = os.stat(name, dir_fd=self._root_fd, follow_symlinks=False)
+            if (metadata.st_dev, metadata.st_ino) != (current.st_dev, current.st_ino):
+                raise BatchScopeError("persisted quote path changed during read")
         except (OSError, json.JSONDecodeError, KeyError) as exc:
             raise BatchScopeError("persisted quote cannot be resolved") from exc
         return quote
+
+    def close(self) -> None:
+        descriptor = getattr(self, "_root_fd", None)
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            self._root_fd = None
+
+    def _assert_identity(self) -> None:
+        current = self._root.lstat()
+        pinned = os.fstat(self._root_fd)
+        if (
+            not stat.S_ISDIR(current.st_mode)
+            or current.st_uid != os.getuid()
+            or stat.S_IMODE(current.st_mode) != 0o700
+            or (current.st_dev, current.st_ino) != (pinned.st_dev, pinned.st_ino)
+            or (pinned.st_dev, pinned.st_ino) != (self._identity.st_dev, self._identity.st_ino)
+        ):
+            raise BatchScopeError("quote directory identity changed")
 
 
 class VideoBatchAllowance:
@@ -197,16 +232,21 @@ class VideoBatchAllowance:
                 raise BatchScopeError("allowance directory ownership or type is unsafe")
             os.chmod(directory, 0o700)
         directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        self._root_fd = os.open(self._root, directory_flags)
-        self._allowances_fd = os.open("allowances", directory_flags, dir_fd=self._root_fd)
-        self._activations_fd = os.open("activations", directory_flags, dir_fd=self._root_fd)
-        self._root_identity = os.fstat(self._root_fd)
-        self._lock_fd = os.open(".allowance.lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=self._root_fd)
-        os.fchmod(self._lock_fd, 0o600)
+        self._root_fd = self._allowances_fd = self._activations_fd = None
+        try:
+            self._root_fd = os.open(self._root, directory_flags)
+            self._allowances_fd = os.open("allowances", directory_flags, dir_fd=self._root_fd)
+            self._activations_fd = os.open("activations", directory_flags, dir_fd=self._root_fd)
+            self._root_identity = os.fstat(self._root_fd)
+            self._allowances_identity = os.fstat(self._allowances_fd)
+            self._activations_identity = os.fstat(self._activations_fd)
+        except Exception:
+            self.close()
+            raise
 
     def close(self) -> None:
         """Close every pinned descriptor owned by this allowance store."""
-        for field in ("_lock_fd", "_activations_fd", "_allowances_fd", "_root_fd"):
+        for field in ("_activations_fd", "_allowances_fd", "_root_fd"):
             descriptor = getattr(self, field, None)
             if descriptor is not None:
                 try:
@@ -214,6 +254,8 @@ class VideoBatchAllowance:
                 except OSError:
                     pass
                 setattr(self, field, None)
+        if isinstance(self._quote_resolver, LocalQuoteResolver):
+            self._quote_resolver.close()
 
     def activate(self, quote: Mapping[str, Any], approver: Any) -> str:
         """Obtain native approval once and persist the exact batch allowance."""
@@ -616,6 +658,12 @@ class VideoBatchAllowance:
             )
             if canonical_fingerprint(receipt) != quote["rights_receipt_fingerprint"]:
                 raise BatchScopeError("durable rights receipt fingerprint changed")
+            if any(
+                receipt.get(field) != quote[field]
+                for field in ("receipt_id", "project_id", "source_sha256", "creative_mode", "design_fingerprint")
+                if field != "receipt_id"
+            ) or receipt.get("receipt_id") != quote["rights_receipt_id"]:
+                raise BatchScopeError("durable rights receipt binding changed")
             design = self._project_store.read_version(
                 quote["project_id"], "redesign", quote["design_version"], "video_redesign.schema.json"
             )
@@ -658,6 +706,20 @@ class VideoBatchAllowance:
             or (pinned.st_dev, pinned.st_ino) != (self._root_identity.st_dev, self._root_identity.st_ino)
         ):
             raise BatchScopeError("allowance root identity changed")
+        for name, descriptor, expected in (
+            ("allowances", self._allowances_fd, self._allowances_identity),
+            ("activations", self._activations_fd, self._activations_identity),
+        ):
+            current_child = os.stat(name, dir_fd=self._root_fd, follow_symlinks=False)
+            pinned_child = os.fstat(descriptor)
+            if (
+                not stat.S_ISDIR(current_child.st_mode)
+                or current_child.st_uid != os.getuid()
+                or stat.S_IMODE(current_child.st_mode) != 0o700
+                or (current_child.st_dev, current_child.st_ino) != (pinned_child.st_dev, pinned_child.st_ino)
+                or (pinned_child.st_dev, pinned_child.st_ino) != (expected.st_dev, expected.st_ino)
+            ):
+                raise BatchScopeError(f"allowance {name} directory identity changed")
 
     @staticmethod
     def _canonical_bytes(payload: Mapping[str, Any]) -> bytes:
@@ -666,13 +728,13 @@ class VideoBatchAllowance:
     @contextmanager
     def _exclusive_lock(self) -> Iterator[None]:
         self._assert_root_identity()
-        fcntl.flock(self._lock_fd, fcntl.LOCK_EX)
+        fcntl.flock(self._root_fd, fcntl.LOCK_EX)
         try:
             self._assert_root_identity()
             yield
             self._assert_root_identity()
         finally:
-            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+            fcntl.flock(self._root_fd, fcntl.LOCK_UN)
 
 
 __all__ = [

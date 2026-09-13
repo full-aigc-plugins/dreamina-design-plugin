@@ -32,7 +32,14 @@ class RecordingApprover:
         return "native-video-batch-confirmed"
 
 
-RIGHTS_RECEIPT = {"receipt_id": "rr_" + "3" * 24, "evidence": "persisted-rights"}
+RIGHTS_RECEIPT = {
+    "receipt_id": "rr_" + "3" * 24,
+    "project_id": "vp_" + "1" * 24,
+    "source_sha256": "4" * 64,
+    "creative_mode": "authorized_replication",
+    "design_fingerprint": "2" * 64,
+    "evidence": "persisted-rights",
+}
 
 
 class FakeProjectStore:
@@ -101,6 +108,17 @@ def reserve_worker(root: str, key_path: str, allowance_id: str, fingerprint: str
         queue.put(("reserved", result["reservation_id"]))
     except ReservationConsumedError:
         queue.put(("rejected", None))
+
+
+def reserve_any_worker(root: str, key_path: str, allowance_id: str, fingerprint: str, start, queue) -> None:
+    start.wait()
+    try:
+        result = make_allowances(Path(root), Path(key_path)).reserve(
+            allowance_id, shot_id="S01", attempt=1, request_fingerprint=fingerprint
+        )
+        queue.put(("reserved", result["allowance_id"]))
+    except ReservationConsumedError:
+        queue.put(("rejected", allowance_id))
 
 
 class VideoBatchAllowanceTests(unittest.TestCase):
@@ -198,6 +216,23 @@ class VideoBatchAllowanceTests(unittest.TestCase):
         self.assertEqual(committed["submit_id"], "submit_opaque_1")
         with self.assertRaises(ReservationConsumedError):
             self.allowances.commit(retry["reservation_id"], "different")
+
+    def test_ambiguous_state_requires_query_and_preserves_exact_invocation_identity(self) -> None:
+        allowance_id = self.activate()
+        attempt = self.quote["items"][0]["attempts"][0]
+        reservation = self.allowances.reserve(
+            allowance_id, shot_id="S01", attempt=1,
+            request_fingerprint=attempt["request_fingerprint"],
+        )
+        ambiguous = self.allowances.mark_ambiguous(
+            reservation["reservation_id"], "TIMEOUT_AFTER_INVOKE", submit_id="submit_known_1"
+        )
+        self.assertEqual(ambiguous["required_action"], "query")
+        self.assertEqual(ambiguous["allowance_id"], allowance_id)
+        self.assertEqual(ambiguous["shot_id"], "S01")
+        self.assertEqual(ambiguous["attempt"], 1)
+        self.assertEqual(ambiguous["request_fingerprint"], attempt["request_fingerprint"])
+        self.assertEqual(ambiguous["submit_id"], "submit_known_1")
 
     def test_submit_and_error_identifiers_are_opaque_not_paths_or_secrets(self) -> None:
         allowance_id = self.activate()
@@ -384,6 +419,58 @@ class VideoBatchAllowanceTests(unittest.TestCase):
                 allowance_id, shot_id="S01", attempt=1,
                 request_fingerprint=self.quote["items"][0]["request_fingerprints"][0],
             )
+
+    def test_parallel_replay_across_two_allowances_has_one_global_winner(self) -> None:
+        first_id = self.activate()
+        second_quote = copy.deepcopy(self.quote)
+        second_quote["project_id"] = "vp_" + "9" * 24
+        second_quote["creative_mode"] = "original_redesign"
+        second_quote.pop("rights_receipt_id")
+        second_quote.pop("rights_receipt_fingerprint")
+        second_quote["quote_fingerprint"] = canonical_fingerprint(
+            {key: value for key, value in second_quote.items() if key != "quote_fingerprint"}
+        )
+        second_id = self.allowances.activate(second_quote, self.approver)
+        fingerprint = self.quote["items"][0]["request_fingerprints"][0]
+        ctx = multiprocessing.get_context("spawn")
+        start, queue = ctx.Event(), ctx.Queue()
+        processes = [
+            ctx.Process(target=reserve_any_worker, args=(str(self.root), str(self.key_path), allowance_id, fingerprint, start, queue))
+            for allowance_id in (first_id, second_id)
+        ]
+        for process in processes:
+            process.start()
+        start.set()
+        results = [queue.get(timeout=10)[0] for _ in processes]
+        for process in processes:
+            process.join(timeout=10)
+            self.assertEqual(process.exitcode, 0)
+        self.assertEqual(results.count("reserved"), 1)
+        self.assertEqual(results.count("rejected"), 1)
+
+    def test_replacing_pinned_root_blocks_all_future_operations(self) -> None:
+        allowance_id = self.activate()
+        moved = Path(self.temp.name) / "moved-root"
+        self.root.rename(moved)
+        self.root.mkdir(mode=0o700)
+        with self.assertRaises(BatchScopeError):
+            self.allowances.get(allowance_id)
+
+    def test_symlink_root_and_replaced_allowances_directory_fail_closed(self) -> None:
+        target = Path(self.temp.name) / "symlink-target"
+        target.mkdir(mode=0o700)
+        link = Path(self.temp.name) / "symlink-root"
+        link.symlink_to(target, target_is_directory=True)
+        with self.assertRaises(BatchScopeError):
+            make_allowances(link, Path(self.temp.name) / "symlink.key")
+
+        allowance_id = self.activate()
+        directory = self.root / "allowances"
+        moved = self.root / "allowances-old"
+        directory.rename(moved)
+        directory.mkdir(mode=0o700)
+        with self.assertRaises(BatchScopeError):
+            self.allowances.get(allowance_id)
 
 
 if __name__ == "__main__":
