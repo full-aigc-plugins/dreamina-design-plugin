@@ -298,6 +298,22 @@ class MediaIntakeServiceTests(unittest.TestCase):
         receipt_root = self.store.project_root(self.project_id) / "source_receipt"
         self.assertFalse(receipt_root.exists())
 
+    def test_failure_after_publication_retains_original_private_digest_file(self) -> None:
+        source_bytes = self.source.read_bytes()
+        digest = hashlib.sha256(source_bytes).hexdigest()
+        final = self.store.project_root(self.project_id) / "source" / f"{digest}.mp4"
+        validation_error = MediaIntakeError("injected post-publication failure")
+
+        with patch.object(MediaIntakeService, "_verify_staged", side_effect=validation_error):
+            with self.assertRaises(MediaIntakeError) as raised:
+                self.intake.intake(self.project_id, self.source, [self.approved_root])
+
+        self.assertIs(raised.exception, validation_error)
+        self.assertEqual(final.read_bytes(), source_bytes)
+        self.assertEqual(final.stat().st_mode & 0o777, 0o400)
+        receipt_root = self.store.project_root(self.project_id) / "source_receipt"
+        self.assertFalse(receipt_root.exists())
+
     def test_staged_verification_checks_initial_opened_descriptor_size(self) -> None:
         staged = self.base / "staged.mp4"
         staged.write_bytes(self.source.read_bytes())
