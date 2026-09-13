@@ -1,9 +1,9 @@
 # Dreamina Reference Video Re-Director Design
 
-**Date:** 2026-09-14  
-**Status:** Approved direction; specification pending user review  
-**Target release:** `0.4.0`  
-**Change type:** Additive architecture extension  
+**Date:** 2026-09-14
+**Status:** Approved for implementation planning; implementation not started
+**Target release:** `0.4.0`
+**Change type:** Additive architecture extension
 **Reference project:** `eternityspring/reelbench-skills` at commit
 `75520c7b32ab5af8b22c5e4f79705efbbc0d8e07`, Apache-2.0
 
