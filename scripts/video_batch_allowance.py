@@ -488,9 +488,11 @@ class VideoBatchAllowance:
                 raise BatchScopeError("request is outside the approved batch envelope")
             if any(
                 reservation["request_fingerprint"] == request_fingerprint
-                or (reservation["shot_id"], reservation["attempt"]) == (shot_id, attempt)
                 for other in self._all_allowances(key)
                 for reservation in other["reservations"]
+            ) or any(
+                (reservation["shot_id"], reservation["attempt"]) == (shot_id, attempt)
+                for reservation in allowance["reservations"]
             ):
                 raise ReservationConsumedError("the exact request reservation is already consumed")
             new_total = allowance["consumed_credits"] + item["credit_ceiling"]

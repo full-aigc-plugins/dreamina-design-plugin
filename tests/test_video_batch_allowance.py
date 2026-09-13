@@ -49,7 +49,10 @@ class FakeProjectStore:
         return copy.deepcopy(RIGHTS_RECEIPT)
 
     def read_version(self, *args, **kwargs):
-        return {"design_fingerprint": "2" * 64, "payload": {
+        return {
+            "project_id": args[0], "version": args[2],
+            "design_fingerprint": "2" * 64, "source_sha256": "4" * 64,
+            "analysis_version": "v001", "payload": {
             "preserve": ["timing"], "required_media": ["video"],
             "purpose": "test", "audience": "test", "territory": "test",
         }}
@@ -645,7 +648,7 @@ class VideoBatchAllowanceTests(unittest.TestCase):
             allowances.activate(self.quote, ReplacingApprover())
         self.assertEqual(list((self.root / "allowances").glob("*.json")), [])
 
-    def test_exact_shot_attempt_tuple_is_globally_single_use_even_with_distinct_fingerprint(self) -> None:
+    def test_same_shot_attempt_tuple_is_allowed_in_distinct_allowances_with_distinct_fingerprints(self) -> None:
         first_id = self.activate()
         self.reserve_first(first_id, self.quote)
         second_quote = copy.deepcopy(self.quote)
@@ -663,8 +666,10 @@ class VideoBatchAllowanceTests(unittest.TestCase):
             {key: value for key, value in second_quote.items() if key != "quote_fingerprint"}
         )
         second_id = self.allowances.activate(second_quote, self.approver)
-        with self.assertRaises(ReservationConsumedError):
-            self.reserve_first(second_id, second_quote)
+        second = self.reserve_first(second_id, second_quote)
+        self.assertEqual(second["allowance_id"], second_id)
+        self.assertEqual(second["shot_id"], "S01")
+        self.assertEqual(second["attempt"], 1)
 
     def test_symlink_root_and_replaced_allowances_directory_fail_closed(self) -> None:
         target = Path(self.temp.name) / "symlink-target"
