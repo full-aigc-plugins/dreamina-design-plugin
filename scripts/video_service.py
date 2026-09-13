@@ -25,13 +25,13 @@ Responsibilities:
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from scripts.dreamina_adapter import DreaminaResult
+from scripts.json_contracts import canonical_fingerprint
 
 
 class VideoServiceError(Exception):
@@ -107,7 +107,7 @@ def _canonical_bytes(payload: Mapping[str, Any]) -> bytes:
 
 def build_video_request_fingerprint(payload: Mapping[str, Any]) -> str:
     """SHA-256 hex digest over canonical JSON serialization."""
-    return hashlib.sha256(_canonical_bytes(payload)).hexdigest()
+    return canonical_fingerprint(payload)
 
 
 class VideoService:
