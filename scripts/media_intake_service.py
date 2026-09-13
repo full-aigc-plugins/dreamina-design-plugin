@@ -351,9 +351,10 @@ class MediaIntakeService:
                     actual.update(chunk)
                 opened_after = os.fstat(descriptor)
                 path_after = path.lstat()
-                expected_identity = (opened.st_dev, opened.st_ino, expected_size)
+                expected_identity = (info.st_dev, info.st_ino, expected_size)
                 if (
                     (info.st_dev, info.st_ino, info.st_size) != expected_identity
+                    or (opened.st_dev, opened.st_ino, opened.st_size) != expected_identity
                     or (opened_after.st_dev, opened_after.st_ino, opened_after.st_size)
                     != expected_identity
                     or (path_after.st_dev, path_after.st_ino, path_after.st_size)

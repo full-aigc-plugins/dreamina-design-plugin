@@ -216,3 +216,43 @@ Result: exit 0, `Ran 312 tests in 10.013s`, `OK`.
 ### Concerns
 
 - None specific to Round 2. The existing project-local publish lock remains necessary so the durable path cannot be legitimately replaced by a competing intake during this final verification window.
+
+## Fix Round 3 — Opened Descriptor Size and Single-Token Positives
+
+### RED
+
+```bash
+python3 -m unittest tests.test_media_intake_service.MediaIntakeServiceTests.test_staged_verification_checks_initial_opened_descriptor_size tests.test_media_intake_service.MediaIntakeServiceTests.test_iso_bmff_probe_agreement_is_exact_unless_probe_reports_combined_family -v
+```
+
+Result: exit 1, `Ran 2 tests in 0.013s`, `FAILED (failures=1)`. The injected initial opened descriptor reported an unexpected size, but `_verify_staged` substituted `expected_size` when constructing its identity tuple and failed to reject it. The expanded ISO BMFF test already passed, confirming both newly explicit matching single-token positives alongside retained cross-mismatch and combined-family coverage.
+
+### GREEN
+
+The exact same targeted command returned exit 0, `Ran 2 tests in 0.010s`, `OK`.
+
+Task 3 focused verification:
+
+```bash
+python3 -m unittest tests.test_video_project_store tests.test_media_intake_service tests.test_contracts tests.test_reference_policy tests.test_json_contracts -v
+```
+
+Result: exit 0, `Ran 45 tests in 0.131s`, `OK`.
+
+Full suite:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Result: exit 0, `Ran 321 tests in 14.669s`, `OK`.
+
+### Changes and self-review
+
+- `_verify_staged` now derives the expected durable identity from the initial pathname device/inode plus the trusted expected size, then independently compares the initial opened descriptor's actual `(st_dev, st_ino, st_size)` triple against it.
+- The ISO BMFF regression explicitly proves byte-identified MOV with `format_name=mov` and byte-identified MP4 with `format_name=mp4` succeed, while preserving both cross-mismatch failures and both combined-family successes.
+- No Task 1/2 files or behavior were modified.
+
+### Concerns
+
+- None specific to Round 3.

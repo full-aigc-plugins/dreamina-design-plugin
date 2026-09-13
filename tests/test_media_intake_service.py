@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts.json_contracts import validate_contract
@@ -209,6 +210,19 @@ class MediaIntakeServiceTests(unittest.TestCase):
                 with self.assertRaises(MediaIntakeError):
                     service.intake(self.project_id, source, [self.approved_root])
 
+        for source, probe_format, expected_mime in (
+            (quicktime, "mov", "video/quicktime"),
+            (self.source, "mp4", "video/mp4"),
+        ):
+            with self.subTest(matching_single_token=(source.name, probe_format)):
+                service = MediaIntakeService(
+                    self.store,
+                    FakeMediaAdapter(format_name=probe_format),
+                    self.approval,
+                )
+                receipt = service.intake(self.project_id, source, [self.approved_root])
+                self.assertEqual(receipt["mime_type"], expected_mime)
+
         for source in (quicktime, self.source):
             with self.subTest(combined_family=source.name):
                 service = MediaIntakeService(
@@ -256,6 +270,24 @@ class MediaIntakeServiceTests(unittest.TestCase):
         self.assertTrue(replaced)
         receipt_root = self.store.project_root(self.project_id) / "source_receipt"
         self.assertFalse(receipt_root.exists())
+
+    def test_staged_verification_checks_initial_opened_descriptor_size(self) -> None:
+        staged = self.base / "staged.mp4"
+        staged.write_bytes(self.source.read_bytes())
+        digest = hashlib.sha256(staged.read_bytes()).hexdigest()
+        actual = staged.stat()
+        wrong_opened = SimpleNamespace(
+            st_dev=actual.st_dev,
+            st_ino=actual.st_ino,
+            st_size=actual.st_size + 1,
+        )
+
+        with patch(
+            "scripts.media_intake_service.os.fstat",
+            side_effect=(wrong_opened, actual),
+        ):
+            with self.assertRaises(MediaIntakeError):
+                MediaIntakeService._verify_staged(staged, digest, actual.st_size)
 
     def test_same_inode_growth_during_probe_is_rejected(self) -> None:
         def append_source() -> None:
