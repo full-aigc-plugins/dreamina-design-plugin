@@ -19,10 +19,12 @@ Covers:
 from __future__ import annotations
 
 import copy
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -675,6 +677,67 @@ class SubmitSemanticsTests(unittest.TestCase):
         self.assertIn("--duration", adapter.calls[0])
         self.assertIn("4", adapter.calls[0])
         self.assertEqual(result["submit_id"], "vsub-2")
+
+    def test_direct_submit_preserves_adapter_exception_after_legacy_bookkeeping(self) -> None:
+        req = self.service.build_request(
+            mode="text2video",
+            prompt="x",
+            model="seedance-2.5",
+            video_resolution="720P",
+            ratio="16:9",
+        )
+        fingerprint = build_video_request_fingerprint(req)
+        approval = {
+            "request_fingerprint": fingerprint,
+            "acknowledged_cost": "credits",
+            "acknowledged_scope": {
+                "model": "seedance-2.5",
+                "video_resolution": "720P",
+                "ratio": "16:9",
+                "duration_seconds": 4,
+            },
+            "approved_at": "2026-09-12T00:00:00Z",
+            "approver": "test",
+        }
+        self.service.record_web_prerequisite_acknowledgement()
+        approvals_root = Path(self.tmp.name) / "approvals"
+        guard, session_id, approval_id = issue_approval(approvals_root, req, {})
+
+        class SentinelAdapterError(RuntimeError):
+            pass
+
+        sentinel = SentinelAdapterError("legacy adapter failure")
+
+        class _FailingAdapter:
+            def run(self, args):
+                raise sentinel
+
+        with patch.object(guard, "consume_approval", wraps=guard.consume_approval) as consume:
+            try:
+                self.service.submit(
+                    req,
+                    adapter=_FailingAdapter(),
+                    approval_guard=guard,
+                    session_id=session_id,
+                    approval_id=approval_id,
+                    web_prerequisite_cleared=False,
+                )
+            except Exception as caught:
+                self.assertIs(caught, sentinel)
+            else:
+                self.fail("direct submit must re-raise the adapter exception")
+            self.assertEqual(consume.call_count, 1)
+
+        receipt_path = approvals_root / "sessions" / session_id / "approvals" / f"{fingerprint}.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        self.assertIsNotNone(receipt["consumed_at"])
+        intent_path = Path(self.tmp.name) / "ledger" / "submission_intents" / f"{fingerprint}.json"
+        intent = json.loads(intent_path.read_text(encoding="utf-8"))
+        self.assertEqual(intent["state"], "manual_review")
+        self.assertEqual(intent["last_error_code"], "SentinelAdapterError")
+        self.assertIsNone(intent["submit_id"])
+        self.assertNotIn("allowance_id", intent)
+        self.assertNotIn("reservation_id", intent)
 
 
 class MultiFrameVideoTests(unittest.TestCase):

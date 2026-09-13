@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import copy
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from scripts.dreamina_adapter import DreaminaResult
@@ -181,7 +183,7 @@ class VideoBatchExecutorTests(unittest.TestCase):
         blocked = self.executor.run_next(PROJECT_ID, "v001", 1)
         self.assertEqual(blocked["new_submissions"], 0)
         self.assertEqual((blocked["state"], blocked["required_action"]), ("awaiting_evaluation", "evaluate"))
-        self.executor.record_evaluation_decision(PROJECT_ID, "v001", "S01", 1, "retry")
+        self.executor._record_evaluation_decision(PROJECT_ID, "v001", "S01", 1, "retry")
         retried = self.executor.run_next(PROJECT_ID, "v001", 1)
         self.assertEqual(retried["new_submissions"], 1)
         self.assertEqual(self.adapter.calls[-1][0], "text2video")
@@ -216,7 +218,7 @@ class VideoBatchExecutorTests(unittest.TestCase):
         self.executor.run_next(PROJECT_ID, "v001", 1)
         self.adapter.status = "success"; self.adapter.download = True
         self.executor.reconcile(PROJECT_ID, "v001")
-        self.executor.record_evaluation_decision(PROJECT_ID, "v001", "S01", 1, "retry")
+        self.executor._record_evaluation_decision(PROJECT_ID, "v001", "S01", 1, "retry")
         submitted = self.executor.run_next(PROJECT_ID, "v001", 1)
         predecessor = next(task for task in submitted["tasks"] if task["attempt"] == 1)
         self.assertEqual(predecessor["state"], "retry_superseded")
@@ -257,6 +259,35 @@ class VideoBatchExecutorTests(unittest.TestCase):
                     self.assertEqual(result["new_submissions"], 0)
                     self.assertEqual([call[2] for call in self.adapter.calls if call[0] == "query_result"],
                                      ["submit_1", "submit_2"])
+
+    def test_parallel_executors_have_one_winner_for_single_remaining_request(self):
+        self.store.document["items"] = self.store.document["items"][:1]
+        self.store.document["items"][0]["attempts"] = self.store.document["items"][0]["attempts"][1:]
+        second = VideoBatchExecutor(project_store=self.store, allowance=self.allowance,
+            allowance_id="ba_" + "2" * 32, video_service=None, adapter=self.adapter)
+        gate = threading.Barrier(2)
+        def run(executor):
+            gate.wait()
+            return executor.run_next(PROJECT_ID, "v001", 1)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(run, (self.executor, second)))
+        self.assertEqual(self.adapter.submissions, 1)
+        self.assertEqual(sum(result["new_submissions"] for result in results), 1)
+
+    def test_restart_recovers_known_submit_identity_from_allowance(self):
+        planned = self.store.document["items"][0]["attempts"][1]
+        self.allowance.reservations.append({"reservation_id": "br_" + "1" * 32,
+            "shot_id": "S01", "attempt": 1, "request_fingerprint": planned["request_fingerprint"],
+            "state": "ambiguous", "submit_id": "submit_recovered"})
+        self.executor._save({"project_id": PROJECT_ID, "batch_version": "v001",
+            "allowance_id": "ba_" + "2" * 32, "state": "generating", "tasks": [{
+                "shot_index": 0, "shot_id": "S01", "attempt": 1,
+                "request_fingerprint": planned["request_fingerprint"], "state": "submitting", "artifacts": []}]})
+        result = self.executor.resume(PROJECT_ID, "v001")
+        self.assertEqual(result["tasks"][0]["submit_id"], "submit_recovered")
+
+    def test_evaluation_mutator_is_not_public_task9_api(self):
+        self.assertFalse(hasattr(self.executor, "record_evaluation_decision"))
 
 
 if __name__ == "__main__": unittest.main()

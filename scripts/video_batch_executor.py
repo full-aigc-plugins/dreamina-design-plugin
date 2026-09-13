@@ -171,9 +171,23 @@ class VideoBatchExecutor:
         quote = self._quote(project_id, batch_version)
         state = self._load(project_id, batch_version)
         for task in sorted(state["tasks"], key=lambda item: (item["shot_index"], item["attempt"])):
+            if task["state"] == "downloading" and task.get("download_dir"):
+                try: recovered = self._tasks.verify_download_dir(task["download_dir"])
+                except (OSError, ValueError): recovered = []
+                if recovered:
+                    task["artifacts"] = recovered; task["state"] = "awaiting_evaluation"
+                    self._persist_aggregate(state, quote); continue
             if task["state"] == "submitting" and not task.get("submit_id"):
+                allowance = self._allowance.get(self._allowance_id)
+                reservation = next((item for item in allowance.get("reservations", [])
+                                    if item.get("shot_id") == task["shot_id"] and item.get("attempt") == task["attempt"]), None)
+                if reservation is not None:
+                    task["reservation_id"] = reservation.get("reservation_id")
+                    if reservation.get("submit_id"):
+                        task["submit_id"] = reservation["submit_id"]; task["state"] = "queued"
+                        self._persist_aggregate(state, quote); continue
                 task["state"] = "manual_review"
-                task["error_code"] = "PROCESS_INTERRUPTED_AT_INVOCATION_BOUNDARY"
+                task["error_code"] = "PREINVOKE_RESERVATION_REQUIRES_OPERATOR_REVIEW" if reservation else "PROCESS_INTERRUPTED_BEFORE_RESERVATION"
                 self._persist_aggregate(state, quote); continue
             if not task.get("submit_id") or task["state"] in {
                 "failed", "evaluation_retryable", "retry_superseded",
@@ -187,7 +201,7 @@ class VideoBatchExecutor:
                 task["error_code"] = "UNKNOWN_EXTERNAL_TASK_STATUS"
                 self._persist_aggregate(state, quote)
                 continue
-            status = str(queried["result"].get("gen_status", "unknown")).lower()
+            status = str(queried["status"])
             if status in {"fail", "failed"}:
                 task["state"] = "failed"; self._persist_aggregate(state, quote); continue
             if status != "success":
@@ -197,7 +211,9 @@ class VideoBatchExecutor:
             sequence = len(list(attempt_root.glob("download-*"))) + 1 if attempt_root.exists() else 1
             target = attempt_root / f"download-{sequence:03d}"
             task["state"] = "downloading"; task["download_dir"] = str(target); self._persist_aggregate(state, quote)
-            target.mkdir(mode=0o700, parents=True, exist_ok=True)
+            attempt_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(attempt_root, 0o700)
+            target.mkdir(mode=0o700, exist_ok=False)
             try:
                 downloaded = self._tasks.query(task["submit_id"], download_dir=str(target))
             except (OSError, ValueError):
@@ -211,8 +227,8 @@ class VideoBatchExecutor:
         self._persist_aggregate(state, quote)
         return state
 
-    def record_evaluation_decision(self, project_id: str, batch_version: str,
-                                   shot_id: str, attempt: int, decision: str) -> dict[str, Any]:
+    def _record_evaluation_decision(self, project_id: str, batch_version: str,
+                                    shot_id: str, attempt: int, decision: str) -> dict[str, Any]:
         """Persist a narrow evaluator decision without performing evaluation itself."""
         if decision not in {"accepted", "retry", "rejected", "manual_review"}:
             raise ValueError("unsupported evaluation decision")

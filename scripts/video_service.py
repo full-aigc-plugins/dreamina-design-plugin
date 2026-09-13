@@ -426,10 +426,15 @@ class VideoService:
                 reservation_id=reservation["reservation_id"],
             )
         except PostInvokePersistenceError as exc:
-            allowance.mark_ambiguous(
-                reservation["reservation_id"], type(exc).__name__.upper(),
-                submit_id=exc.submit_id,
-            )
+            try:
+                allowance.mark_ambiguous(
+                    reservation["reservation_id"], type(exc).__name__.upper(),
+                    submit_id=exc.submit_id,
+                )
+            except Exception:
+                # Never replace the typed post-invoke evidence with a local
+                # allowance persistence error; the executor must retain ID.
+                pass
             raise
         try:
             committed = allowance.commit(reservation["reservation_id"], result["submit_id"])
@@ -490,6 +495,8 @@ class VideoService:
                     )
                 except Exception:
                     pass
+            if not begin_intent:
+                raise
             raise PostInvokePersistenceError(
                 submit_id=known_submit_id, result_bytes=str(exc).encode("utf-8", "replace"),
                 allowance_id=allowance_id, reservation_id=reservation_id,

@@ -71,6 +71,16 @@ class TaskService:
             finally: os.close(descriptor)
         return artifacts
 
+    def verify_download_dir(self, download_dir: str) -> list[dict[str, object]]:
+        """Reconcile artifacts left after a crash at the download boundary."""
+        target = Path(download_dir)
+        if not target.is_absolute() or target.is_symlink(): raise ValueError("unsafe download directory")
+        metadata = target.stat()
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700: raise ValueError("unsafe download directory")
+        descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        try: return self._verified_artifacts(descriptor, set(), target)
+        finally: os.close(descriptor)
+
     def list_tasks(self, filters: Mapping[str, object], *, limit: int = 20) -> dict[str, object]:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100: raise ValueError("limit must be between 1 and 100")
         unknown = set(filters) - FILTERS

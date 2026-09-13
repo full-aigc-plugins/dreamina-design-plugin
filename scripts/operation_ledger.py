@@ -220,9 +220,14 @@ class OperationLedger:
     def query(self, *, submit_id: str, adapter: Any) -> dict[str, Any]:
         if self._read(submit_id) is None:
             raise OperationNotFoundError(submit_id)
-        result = adapter.run(["query_result", "--submit_id", submit_id])
-        payload = result.payload if isinstance(result.payload, Mapping) else {}
-        cli_state = str(payload.get("gen_status", "unknown")).lower()
+        from scripts.task_service import TaskService
+        try:
+            queried = TaskService(adapter).query(submit_id)
+            cli_state = str(queried["status"])
+        except (OSError, ValueError):
+            return self.update_state(submit_id=submit_id, state="unknown",
+                                     required_action="manual_review",
+                                     last_error_code="INVALID_QUERY_RESULT")
         state_map = {
             "querying": ("queued", "wait"),
             "success": ("succeeded", "download"),
