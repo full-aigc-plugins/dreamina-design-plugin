@@ -89,12 +89,6 @@ class VideoRightsService:
         if canonical_fingerprint(candidate_core) != fingerprint:
             raise ContractValidationError("design candidate changed after fingerprinting")
         try:
-            prepared = self._store.read_prepared_candidate(project_id, fingerprint)
-        except (ValueError, VersionReconciliationError) as exc:
-            raise ContractValidationError("candidate was not safely prepared by this project") from exc
-        if prepared != design_candidate:
-            raise ContractValidationError("candidate differs from its prepared artifact")
-        try:
             from scripts.video_redesign_service import VideoRedesignService
 
             redesign = VideoRedesignService(self._store)
