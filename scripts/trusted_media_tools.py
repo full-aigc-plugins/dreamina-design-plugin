@@ -248,9 +248,11 @@ class TrustedMediaToolStore:
                     pass
             raise
         finally:
-            if fd is not None:
-                os.close(fd)
-            os.close(directory_fd)
+            try:
+                if fd is not None:
+                    os.close(fd)
+            finally:
+                os.close(directory_fd)
 
     def _ensure_private_config_directory(self, *, create: bool) -> os.stat_result:
         parent = self.path.parent

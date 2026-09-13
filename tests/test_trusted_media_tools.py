@@ -234,6 +234,42 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
         replace.assert_not_called()
         unlink.assert_not_called()
 
+    def test_raw_temp_close_failure_still_closes_directory_fd_without_mutation(self) -> None:
+        real_open = os.open
+        real_close = os.close
+        opened_directory_fds: list[int] = []
+        opened_temp_fds: list[int] = []
+
+        def record_open(path, flags, mode=0o777, *, dir_fd=None):
+            descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+            if dir_fd is None and Path(path) == self.store.path.parent:
+                opened_directory_fds.append(descriptor)
+            elif dir_fd is not None:
+                opened_temp_fds.append(descriptor)
+            return descriptor
+
+        def close_then_fail_raw_temp(descriptor):
+            real_close(descriptor)
+            if descriptor in opened_temp_fds:
+                raise OSError("injected raw temp close failure")
+
+        with (
+            patch("scripts.trusted_media_tools.os.open", side_effect=record_open),
+            patch("scripts.trusted_media_tools.os.fchmod", side_effect=OSError("before fdopen")),
+            patch("scripts.trusted_media_tools.os.close", side_effect=close_then_fail_raw_temp),
+            patch("scripts.trusted_media_tools.os.replace") as replace,
+        ):
+            with self.assertRaisesRegex(OSError, "injected raw temp close failure"):
+                self.store._atomic_write({"version": 1, "tools": {}})
+
+        self.assertEqual(len(opened_directory_fds), 1)
+        self.assertEqual(len(opened_temp_fds), 1)
+        with self.assertRaises(OSError):
+            os.fstat(opened_directory_fds[0])
+        replace.assert_not_called()
+        self.assertFalse(self.store.path.exists())
+        self.assertEqual(list(self.store.path.parent.iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()
