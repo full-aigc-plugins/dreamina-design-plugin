@@ -8,7 +8,7 @@
 
 ## 状态与定位
 
-**生产就绪版本 0.2.0。**
+**生产就绪版本 0.2.1。**
 
 离线实施门禁已经满足，但生产验收由
 [`docs/superpowers/plans/2026-09-12-production-readiness-hardening.md`](docs/superpowers/plans/2026-09-12-production-readiness-hardening.md)
@@ -23,7 +23,7 @@
 
 基线计划 7 个任务已经实现；当前生产加固由 225 个离线测试覆盖。
 计划 13 行完成门禁均已有实测证据 —— 含 Skill snapshot parity 固定到上游
-`full-aigc-skills/dreamina-skills@300bfc1`、严格 TRACE 13/13、plugin 校验、
+`full-aigc-skills/dreamina-skills@e8ae588`、严格 TRACE 13/13、plugin 校验、
 凭证零命中，以及**公开 marketplace 安装后经 `codex debug prompt-input` 验证发现全部 14 个 Skill**。
 
 runtime 门禁为：

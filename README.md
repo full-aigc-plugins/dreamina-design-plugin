@@ -8,7 +8,7 @@
 
 ## Status and purpose
 
-**Production-ready release 0.2.0.**
+**Production-ready release 0.2.1.**
 
 The offline implementation gate is satisfied, but production acceptance is
 tracked separately in
@@ -27,7 +27,7 @@ All seven baseline plan tasks are implemented; the current hardening suite is
 covered by 225 offline tests. All thirteen baseline completion-gate lines now
 have measured evidence — including
 Skill snapshot parity pinned to upstream
-`full-aigc-skills/dreamina-skills@300bfc1`, strict per-Skill TRACE 13/13,
+`full-aigc-skills/dreamina-skills@e8ae588`, strict per-Skill TRACE 13/13,
 plugin validation, zero secret matches, and a **public-marketplace install
 verified to discover all 14 Skills** via `codex debug prompt-input`.
 

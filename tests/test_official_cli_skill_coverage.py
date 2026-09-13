@@ -36,6 +36,21 @@ OFFICIAL_COMMANDS = (
 
 
 class OfficialCliSkillCoverageTests(unittest.TestCase):
+    def test_execution_skills_route_prompt_and_opencli_support(self) -> None:
+        routes = {
+            "dreamina-cli-text2image": ("dreamina-prompt-text2image", "dreamina-opencli-text2image"),
+            "dreamina-cli-image2image": ("dreamina-prompt-image2image", "dreamina-opencli-image2image"),
+            "dreamina-cli-text2video": ("dreamina-prompt-text2video", "dreamina-opencli-text2video"),
+            "dreamina-cli-image2video": ("dreamina-prompt-image2video", "dreamina-opencli-image2video"),
+        }
+        for owner, supporting in routes.items():
+            text = (REPO_ROOT / "skills" / owner / "SKILL.md").read_text(encoding="utf-8")
+            for skill in supporting:
+                self.assertIn(skill, text, f"{owner} must route to {skill}")
+
+        image = (REPO_ROOT / "skills" / "dreamina-cli-image2image" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("dreamina image_upscale", image)
+
     def test_umbrella_skill_links_the_official_install_to_use_workflow(self) -> None:
         skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("references/official-cli-install-to-use.md", skill)
