@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import stat
 import statistics
 import tempfile
 from dataclasses import dataclass
@@ -394,7 +395,7 @@ class ReferenceVideoService:
                 if not isinstance(item, Mapping) or item.get("boundary_fingerprint") != expected_boundary:
                     return False
                 path = Path(str(item.get("path", "")))
-                if not path.is_file() or self._sha256(path) != item.get("sha256"):
+                if self._verified_sha256(path) != item.get("sha256"):
                     return False
         return True
 
@@ -429,35 +430,55 @@ class ReferenceVideoService:
         cls._publish_private_bytes(
             target, (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
         )
+        loaded = cls._load_artifact_manifest(
+            manifest_root,
+            manifest_input,
+            output_sha256=output_sha256,
+        )
+        if loaded != payload:
+            raise MediaOutputError("artifact manifest did not round-trip exactly")
 
     @classmethod
     def _load_artifact_manifest(
-        cls, manifest_root: Path, manifest_input: Mapping[str, Any]
+        cls,
+        manifest_root: Path,
+        manifest_input: Mapping[str, Any],
+        *,
+        output_sha256: str | None = None,
     ) -> dict[str, Any] | None:
         input_fingerprint = canonical_fingerprint(manifest_input)
-        candidates = sorted((manifest_root / input_fingerprint).glob("*.json"))
+        fingerprint_root = manifest_root / input_fingerprint
+        candidates = (
+            [fingerprint_root / f"{output_sha256}.json"]
+            if output_sha256 is not None
+            else sorted(fingerprint_root.glob("*.json"))
+        )
+        candidates = [candidate for candidate in candidates if candidate.exists() or candidate.is_symlink()]
         if not candidates:
             return None
-        latest: dict[str, Any] | None = None
+        selected: dict[str, Any] | None = None
         for candidate in candidates:
             try:
+                cls._verified_sha256(candidate)
                 manifest = json.loads(candidate.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
                 raise MediaOutputError("artifact manifest is unreadable") from exc
             if manifest.get("input_fingerprint") != input_fingerprint:
                 raise MediaOutputError("artifact manifest input fingerprint mismatch")
             output_path = Path(str(manifest.get("output_path", "")))
-            output_sha256 = manifest.get("output_sha256")
+            manifest_output_sha256 = manifest.get("output_sha256")
             if (
-                not isinstance(output_sha256, str)
-                or candidate.stem != output_sha256
-                or output_path.stem != output_sha256
-                or not output_path.is_file()
-                or cls._sha256(output_path) != output_sha256
+                not isinstance(manifest_output_sha256, str)
+                or candidate.stem != manifest_output_sha256
+                or output_path.stem != manifest_output_sha256
+                or cls._verified_sha256(output_path) != manifest_output_sha256
             ):
                 raise MediaOutputError("content-addressed artifact failed checksum validation")
-            latest = manifest
-        return latest
+            if output_sha256 is not None:
+                selected = manifest
+        # Without an exact output digest, validation is permitted but selection
+        # is not: lexicographic filenames do not express recency or preference.
+        return selected
 
     @staticmethod
     def _machine_fingerprint(payload: Mapping[str, Any]) -> str:
@@ -497,6 +518,35 @@ class ReferenceVideoService:
         return digest.hexdigest()
 
     @staticmethod
+    def _verified_sha256(path: Path) -> str:
+        """Hash one regular, non-symlink file while holding its verified descriptor."""
+        try:
+            before = path.lstat()
+            if not stat.S_ISREG(before.st_mode):
+                raise MediaOutputError("content-addressed artifact is not a regular file")
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except MediaOutputError:
+            raise
+        except OSError as exc:
+            raise MediaOutputError("content-addressed artifact cannot be opened safely") from exc
+        digest = hashlib.sha256()
+        try:
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                raise MediaOutputError("content-addressed artifact changed during open")
+            while chunk := os.read(descriptor, 1024 * 1024):
+                digest.update(chunk)
+            after = os.fstat(descriptor)
+            if (
+                (after.st_dev, after.st_ino, after.st_size)
+                != (opened.st_dev, opened.st_ino, opened.st_size)
+            ):
+                raise MediaOutputError("content-addressed artifact changed during hashing")
+        finally:
+            os.close(descriptor)
+        return digest.hexdigest()
+
+    @staticmethod
     def _temporary_path(parent: Path, *, suffix: str) -> Path:
         descriptor, name = tempfile.mkstemp(prefix=".pending-", suffix=suffix, dir=parent)
         os.close(descriptor)
@@ -521,7 +571,10 @@ class ReferenceVideoService:
         try:
             os.link(temporary, target, follow_symlinks=False)
         except FileExistsError:
-            if ReferenceVideoService._sha256(temporary) != ReferenceVideoService._sha256(target):
+            if (
+                ReferenceVideoService._verified_sha256(temporary)
+                != ReferenceVideoService._verified_sha256(target)
+            ):
                 raise MediaOutputError("content-addressed artifact collision")
         directory = os.open(target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
