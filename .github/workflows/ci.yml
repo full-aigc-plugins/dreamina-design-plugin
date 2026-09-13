@@ -15,14 +15,24 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    env:
+      TMPDIR: ${{ runner.temp }}/dreamina-tests
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Prepare private test temp directory
+        run: mkdir -p "$TMPDIR" && chmod 700 "$TMPDIR"
       - name: Validate distribution
         run: python scripts/validate_distribution.py .
+      - name: Prepare private test temp root
+        run: |
+          mkdir -p "$RUNNER_TEMP/dreamina-tests"
+          chmod 700 "$RUNNER_TEMP/dreamina-tests"
       - name: Run tests
+        env:
+          TMPDIR: ${{ runner.temp }}/dreamina-tests
         run: python -m unittest discover -s tests
       - name: Check whitespace
         run: git diff --check
