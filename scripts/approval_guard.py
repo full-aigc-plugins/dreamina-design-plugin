@@ -31,7 +31,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from scripts.image_service import build_request_fingerprint
+from scripts.json_contracts import canonical_fingerprint as build_request_fingerprint
 
 
 # Silently stripped before persistence. These are common credential
