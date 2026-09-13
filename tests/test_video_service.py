@@ -628,6 +628,14 @@ class SubmitSemanticsTests(unittest.TestCase):
 
 
 class MultiFrameVideoTests(unittest.TestCase):
+    def test_multiframe_transition_duration_rejects_bool_and_non_integer(self) -> None:
+        snapshot = synthetic_video_snapshot()
+        with tempfile.TemporaryDirectory() as tmp:
+            service = VideoService(snapshot=snapshot, ledger_dir=Path(tmp), reference_policy=_TestReferencePolicy())
+            for value in (True, 1.5, "2"):
+                with self.subTest(value=value), self.assertRaisesRegex(Exception, "integer"):
+                    service.build_request(mode="multiframe2video", prompt="story", model=None, video_resolution="720P", duration_seconds=3, references=[{"path":"/a.png","role":"frame"},{"path":"/b.png","role":"frame"}], transitions=[{"prompt":"pan","duration_seconds":value}])
+
     def test_multiframe_requires_live_mode_limits(self) -> None:
         snapshot = synthetic_video_snapshot()
         del snapshot["mode_limits"]

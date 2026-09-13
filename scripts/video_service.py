@@ -213,7 +213,10 @@ class VideoService:
                 raise VideoServiceError("multiframe2video requires exactly N-1 transitions")
             limits = self._mode_limits[mode]
             for transition in normalized_transitions:
-                seconds = int(transition.get("duration_seconds", 0))
+                raw_seconds = transition.get("duration_seconds")
+                if isinstance(raw_seconds, bool) or not isinstance(raw_seconds, int):
+                    raise VideoServiceError("transition duration_seconds must be an integer")
+                seconds = raw_seconds
                 if not str(transition.get("prompt", "")).strip() or not int(limits["transition_duration_min_seconds"]) <= seconds <= int(limits["transition_duration_max_seconds"]):
                     raise VideoServiceError("transition violates advertised duration limits")
 
