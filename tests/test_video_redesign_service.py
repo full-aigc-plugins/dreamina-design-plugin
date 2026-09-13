@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import copy
 import json
+import stat
+import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from scripts.json_contracts import ContractValidationError
+from scripts.json_contracts import ContractValidationError, canonical_fingerprint
 from scripts.video_project_store import (
     VersionCommitIndeterminateError,
     VersionReconciliationError,
@@ -66,7 +70,9 @@ class VideoRedesignServiceTests(unittest.TestCase):
             "machine_fingerprint": self.fingerprint,
             "preserve": ["timing", "shot_sizes", "camera_moves", "rhythm", "transitions", "audio_beats"],
             "replacements": {key: f"new {key}" for key in ("likeness", "voice", "dialogue", "music", "brand", "artwork", "settings", "costume", "distinctive_props")},
-            "audience": "general", "format": "short_video", "target_duration_seconds": 4.0,
+            "required_media": ["video"], "purpose": "public commercial campaign",
+            "audience": "public", "territory": "worldwide",
+            "format": "short_video", "target_duration_seconds": 4.0,
             "aspect_ratio": "16:9", "platform": "web", "concept": "A new original launch story",
             "cast": ["new presenter"], "settings": ["new studio"], "palette": ["blue"],
             "visual_style": "clean editorial", "dialogue": [], "narration": [], "music": "new licensed score",
@@ -74,6 +80,8 @@ class VideoRedesignServiceTests(unittest.TestCase):
             "continuity": ["new presenter remains consistent"], "author": "user",
         }
         payload.update(changes)
+        if payload["creative_mode"] == "authorized_replication":
+            payload.pop("replacements", None)
         return payload
 
     def test_original_redesign_forbids_source_face_voice_brand_dialogue_music_reuse(self):
@@ -105,6 +113,24 @@ class VideoRedesignServiceTests(unittest.TestCase):
         with self.assertRaises(RedesignBindingError):
             self.redesign.commit_version(candidate, rights_receipt_id=None)
 
+    def test_prepared_candidate_is_private_and_content_addressed(self):
+        candidate = self.redesign.prepare_candidate(self.project_id, "v001", self.payload())
+        root = self.store.project_root(self.project_id) / "prepared_candidate"
+        target = root / f"{candidate['design_fingerprint']}.json"
+        self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8")), candidate)
+
+    def test_recomputed_candidate_cannot_bypass_originality_policy_at_commit(self):
+        candidate = self.redesign.prepare_candidate(self.project_id, "v001", self.payload())
+        candidate["payload"]["preserve"] = ["likeness"]
+        candidate["payload"]["replacements"]["voice"] = "   "
+        candidate["similarity_audit"] = self.redesign._audit(["likeness"])
+        core = {key: value for key, value in candidate.items() if key != "design_fingerprint"}
+        candidate["design_fingerprint"] = canonical_fingerprint(core)
+        with self.assertRaises(OriginalityPolicyError):
+            self.redesign.commit_version(candidate, rights_receipt_id=None)
+
     def test_similarity_audit_partitions_every_dimension_exactly_once(self):
         candidate = self.redesign.prepare_candidate(self.project_id, "v001", self.payload())
         design = self.redesign.commit_version(candidate, rights_receipt_id=None)
@@ -113,6 +139,35 @@ class VideoRedesignServiceTests(unittest.TestCase):
         self.assertEqual(set(preserved) | set(replaced), REUSE_DIMENSIONS)
         self.assertFalse(set(preserved) & set(replaced))
         self.assertEqual(len(preserved) + len(replaced), len(REUSE_DIMENSIONS))
+
+    def test_parent_version_is_allocated_numerically_inside_atomic_store_write(self):
+        candidate = self.redesign.prepare_candidate(self.project_id, "v001", self.payload())
+        results = []
+        failures = []
+
+        def commit():
+            try:
+                results.append(self.redesign.commit_version(copy.deepcopy(candidate), None))
+            except BaseException as exc:
+                failures.append(exc)
+
+        threads = [threading.Thread(target=commit) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(failures, [])
+        by_version = {item["version"]: item for item in results}
+        self.assertIsNone(by_version["v001"]["parent_version"])
+        self.assertEqual(by_version["v002"]["parent_version"], "v001")
+
+        family = self.store.project_root(self.project_id) / "redesign"
+        marker = family / "v999.json"
+        marker.write_text("{}", encoding="utf-8")
+        marker.chmod(0o600)
+        next_design = self.redesign.commit_version(copy.deepcopy(candidate), None)
+        self.assertEqual(next_design["version"], "v1000")
+        self.assertEqual(next_design["parent_version"], "v999")
 
     def test_indeterminate_redesign_commit_reconciles_without_allocating_v002(self):
         candidate = self.redesign.prepare_candidate(self.project_id, "v001", self.payload())
@@ -196,7 +251,7 @@ class VideoRedesignServiceTests(unittest.TestCase):
             "declarant": "holder@example.test", "rights_basis": "written license",
             "evidence": [{"reference": "license-record", "sha256": "c" * 64}],
             "allowed_media": ["video"], "allowed_reuse": ["likeness", "voice"],
-            "purpose": "authorized remake", "audience": "general", "territory": "worldwide",
+            "purpose": "public commercial campaign", "audience": "public", "territory": "worldwide",
             "expires_at": "2099-01-01T00:00:00Z",
         }
         source = {"project_id": self.project_id, "source_sha256": "a" * 64}
@@ -204,6 +259,96 @@ class VideoRedesignServiceTests(unittest.TestCase):
         design = self.redesign.commit_version(candidate, receipt["receipt_id"])
         self.assertEqual(design["rights_receipt_id"], receipt["receipt_id"])
         self.assertEqual(design["design_fingerprint"], candidate["design_fingerprint"])
+
+    def test_replication_commit_always_enforces_media_purpose_audience_and_territory(self):
+        project = self.store.create(title="replica", creative_mode="authorized_replication", audio_policy="silent")
+        self.project_id = project["project_id"]
+        self._persist_analysis_and_annotation()
+        candidate = self.redesign.prepare_candidate(
+            self.project_id, "v001",
+            self.payload(creative_mode="authorized_replication", preserve=["likeness"]),
+        )
+
+        class Confirmer:
+            def confirm_video_rights(self, request): return "native-video-rights-confirmed"
+
+        rights = VideoRightsService(self.store, Confirmer())
+        base = {
+            "declarant": "holder@example.test", "rights_basis": "written license",
+            "evidence": [{"reference": "license-record", "sha256": "c" * 64}],
+            "allowed_media": ["video"], "allowed_reuse": ["likeness"],
+            "purpose": "public commercial campaign", "audience": "public",
+            "territory": "worldwide", "expires_at": "2099-01-01T00:00:00Z",
+        }
+        mismatches = (
+            {"allowed_media": ["text"]},
+            {"purpose": "internal evaluation"},
+            {"audience": "employees"},
+            {"territory": "US"},
+        )
+        source = {"project_id": self.project_id, "source_sha256": "a" * 64}
+        for changes in mismatches:
+            assertion = {**base, **changes}
+            receipt = rights.record_assertion(self.project_id, source, candidate, assertion)
+            with self.subTest(changes=changes), self.assertRaises(RedesignBindingError):
+                self.redesign.commit_version(candidate, receipt["receipt_id"])
+        self.assertFalse((self.store.project_root(self.project_id) / "redesign").exists())
+
+    def test_rights_authorization_rejects_symlink_and_parent_replacement(self):
+        project = self.store.create(title="replica", creative_mode="authorized_replication", audio_policy="silent")
+        self.project_id = project["project_id"]
+        self._persist_analysis_and_annotation()
+        candidate = self.redesign.prepare_candidate(
+            self.project_id, "v001",
+            self.payload(creative_mode="authorized_replication", preserve=["likeness"]),
+        )
+
+        class Confirmer:
+            def confirm_video_rights(self, request): return "native-video-rights-confirmed"
+
+        assertion = {
+            "declarant": "holder@example.test", "rights_basis": "written license",
+            "evidence": [{"reference": "license-record", "sha256": "c" * 64}],
+            "allowed_media": ["video"], "allowed_reuse": ["likeness"],
+            "purpose": "public commercial campaign", "audience": "public",
+            "territory": "worldwide", "expires_at": "2099-01-01T00:00:00Z",
+        }
+        source = {"project_id": self.project_id, "source_sha256": "a" * 64}
+        receipt = VideoRightsService(self.store, Confirmer()).record_assertion(
+            self.project_id, source, candidate, assertion
+        )
+        family = self.store.project_root(self.project_id) / "rights_receipt"
+        target = family / "v001.json"
+        outside = Path(self.temp.name) / "outside.json"
+        outside.write_bytes(target.read_bytes())
+        target.unlink()
+        target.symlink_to(outside)
+        with self.assertRaises(RedesignBindingError):
+            self.redesign.commit_version(candidate, receipt["receipt_id"])
+
+        target.unlink()
+        target.write_bytes(outside.read_bytes())
+        target.chmod(0o600)
+        real_load = json.load
+        replaced = False
+
+        def replace_parent(handle):
+            nonlocal replaced
+            document = real_load(handle)
+            if not replaced:
+                old = family.with_name("rights_receipt-old")
+                os.rename(family, old)
+                family.mkdir(mode=0o700)
+                replacement = family / "v001.json"
+                replacement.write_bytes(outside.read_bytes())
+                replacement.chmod(0o600)
+                replaced = True
+            return document
+
+        with patch("scripts.video_project_store.json.load", side_effect=replace_parent):
+            with self.assertRaises(RedesignBindingError):
+                self.redesign.commit_version(candidate, receipt["receipt_id"])
+        self.assertTrue(replaced)
 
 
 if __name__ == "__main__":

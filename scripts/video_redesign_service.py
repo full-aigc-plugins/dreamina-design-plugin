@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 from datetime import datetime, timezone
 from typing import Any, Mapping, TypedDict
 
@@ -58,12 +60,7 @@ class VideoRedesignService:
         preserve = candidate_payload.get("preserve")
         if not isinstance(preserve, list) or len(preserve) != len(set(preserve)) or not set(preserve) <= REUSE_DIMENSIONS:
             raise ContractValidationError("preserve must contain unique known reuse dimensions")
-        if mode == "original_redesign":
-            if set(preserve) & FORBIDDEN_ORIGINAL_REUSE:
-                raise OriginalityPolicyError("original redesign cannot reuse source expressive identity or content")
-            replacements = candidate_payload.get("replacements")
-            if not isinstance(replacements, Mapping) or set(replacements) != REQUIRED_REPLACEMENTS or any(not isinstance(value, str) or not value.strip() for value in replacements.values()):
-                raise OriginalityPolicyError("original redesign requires explicit expressive replacements")
+        self._assert_mode_policy(mode, candidate_payload, preserve)
         core = {
             "schema_version": "1.0", "project_id": project_id,
             "analysis_version": analysis_version, "source_sha256": analysis["source"]["source_sha256"],
@@ -85,7 +82,9 @@ class VideoRedesignService:
             },
             "video_redesign.schema.json",
         )
-        return {**core, "design_fingerprint": fingerprint}
+        candidate = {**core, "design_fingerprint": fingerprint}
+        self._persist_prepared_candidate(candidate)
+        return candidate
 
     def commit_version(
         self,
@@ -102,12 +101,19 @@ class VideoRedesignService:
         if canonical_fingerprint(core) != fingerprint:
             raise RedesignBindingError("candidate changed after fingerprinting")
         self._validate_candidate_against_current_evidence(candidate)
+        self._validate_closed_candidate(candidate)
         mode = candidate["creative_mode"]
         if mode == "authorized_replication":
             if not isinstance(rights_receipt_id, str):
                 raise RedesignBindingError("authorized replication requires a rights receipt")
             receipt = self._find_receipt(project_id, rights_receipt_id)
-            binding = {key: candidate[key] for key in ("project_id", "source_sha256", "creative_mode", "design_fingerprint")}
+            binding = {
+                **{key: candidate[key] for key in ("project_id", "source_sha256", "creative_mode", "design_fingerprint")},
+                "required_media": candidate["payload"]["required_media"],
+                "purpose": candidate["payload"]["purpose"],
+                "audience": candidate["payload"]["audience"],
+                "territory": candidate["payload"]["territory"],
+            }
             try:
                 VideoRightsService(self._store, native_confirmer=None).assert_scope(receipt, required=set(candidate["payload"]["preserve"]), binding=binding)
             except RightsScopeError as exc:
@@ -118,14 +124,48 @@ class VideoRedesignService:
             return self._reconcile_indeterminate(
                 candidate, rights_receipt_id, indeterminate_commit
             )
-        family_root = self._store.project_root(project_id) / "redesign"
-        versions = sorted(path.stem for path in family_root.glob("v*.json")) if family_root.exists() else []
         document = {
             **core, "rights_receipt_id": rights_receipt_id,
-            "design_fingerprint": fingerprint, "parent_version": versions[-1] if versions else None,
+            "design_fingerprint": fingerprint,
             "committed_at": _now(),
         }
-        return self._store.write_version(project_id, "redesign", document, schema_name="video_redesign.schema.json")
+        return self._store.write_version(
+            project_id,
+            "redesign",
+            document,
+            schema_name="video_redesign.schema.json",
+            parent_version_field="parent_version",
+        )
+
+    def _validate_closed_candidate(self, candidate: Mapping[str, Any]) -> None:
+        payload = candidate.get("payload")
+        if not isinstance(payload, Mapping):
+            raise ContractValidationError("candidate payload is absent")
+        preserve = payload.get("preserve")
+        if not isinstance(preserve, list) or len(preserve) != len(set(preserve)) or not set(preserve) <= REUSE_DIMENSIONS:
+            raise ContractValidationError("preserve must contain unique known reuse dimensions")
+        self._assert_mode_policy(candidate.get("creative_mode"), payload, preserve)
+        validate_contract(
+            {
+                **candidate,
+                "version": "v001",
+                "parent_version": None,
+                "rights_receipt_id": None,
+                "committed_at": "candidate-validation",
+            },
+            "video_redesign.schema.json",
+        )
+
+    @staticmethod
+    def _assert_mode_policy(mode: Any, payload: Mapping[str, Any], preserve: list[str]) -> None:
+        replacements = payload.get("replacements")
+        if mode == "original_redesign":
+            if set(preserve) & FORBIDDEN_ORIGINAL_REUSE:
+                raise OriginalityPolicyError("original redesign cannot reuse source expressive identity or content")
+            if not isinstance(replacements, Mapping) or set(replacements) != REQUIRED_REPLACEMENTS or any(not isinstance(value, str) or not value.strip() for value in replacements.values()):
+                raise OriginalityPolicyError("original redesign requires explicit expressive replacements")
+        elif replacements is not None:
+            raise ContractValidationError("authorized replication must not declare original replacements")
 
     def _reconcile_indeterminate(
         self,
@@ -181,18 +221,37 @@ class VideoRedesignService:
         if set(preserved) | set(replaced) != REUSE_DIMENSIONS or set(preserved) & set(replaced) or len(preserved) + len(replaced) != len(REUSE_DIMENSIONS):
             raise RedesignBindingError("similarity audit must partition every reuse dimension exactly once")
 
+    def _persist_prepared_candidate(self, candidate: Mapping[str, Any]) -> None:
+        root = self._store.project_root(candidate["project_id"]) / "prepared_candidate"
+        root.mkdir(mode=0o700, exist_ok=True)
+        root_meta = os.stat(root, follow_symlinks=False)
+        if not stat.S_ISDIR(root_meta.st_mode) or root_meta.st_mode & 0o777 != 0o700:
+            raise RedesignBindingError("prepared candidate storage is not private")
+        target = root / f"{candidate['design_fingerprint']}.json"
+        if target.exists():
+            try:
+                target_meta = os.stat(target, follow_symlinks=False)
+                if not stat.S_ISREG(target_meta.st_mode) or target_meta.st_mode & 0o777 != 0o600:
+                    raise OSError("prepared candidate is not a private regular file")
+                existing = json.loads(target.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise RedesignBindingError("prepared candidate artifact is unreadable") from exc
+            if existing != candidate:
+                raise RedesignBindingError("prepared candidate fingerprint collision")
+            return
+        self._store._atomic_write(target, candidate)
+
     def _find_receipt(self, project_id: str, receipt_id: str) -> dict[str, Any]:
-        root = self._store.project_root(project_id) / "rights_receipt"
-        if root.is_dir():
-            for path in root.glob("v*.json"):
-                try:
-                    value = json.loads(path.read_text(encoding="utf-8"))
-                    validate_contract(value, "video_rights_receipt.schema.json")
-                except (OSError, json.JSONDecodeError, ContractValidationError):
-                    continue
-                if value["receipt_id"] == receipt_id:
-                    return value
-        raise RedesignBindingError("rights receipt was not found")
+        try:
+            return self._store.find_version_by_field(
+                project_id,
+                "rights_receipt",
+                field="receipt_id",
+                value=receipt_id,
+                schema_name="video_rights_receipt.schema.json",
+            )
+        except VersionReconciliationError as exc:
+            raise RedesignBindingError("rights receipt was not safely resolved") from exc
 
     def _read(self, project_id: str, family: str, version: str, schema: str) -> dict[str, Any]:
         target = self._store.project_root(project_id) / family / f"{version}.json"

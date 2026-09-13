@@ -160,6 +160,7 @@ class VideoProjectStore:
         payload: Mapping[str, Any],
         *,
         schema_name: str | None = None,
+        parent_version_field: str | None = None,
     ) -> dict[str, Any]:
         if FAMILY.fullmatch(family) is None:
             raise ValueError("invalid version family")
@@ -176,6 +177,12 @@ class VideoProjectStore:
             version = f"v{max(numbers, default=0) + 1:03d}"
             document = dict(payload)
             document["version"] = version
+            if parent_version_field is not None:
+                if not isinstance(parent_version_field, str) or not parent_version_field:
+                    raise ValueError("invalid parent version field")
+                document[parent_version_field] = (
+                    f"v{max(numbers):03d}" if numbers else None
+                )
             if schema_name is not None:
                 validate_contract(document, schema_name)
             target = family_root / f"{version}.json"
@@ -283,6 +290,71 @@ class VideoProjectStore:
                 family=family,
                 version=version,
                 path=target,
+                reason=str(exc),
+            ) from exc
+        finally:
+            for descriptor in reversed(descriptors):
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+    def find_version_by_field(
+        self,
+        project_id: str,
+        family: str,
+        *,
+        field: str,
+        value: str,
+        schema_name: str,
+    ) -> dict[str, Any]:
+        """Find one immutable version through pinned private descriptors."""
+        if FAMILY.fullmatch(family) is None or not isinstance(field, str) or not field:
+            raise ValueError("invalid version lookup")
+        self._validate_project_id(project_id)
+        target = self._root / project_id / family
+        descriptors: list[int] = []
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            root_descriptor = os.open(self._root, directory_flags)
+            descriptors.append(root_descriptor)
+            root_metadata = self._require_directory(root_descriptor, 0o700, "store root")
+            project_descriptor = os.open(project_id, directory_flags, dir_fd=root_descriptor)
+            descriptors.append(project_descriptor)
+            project_metadata = self._require_directory(project_descriptor, 0o700, "project directory")
+            family_descriptor = os.open(family, directory_flags, dir_fd=project_descriptor)
+            descriptors.append(family_descriptor)
+            family_metadata = self._require_directory(family_descriptor, 0o700, "version family")
+            matches: list[tuple[dict[str, Any], str, os.stat_result]] = []
+            for name in sorted(os.listdir(family_descriptor)):
+                if re.fullmatch(r"v[0-9]{3,}\.json", name) is None:
+                    continue
+                file_descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=family_descriptor)
+                try:
+                    metadata = os.fstat(file_descriptor)
+                    if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o777 != 0o600:
+                        raise OSError("version is not a private regular file")
+                    with os.fdopen(os.dup(file_descriptor), "r", encoding="utf-8") as handle:
+                        document = json.load(handle)
+                    version = name[:-5]
+                    if not isinstance(document, dict) or document.get("version") != version:
+                        raise ValueError("version token mismatch")
+                    validate_contract(document, schema_name)
+                    if document.get(field) == value:
+                        matches.append((document, name, metadata))
+                finally:
+                    os.close(file_descriptor)
+            if len(matches) != 1:
+                raise ValueError("version lookup did not resolve exactly one document")
+            document, name, metadata = matches[0]
+            self._require_same_identity(os.stat(self._root, follow_symlinks=False), root_metadata, "store root")
+            self._require_same_identity(os.stat(project_id, dir_fd=root_descriptor, follow_symlinks=False), project_metadata, "project directory")
+            self._require_same_identity(os.stat(family, dir_fd=project_descriptor, follow_symlinks=False), family_metadata, "version family")
+            self._require_same_identity(os.stat(name, dir_fd=family_descriptor, follow_symlinks=False), metadata, "version")
+            return document
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise VersionReconciliationError(
+                project_id=project_id, family=family, version="lookup", path=target,
                 reason=str(exc),
             ) from exc
         finally:

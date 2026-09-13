@@ -11,6 +11,7 @@ from scripts.video_project_store import (
     VersionReconciliationError,
     VideoProjectStore,
 )
+from scripts.video_redesign_service import VideoRedesignService
 from scripts.video_rights_service import RightsScopeError, VideoRightsService
 
 
@@ -21,6 +22,13 @@ class Confirmer:
         return "native-video-rights-confirmed"
 
 
+class MutatingConfirmer(Confirmer):
+    def confirm_video_rights(self, request):
+        self.requests.append(copy.deepcopy(request))
+        request["evidence"][0]["reference"] = "mutated"
+        return "native-video-rights-confirmed"
+
+
 class VideoRightsServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
@@ -28,16 +36,10 @@ class VideoRightsServiceTests(unittest.TestCase):
         project = self.store.create(title="replica", creative_mode="authorized_replication", audio_policy="silent")
         self.project_id = project["project_id"]
         self.source_receipt = {"project_id": self.project_id, "source_sha256": "a" * 64}
-        candidate_core = {
-            "schema_version": "1.0", "project_id": self.project_id,
-            "analysis_version": "v001", "source_sha256": "a" * 64,
-            "machine_fingerprint": "e" * 64,
-            "creative_mode": "authorized_replication", "payload": {},
-            "similarity_audit": {"preserved": [], "replaced": []},
-        }
-        self.design_candidate = {
-            **candidate_core, "design_fingerprint": canonical_fingerprint(candidate_core)
-        }
+        self._persist_analysis_and_annotation()
+        self.design_candidate = VideoRedesignService(self.store).prepare_candidate(
+            self.project_id, "v001", self._payload()
+        )
         self.binding = {"project_id": self.project_id, "source_sha256": "a" * 64, "creative_mode": "authorized_replication", "design_fingerprint": self.design_candidate["design_fingerprint"]}
         self.valid_assertion = {
             "declarant": "rights-holder@example.test", "rights_basis": "written license",
@@ -49,6 +51,45 @@ class VideoRightsServiceTests(unittest.TestCase):
         }
         self.confirmer = Confirmer()
         self.rights = VideoRightsService(self.store, self.confirmer, now=lambda: "2026-09-14T00:00:00Z")
+
+    def _persist_analysis_and_annotation(self):
+        source = {
+            "schema_version": "1.0", "version": "v001", "project_id": self.project_id,
+            "source_sha256": "a" * 64, "size_bytes": 12, "mime_type": "video/mp4",
+            "video_codec": "h264", "width": 1280, "height": 720, "fps": 24.0,
+            "duration_seconds": 4.0, "audio_streams": [], "approved_roots_digest": "c" * 64,
+            "staged_path": "/private/source.mp4", "intake_at": "2026-09-14T00:00:00Z",
+        }
+        analysis = {
+            "schema_version": "1.0", "analysis_id": "an_" + "d" * 24,
+            "project_id": self.project_id, "source": source,
+            "parameters": {"scene_threshold": .3, "min_shot_seconds": .3, "track_hz": 5},
+            "cuts": [0.0, 4.0], "manual_cuts": [],
+            "shots": [{"id": "S01", "measured": {"start_seconds": 0.0, "end_seconds": 4.0, "duration_seconds": 4.0, "motion_median": 0.0, "boundary_source": "source_start"}, "semantic": None}],
+            "track_path": "/private/track.json",
+            "frame_checksums": {label: {"sha256": "e" * 64, "path": "/private/frame.png", "at_seconds": at, "frame_width": 480, "boundary_fingerprint": "f" * 64} for label, at in (("S01:a", .5), ("S01:b", 3.5))},
+            "machine_fingerprint": "e" * 64,
+        }
+        self.store.write_version(self.project_id, "analysis", analysis, schema_name="shot_analysis.schema.json")
+        annotation = {
+            "schema_version": "1.0", "analysis_version": "v001", "machine_fingerprint": "e" * 64,
+            "shots": [{"id": "S01", "shot_size": "wide", "category": "subject", "category_evidence": "subject person", "camera": "static", "frame_description": "A clearly described presenter standing inside a bright modern studio", "rhythm_role": None, "rhythm_evidence": None, "subjects": [], "on_screen_text": [], "dialogue": [], "narration": [], "music": [], "sound": [], "confidence": .9, "review_note": ""}], "transcript": None,
+        }
+        self.store.write_version(self.project_id, "annotation", annotation, schema_name="shot_annotation.schema.json")
+
+    @staticmethod
+    def _payload():
+        return {
+            "schema_version": "1.0", "creative_mode": "authorized_replication",
+            "machine_fingerprint": "e" * 64, "preserve": ["likeness"],
+            "required_media": ["video"], "purpose": "campaign remake",
+            "audience": "registered customers", "territory": "US",
+            "format": "short_video", "target_duration_seconds": 4.0, "aspect_ratio": "16:9",
+            "platform": "web", "concept": "authorized campaign", "cast": ["presenter"],
+            "settings": ["studio"], "palette": ["blue"], "visual_style": "editorial",
+            "dialogue": [], "narration": [], "music": "licensed score", "sound_intent": "clean",
+            "shots": [{"id": "S01", "prompt": "presenter in studio"}], "continuity": [], "author": "user",
+        }
 
     def test_replication_requires_declarant_basis_scope_expiry_and_evidence(self):
         for missing in ("declarant", "rights_basis", "expires_at", "evidence", "allowed_media", "allowed_reuse", "purpose", "audience", "territory"):
@@ -76,15 +117,49 @@ class VideoRightsServiceTests(unittest.TestCase):
                 self.project_id, self.source_receipt, candidate, self.valid_assertion
             )
 
+    def test_assertion_rejects_fabricated_self_fingerprinted_candidate_before_confirmation(self):
+        core = {key: copy.deepcopy(value) for key, value in self.design_candidate.items() if key != "design_fingerprint"}
+        core["payload"]["preserve"] = ["voice"]
+        fabricated = {**core, "design_fingerprint": canonical_fingerprint(core)}
+        with self.assertRaises(ContractValidationError):
+            self.rights.record_assertion(
+                self.project_id, self.source_receipt, fabricated, self.valid_assertion
+            )
+        self.assertEqual(self.confirmer.requests, [])
+        self.assertFalse((self.store.project_root(self.project_id) / "rights_receipt").exists())
+
     def test_expired_or_narrower_audio_scope_fails_closed(self):
         expired = dict(self.valid_assertion); expired["expires_at"] = "2026-09-13T23:59:59Z"
-        expired_receipt = self.rights.record_assertion(self.project_id, self.source_receipt, self.design_candidate, expired)
-        with self.assertRaises(RightsScopeError):
-            self.rights.assert_scope(expired_receipt, required={"dialogue"}, binding=self.binding)
+        with self.assertRaises(ContractValidationError):
+            self.rights.record_assertion(self.project_id, self.source_receipt, self.design_candidate, expired)
         narrow = dict(self.valid_assertion); narrow["allowed_reuse"] = ["dialogue"]
         narrow_receipt = self.rights.record_assertion(self.project_id, self.source_receipt, self.design_candidate, narrow)
         with self.assertRaises(RightsScopeError):
             self.rights.assert_scope(narrow_receipt, required={"dialogue", "voice", "music"}, binding=self.binding)
+
+    def test_expiry_must_be_strict_rfc3339_and_later_than_assertion(self):
+        for expires_at in (
+            "2026-09-14T00:00:00Z",
+            "2026-09-14 01:00:00+00:00",
+            "2026-09-14T01:00:00+00:00",
+        ):
+            assertion = {**self.valid_assertion, "expires_at": expires_at}
+            with self.subTest(expires_at=expires_at), self.assertRaises(ContractValidationError):
+                self.rights.record_assertion(
+                    self.project_id, self.source_receipt, self.design_candidate, assertion
+                )
+        self.assertEqual(self.confirmer.requests, [])
+
+    def test_mutating_confirmer_cannot_change_confirmed_or_persisted_bytes(self):
+        rights = VideoRightsService(
+            self.store, MutatingConfirmer(), now=lambda: "2026-09-14T00:00:00Z"
+        )
+        with self.assertRaises(RightsScopeError):
+            rights.record_assertion(
+                self.project_id, self.source_receipt, self.design_candidate,
+                self.valid_assertion,
+            )
+        self.assertFalse((self.store.project_root(self.project_id) / "rights_receipt").exists())
 
     def test_narrower_media_and_context_scope_fails_closed(self):
         receipt = self.rights.record_assertion(self.project_id, self.source_receipt, self.design_candidate, self.valid_assertion)

@@ -21,8 +21,8 @@
     "purpose": {"type": "string", "minLength": 1, "maxLength": 1000},
     "audience": {"type": "string", "minLength": 1, "maxLength": 1000},
     "territory": {"type": "string", "minLength": 1, "maxLength": 1000},
-    "expires_at": {"type": "string", "minLength": 1},
-    "asserted_at": {"type": "string", "minLength": 1},
+    "expires_at": {"type": "string", "format": "date-time", "minLength": 1},
+    "asserted_at": {"type": "string", "format": "date-time", "minLength": 1},
     "native_confirmation": {"type": "string", "const": "native-video-rights-confirmed"},
     "disclaimer": {"type": "string", "const": "User-supplied assertion recorded as engineering authorization evidence; not ownership verification or legal advice."}
   }
