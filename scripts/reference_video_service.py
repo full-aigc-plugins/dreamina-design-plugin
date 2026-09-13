@@ -1,0 +1,352 @@
+"""Deterministic, local-only measurement for staged reference videos."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import os
+import re
+import statistics
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+from scripts.json_contracts import canonical_fingerprint
+from scripts.media_adapter import MediaOutputError
+from scripts.video_project_store import VideoProjectStore
+
+
+SCENE_ROW = re.compile(r"pts_time[:=](?P<time>[0-9]+(?:\.[0-9]+)?)")
+MOTION_ROW = re.compile(
+    r"pts_time[:=](?P<time>[0-9]+(?:\.[0-9]+)?).*?lavfi\.signalstats\.YAVG[=:](?P<value>[0-9]+(?:\.[0-9]+)?)"
+)
+
+
+@dataclass(frozen=True)
+class MeasuredShot:
+    """One machine-measured interval; semantic judgments deliberately live elsewhere."""
+
+    id: str
+    start_seconds: float
+    end_seconds: float
+    duration_seconds: float
+    motion_median: float | None
+    boundary_source: str
+
+
+class ReferenceVideoService:
+    """Build immutable deterministic analysis versions through a trusted media adapter."""
+
+    def __init__(self, project_store: VideoProjectStore, media_adapter) -> None:
+        self._store = project_store
+        self._media = media_adapter
+
+    def seed(
+        self,
+        project_id: str,
+        *,
+        scene_threshold: float,
+        min_shot_seconds: float,
+        track_hz: int,
+    ) -> dict[str, Any]:
+        self._bounded_number("scene_threshold", scene_threshold, 0.05, 0.80)
+        self._bounded_number("min_shot_seconds", min_shot_seconds, 0.10, 5.00)
+        if not isinstance(track_hz, int) or isinstance(track_hz, bool) or not 1 <= track_hz <= 10:
+            raise ValueError("track_hz must be an integer from 1 to 10")
+        source = self._latest_document(project_id, "source_receipt")
+        source_path = Path(source["staged_path"])
+        probe = self._media.probe_json(source_path)
+        duration = self._probe_duration(probe)
+        if round(duration, 2) != round(float(source["duration_seconds"]), 2):
+            raise MediaOutputError("ffprobe duration no longer matches the source receipt")
+        candidates = self._scene_candidates(source_path, scene_threshold)
+        cuts = normalized_cuts(duration=duration, candidates=candidates, minimum=min_shot_seconds)
+        track = self._motion_track(source_path, track_hz)
+        parameters = {
+            "scene_threshold": float(scene_threshold),
+            "min_shot_seconds": float(min_shot_seconds),
+            "track_hz": track_hz,
+        }
+        identity = canonical_fingerprint({"source": source, "parameters": parameters})
+        analysis_id = "an_" + identity[:24]
+        analysis_root = self._analysis_root(project_id, analysis_id)
+        track_path = analysis_root / "track.json"
+        self._write_private_json(track_path, track)
+        shots = self._measure_shots(cuts, track["values"], manual_cuts=set())
+        payload = {
+            "schema_version": "1.0",
+            "analysis_id": analysis_id,
+            "project_id": project_id,
+            "source": source,
+            "parameters": parameters,
+            "cuts": cuts,
+            "manual_cuts": [],
+            "shots": shots,
+            "track_path": str(track_path),
+            "frame_checksums": {},
+        }
+        payload["machine_fingerprint"] = self._machine_fingerprint(payload)
+        return self._store.write_version(
+            project_id, "analysis", payload, schema_name="shot_analysis.schema.json"
+        )
+
+    def get_analysis(self, analysis_id: str) -> dict[str, Any]:
+        matches: list[tuple[int, dict[str, Any]]] = []
+        root = getattr(self._store, "_root")
+        for path in root.glob("vp_*/analysis/v*.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if payload.get("analysis_id") == analysis_id:
+                matches.append((int(str(payload["version"])[1:]), payload))
+        if not matches:
+            raise KeyError(f"unknown analysis_id: {analysis_id}")
+        return max(matches, key=lambda item: item[0])[1]
+
+    def extract_frames(self, analysis_id: str, *, frame_width: int = 480) -> dict[str, Any]:
+        if not isinstance(frame_width, int) or isinstance(frame_width, bool) or not 240 <= frame_width <= 960:
+            raise ValueError("frame_width must be an integer from 240 to 960")
+        analysis = self.get_analysis(analysis_id)
+        frame_root = self._analysis_root(analysis["project_id"], analysis_id) / "frames"
+        result: dict[str, Any] = {}
+        checksums: dict[str, str] = {}
+        for shot in analysis["shots"]:
+            measured = shot["measured"]
+            start = float(measured["start_seconds"])
+            duration = float(measured["duration_seconds"])
+            result[shot["id"]] = {}
+            for label, fraction in (("a", 0.15), ("b", 0.85)):
+                at = round(start + duration * fraction, 2)
+                target = frame_root / f"{shot['id']}-{label}.png"
+                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                media_result = self._media.run(
+                    "ffmpeg",
+                    ["-hide_banner", "-nostdin", "-ss", f"{at:.2f}", "-i", analysis["source"]["staged_path"],
+                     "-frames:v", "1", "-vf", f"scale={frame_width}:-2", "-y", str(target)],
+                    timeout_seconds=30,
+                )
+                self._require_success(media_result, "frame extraction")
+                if not target.is_file():
+                    raise MediaOutputError("ffmpeg did not create the requested frame")
+                os.chmod(target, 0o600)
+                checksum = self._sha256(target)
+                checksums[f"{shot['id']}:{label}"] = checksum
+                result[shot["id"]][label] = {
+                    "at_seconds": at, "path": str(target), "sha256": checksum
+                }
+        updated = {key: value for key, value in analysis.items() if key != "version"}
+        updated["frame_checksums"] = checksums
+        updated["machine_fingerprint"] = self._machine_fingerprint(updated)
+        self._store.write_version(
+            analysis["project_id"], "analysis", updated, schema_name="shot_analysis.schema.json"
+        )
+        return result
+
+    def build_contact_sheets(
+        self, analysis_id: str, *, cols: int, rows: int
+    ) -> list[dict[str, Any]]:
+        if (
+            not isinstance(cols, int) or isinstance(cols, bool) or cols < 1
+            or not isinstance(rows, int) or isinstance(rows, bool) or rows < 1
+            or cols * rows > 25
+        ):
+            raise ValueError("contact sheet layout must contain 1 to 25 shots")
+        analysis = self.get_analysis(analysis_id)
+        frame_root = self._analysis_root(analysis["project_id"], analysis_id) / "frames"
+        if not all((frame_root / f"{shot['id']}-a.png").is_file() for shot in analysis["shots"]):
+            self.extract_frames(analysis_id)
+            analysis = self.get_analysis(analysis_id)
+        page_size = cols * rows
+        pages: list[dict[str, Any]] = []
+        for offset in range(0, len(analysis["shots"]), page_size):
+            shots = analysis["shots"][offset : offset + page_size]
+            page_number = len(pages) + 1
+            target = self._analysis_root(analysis["project_id"], analysis_id) / "sheets" / f"page-{page_number:03d}.png"
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            inputs: list[str] = []
+            for shot in shots:
+                inputs.extend(["-i", str(frame_root / f"{shot['id']}-a.png")])
+            layout = "|".join(f"{index % cols}*w0_{index // cols}*h0" for index in range(len(shots)))
+            result = self._media.run(
+                "ffmpeg",
+                ["-hide_banner", "-nostdin", *inputs, "-filter_complex", f"xstack=inputs={len(shots)}:layout={layout}", "-frames:v", "1", "-y", str(target)],
+                timeout_seconds=60,
+            )
+            self._require_success(result, "contact sheet")
+            if not target.is_file():
+                raise MediaOutputError("ffmpeg did not create the requested contact sheet")
+            os.chmod(target, 0o600)
+            pages.append({
+                "page": page_number,
+                "shot_ids": [shot["id"] for shot in shots],
+                "layout": {"cols": cols, "rows": rows},
+                "path": str(target),
+                "sha256": self._sha256(target),
+            })
+        return pages
+
+    def recut(
+        self, analysis_id: str, *, splits: Sequence[float], merges: Sequence[float]
+    ) -> dict[str, Any]:
+        if isinstance(splits, (str, bytes)) or isinstance(merges, (str, bytes)):
+            raise TypeError("splits and merges must be numeric sequences")
+        if len(splits) + len(merges) > 200:
+            raise ValueError("recut accepts at most 200 operations")
+        for value in [*splits, *merges]:
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+                raise TypeError("recut values must be finite numbers")
+        analysis = self.get_analysis(analysis_id)
+        duration = float(analysis["source"]["duration_seconds"])
+        old_cuts = list(analysis["cuts"])
+        merge_values = {round(float(value), 2) for value in merges}
+        new_splits = {round(float(value), 2) for value in splits if 0 < float(value) < duration}
+        cuts = [cut for cut in old_cuts if cut in (0.0, duration) or round(cut, 2) not in merge_values]
+        cuts = sorted(set(cuts).union(new_splits))
+        if len(cuts) < 2 or cuts[0] != 0.0 or cuts[-1] != round(duration, 2):
+            raise ValueError("recut must retain source start and end")
+        track = json.loads(Path(analysis["track_path"]).read_text(encoding="utf-8"))
+        manual_cuts = (set(analysis["manual_cuts"]) - merge_values).union(new_splits)
+        updated = {key: value for key, value in analysis.items() if key != "version"}
+        updated["cuts"] = cuts
+        updated["manual_cuts"] = sorted(manual_cuts)
+        existing_semantics = {
+            (shot["measured"]["start_seconds"], shot["measured"]["end_seconds"]): shot["semantic"]
+            for shot in analysis["shots"]
+        }
+        updated["shots"] = self._measure_shots(
+            cuts,
+            track["values"],
+            manual_cuts=manual_cuts,
+            existing_semantics=existing_semantics,
+        )
+        updated["frame_checksums"] = {}
+        updated["machine_fingerprint"] = self._machine_fingerprint(updated)
+        return self._store.write_version(
+            analysis["project_id"], "analysis", updated, schema_name="shot_analysis.schema.json"
+        )
+
+    def _scene_candidates(self, source: Path, threshold: float) -> list[float]:
+        result = self._media.run(
+            "ffmpeg",
+            ["-hide_banner", "-nostdin", "-i", str(source), "-vf", f"select=gt(scene\\,{threshold:.2f}),showinfo", "-an", "-f", "null", "-"],
+            timeout_seconds=120,
+        )
+        self._require_success(result, "scene detection")
+        return [float(match.group("time")) for match in SCENE_ROW.finditer(result.stderr)]
+
+    def _motion_track(self, source: Path, hz: int) -> dict[str, Any]:
+        result = self._media.run(
+            "ffmpeg",
+            ["-hide_banner", "-nostdin", "-i", str(source), "-vf", f"fps={hz},format=gray,tmix=frames=2:weights='-1 1',signalstats,metadata=print", "-an", "-f", "null", "-"],
+            timeout_seconds=120,
+        )
+        self._require_success(result, "motion measurement")
+        values = [
+            {"at_seconds": round(float(match.group("time")), 2), "value": round(float(match.group("value")), 6)}
+            for match in MOTION_ROW.finditer(result.stderr)
+        ]
+        return {"schema_version": "1.0", "hz": hz, "values": values}
+
+    @staticmethod
+    def _measure_shots(
+        cuts,
+        track_values,
+        *,
+        manual_cuts: set[float],
+        existing_semantics: Mapping[tuple[float, float], Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        shots = []
+        semantics = existing_semantics or {}
+        for index, (start, end) in enumerate(zip(cuts, cuts[1:]), 1):
+            interior = [float(row["value"]) for row in track_values if start < float(row["at_seconds"]) < end]
+            boundary = "source_start" if index == 1 else ("manual_split" if start in manual_cuts else "scene")
+            measured = MeasuredShot(
+                id=f"S{index:02d}", start_seconds=round(start, 2), end_seconds=round(end, 2),
+                duration_seconds=round(end - start, 2),
+                motion_median=round(statistics.median(interior), 6) if interior else None,
+                boundary_source=boundary,
+            )
+            shots.append({
+                "id": measured.id,
+                "measured": {
+                    "start_seconds": measured.start_seconds, "end_seconds": measured.end_seconds,
+                    "duration_seconds": measured.duration_seconds, "motion_median": measured.motion_median,
+                    "boundary_source": measured.boundary_source,
+                },
+                "semantic": semantics.get((round(start, 2), round(end, 2))),
+            })
+        return shots
+
+    def _latest_document(self, project_id: str, family: str) -> dict[str, Any]:
+        paths = sorted((self._store.project_root(project_id) / family).glob("v*.json"))
+        if not paths:
+            raise KeyError(f"project has no {family}")
+        return json.loads(paths[-1].read_text(encoding="utf-8"))
+
+    def _analysis_root(self, project_id: str, analysis_id: str) -> Path:
+        if re.fullmatch(r"an_[a-f0-9]{24}", analysis_id) is None:
+            raise KeyError(f"invalid analysis_id: {analysis_id}")
+        root = self._store.project_root(project_id) / "analysis_artifacts" / analysis_id
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(root, 0o700)
+        return root
+
+    @staticmethod
+    def _machine_fingerprint(payload: Mapping[str, Any]) -> str:
+        return canonical_fingerprint({
+            "source": payload["source"], "parameters": payload["parameters"],
+            "cuts": payload["cuts"],
+            "measured_shots": [shot["measured"] for shot in payload["shots"]],
+            "frame_checksums": payload["frame_checksums"],
+        })
+
+    @staticmethod
+    def _probe_duration(probe: Mapping[str, Any]) -> float:
+        try:
+            duration = float(probe["format"]["duration"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise MediaOutputError("ffprobe returned no valid duration") from exc
+        if not math.isfinite(duration) or duration <= 0:
+            raise MediaOutputError("ffprobe duration must be positive")
+        return duration
+
+    @staticmethod
+    def _bounded_number(name: str, value: float, low: float, high: float) -> None:
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or not low <= value <= high:
+            raise ValueError(f"{name} must be from {low} to {high}")
+
+    @staticmethod
+    def _require_success(result, operation: str) -> None:
+        if result.exit_code != 0:
+            raise MediaOutputError(f"{operation} failed with exit {result.exit_code}: {result.stderr.strip()}")
+
+    @staticmethod
+    def _sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _write_private_json(path: Path, payload: Mapping[str, Any]) -> None:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict(payload), sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(path, 0o600)
+
+
+def normalized_cuts(*, duration: float, candidates: Sequence[float], minimum: float) -> list[float]:
+    """Return a sorted, two-decimal, contiguous cut timeline with short seeds merged."""
+    end = round(float(duration), 2)
+    values = [0.0, *sorted({round(float(value), 2) for value in candidates if 0 < value < duration}), end]
+    kept = [values[0]]
+    for value in values[1:-1]:
+        if value - kept[-1] >= minimum and end - value >= minimum:
+            kept.append(value)
+    kept.append(end)
+    return kept
+
+
+__all__ = ["MeasuredShot", "ReferenceVideoService", "normalized_cuts"]

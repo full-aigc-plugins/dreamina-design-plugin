@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/shot_analysis.schema.json",
+  "title": "Dreamina Deterministic Shot Analysis",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "version", "analysis_id", "project_id", "source", "parameters", "cuts", "manual_cuts", "shots", "track_path", "frame_checksums", "machine_fingerprint"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "analysis_id": {"type": "string", "pattern": "^an_[a-f0-9]{24}$"},
+    "project_id": {"type": "string", "pattern": "^vp_[a-f0-9]{24}$"},
+    "source": {"$ref": "source_receipt.schema.json"},
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scene_threshold", "min_shot_seconds", "track_hz"],
+      "properties": {
+        "scene_threshold": {"type": "number", "minimum": 0.05, "maximum": 0.8},
+        "min_shot_seconds": {"type": "number", "minimum": 0.1, "maximum": 5.0},
+        "track_hz": {"type": "integer", "minimum": 1, "maximum": 10}
+      }
+    },
+    "cuts": {"type": "array", "minItems": 2, "items": {"type": "number", "minimum": 0}},
+    "manual_cuts": {"type": "array", "uniqueItems": true, "items": {"type": "number", "minimum": 0}},
+    "shots": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "measured", "semantic"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^S[0-9]{2,}$"},
+          "measured": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["start_seconds", "end_seconds", "duration_seconds", "motion_median", "boundary_source"],
+            "properties": {
+              "start_seconds": {"type": "number", "minimum": 0},
+              "end_seconds": {"type": "number", "minimum": 0},
+              "duration_seconds": {"type": "number", "minimum": 0},
+              "motion_median": {"type": ["number", "null"]},
+              "boundary_source": {"type": "string", "enum": ["source_start", "scene", "manual_split"]}
+            }
+          },
+          "semantic": {"type": ["object", "null"]}
+        }
+      }
+    },
+    "track_path": {"type": "string", "pattern": "^/"},
+    "frame_checksums": {"type": "object"},
+    "machine_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}
