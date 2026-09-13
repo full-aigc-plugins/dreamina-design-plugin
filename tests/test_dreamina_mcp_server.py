@@ -12,6 +12,7 @@ from scripts.dreamina_adapter import DreaminaResult
 from scripts.dreamina_mcp_server import DreaminaMcpTools, _tool_definitions
 from scripts.native_approval import ApprovalDeniedError
 from scripts.trusted_cli import TrustedCliError
+from tests.video_project_fixtures import run_mcp_initialize
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +54,10 @@ class McpConfigurationTests(unittest.TestCase):
 
 
 class McpStdioTests(unittest.TestCase):
+    def test_initialize_preserves_released_server_version(self) -> None:
+        response = run_mcp_initialize()
+        self.assertEqual(response["result"]["serverInfo"]["version"], "0.3.0")
+
     def test_initialize_and_tools_list_json_rpc(self) -> None:
         messages = [
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}},

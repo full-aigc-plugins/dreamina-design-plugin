@@ -15,11 +15,12 @@ external service. They assert that:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import unittest
 from pathlib import Path
+
+from scripts.json_contracts import canonical_fingerprint, validate_contract
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMAS_DIR = ROOT / "schemas"
@@ -106,6 +107,12 @@ class ClosedSchemaTests(unittest.TestCase):
             self.assertEqual(schema.get("$schema"), "https://json-schema.org/draft/2020-12/schema")
             self.assertEqual(schema.get("type"), "object")
 
+    def test_each_schema_accepts_its_declared_shape_through_shared_validator(self) -> None:
+        validate_contract(
+            {"mode": "text2image", "prompt": "demo", "model": "seedream-test", "count": 1},
+            "generation_request.schema.json",
+        )
+
     def test_schemas_never_advertise_credentials(self) -> None:
         for name in EXPECTED_SCHEMAS:
             schema = load_json(SCHEMAS_DIR / name)
@@ -145,19 +152,10 @@ class GenerationAndApprovalFingerprintTests(unittest.TestCase):
             "model": "seedream-5.0-pro",
             "count": 1,
         }
-        first = compute_fingerprint(payload)
-        second = compute_fingerprint(payload.copy())
+        first = canonical_fingerprint(payload)
+        second = canonical_fingerprint(payload.copy())
         self.assertEqual(first, second)
         self.assertEqual(len(first), 64)
-
-
-def canonical_bytes(payload: dict) -> bytes:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-
-
-def compute_fingerprint(payload: dict) -> str:
-    """SHA-256 hex digest over canonical JSON serialization."""
-    return hashlib.sha256(canonical_bytes(payload)).hexdigest()
 
 
 if __name__ == "__main__":
