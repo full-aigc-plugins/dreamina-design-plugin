@@ -165,6 +165,9 @@ class VideoGenerationPlanner:
             shots = design["payload"].get("shots")
         if not isinstance(shots, list) or not shots:
             raise PlanningError("design must contain at least one shot")
+        shot_ids = [shot.get("id") for shot in shots if isinstance(shot, Mapping)]
+        if len(shot_ids) != len(shots) or len(set(shot_ids)) != len(shot_ids):
+            raise PlanningError("duplicate shot id or invalid shot entry")
         output_profile = design.get("output_profile")
         if not isinstance(output_profile, Mapping) or output_profile.get("codec") != "h264":
             raise PlanningError("output profile codec must be h264")
