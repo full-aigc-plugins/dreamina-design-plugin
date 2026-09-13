@@ -85,6 +85,15 @@ class DreaminaResult:
     stderr: str
 
 
+@dataclass(frozen=True)
+class DreaminaTextResult:
+    """Bounded raw-text result for non-JSON CLI commands."""
+
+    exit_code: int
+    stdout: str
+    stderr: str
+
+
 class DreaminaAdapter:
     """Argv-only wrapper around an installed `dreamina` binary.
 
@@ -236,6 +245,17 @@ class DreaminaAdapter:
             submit_id=submit_id,
             stderr=stderr_text,
         )
+
+    def run_text(self, args: list[str]) -> DreaminaTextResult:
+        """Run a fixed-domain argv list without requiring JSON stdout."""
+        if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+            raise TypeError("argv must be a list of strings (argv-only)")
+        binary = self._resolve_cli()
+        try:
+            exit_code, stdout, stderr = self._run_bounded_text([binary, *args])
+        except OSError as exc:
+            raise CLINotFoundError(f"dreamina CLI not found: {binary}") from exc
+        return DreaminaTextResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
 
     def _run_bounded_text(self, cmd: list[str]) -> tuple[int, str, str]:
         """Run argv-only with streaming byte limits on stdout and stderr."""

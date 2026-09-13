@@ -109,6 +109,12 @@ class DreaminaAdapterRunTests(unittest.TestCase):
         self.assertEqual(result.payload, {"ok": True, "submit_id": "abc-123"})
         self.assertEqual(result.error_code, None)
 
+    def test_run_text_preserves_non_json_login_output(self) -> None:
+        adapter = self._make_adapter("#!/bin/sh\necho 'verification_uri=https://example.test'\n")
+        result = adapter.run_text(["login", "--headless"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("verification_uri", result.stdout)
+
     def test_auth_failure_yields_permission_error(self) -> None:
         adapter = self._make_adapter(
             """\
