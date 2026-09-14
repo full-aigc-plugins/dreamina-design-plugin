@@ -46,5 +46,27 @@ git diff --check
 ## Concerns
 
 No live Node/browser enrollment or artifact production was performed. This task
-adds local trust and schema contracts only; subsequent adapter and sync-service
-tasks must use `resolve_verified("browser")` for direct browser execution.
+adds local trust and schema contracts only; the future sync service must use
+the launch-bound browser re-verification seam.
+
+## Fix round 1
+
+RED: the new tests failed because `BrowserApplicationPolicy`, the launch-bound
+browser re-verification seam, and the ReelBench semantic validator did not
+exist.
+
+GREEN: `python3 -m unittest tests.test_trusted_media_tools
+tests.test_reelbench_contracts tests.test_contracts tests.test_native_approval
+tests.test_media_adapter tests.test_reference_video_service -v` passed 96 tests.
+
+- Restored the exact legacy `enroll() -> dict` contract; only
+  `resolve_verified()` returns `TrustedExecutable`.
+- Node and browser records now pin mode, device, inode, size, owner, path, and
+  SHA-256. Node staging copies from the same descriptor that was opened,
+  hashed, fstat-checked before/after, and rechecked against the final pathname.
+- Browser launch uses `reverify_browser_for_launch()`, exact macOS application
+  policy, fixed `/usr/bin/codesign` argv, and full identity/signature checks.
+  Browser updates require fresh enrollment.
+- Added semantic fingerprint, RFC3339, artifact-path, gate-set, and comparison
+  contradiction checks. A `manual_review` domain requires overall
+  `manual_review`.

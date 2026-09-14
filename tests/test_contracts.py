@@ -120,7 +120,7 @@ class ClosedSchemaTests(unittest.TestCase):
             "project_id": "vp_" + "1" * 24,
             "source_receipt_version": "v001",
             "source_sha256": "2" * 64,
-            "action": "validate",
+            "action": "seed",
             "upstream": {
                 "source": "https://github.com/eternityspring/reelbench-skills.git",
                 "revision": "18f2f63987337df0975a89973d38d50f3231ee31",

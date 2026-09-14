@@ -3,12 +3,18 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.trusted_media_tools import TrustedMediaToolError, TrustedMediaToolStore
+from scripts.trusted_media_tools import (
+    BrowserApplicationPolicy,
+    TrustedExecutable,
+    TrustedMediaToolError,
+    TrustedMediaToolStore,
+)
 
 
 class _Approve:
@@ -38,15 +44,65 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
             staging_root=self.root / "staged",
         )
 
+    def _browser_policy(self) -> BrowserApplicationPolicy:
+        return BrowserApplicationPolicy(
+            identifier="com.google.Chrome",
+            team_id="EQHXZ8M8AV",
+            designated_requirement='identifier "com.google.Chrome" and certificate leaf[subject.OU] = EQHXZ8M8AV',
+        )
+
+    @staticmethod
+    def _codesign_success(argv, **kwargs):
+        if "--verify" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout="",
+            stderr=(
+                "Identifier=com.google.Chrome\n"
+                "TeamIdentifier=EQHXZ8M8AV\n"
+                'designated => identifier "com.google.Chrome" and certificate leaf[subject.OU] = EQHXZ8M8AV\n'
+            ),
+        )
+
+    def test_legacy_enrollment_returns_dict_and_node_pins_full_identity(self) -> None:
+        legacy = self.store.enroll("ffmpeg", self.ffmpeg, approval_provider=self.approver)
+        self.assertIs(type(legacy), dict)
+        self.assertEqual(set(legacy), {"source_path", "owner_uid", "sha256"})
+        node = self.store.enroll("node", self.node_path, approval_provider=self.approver)
+        self.assertIs(type(node), dict)
+        self.assertEqual(
+            set(node),
+            {"source_path", "owner_uid", "mode", "device", "inode", "size_bytes", "sha256"},
+        )
+        self.assertIsInstance(self.store.resolve_verified("node"), TrustedExecutable)
+
+    def test_node_staging_rejects_same_byte_inode_or_mode_replacement(self) -> None:
+        self.store.enroll("node", self.node_path, approval_provider=self.approver)
+        replacement = self.root / "same-bytes-node"
+        replacement.write_bytes(self.node_path.read_bytes())
+        replacement.chmod(0o755)
+        os.replace(replacement, self.node_path)
+        with self.assertRaisesRegex(TrustedMediaToolError, "identity changed"):
+            self.store.load_required({"node"})
+
+        self.store.enroll("node", self.node_path, approval_provider=self.approver)
+        self.node_path.chmod(0o700)
+        with self.assertRaisesRegex(TrustedMediaToolError, "identity changed"):
+            self.store.load_required({"node"})
+
     def test_node_and_browser_are_verified_by_exact_identity(self) -> None:
         with patch(
-            "scripts.trusted_media_tools.SYSTEM_BROWSER_EXECUTABLES",
-            frozenset({str(self.chrome_path.resolve())}),
-        ):
+            "scripts.trusted_media_tools.BROWSER_APPLICATION_POLICIES",
+            {str(self.chrome_path.resolve()): self._browser_policy()},
+        ), patch("scripts.trusted_media_tools.subprocess.run", side_effect=self._codesign_success):
             node = self.store.enroll("node", self.node_path, approval_provider=self.approver)
             browser = self.store.enroll("browser", self.chrome_path, approval_provider=self.approver)
             self.assertEqual(self.store.resolve_verified("node").sha256, node["sha256"])
-            self.assertEqual(self.store.resolve_verified("browser").sha256, browser["sha256"])
+            launch = self.store.reverify_browser_for_launch()
+            self.assertEqual(launch.executable.sha256, browser["sha256"])
+            self.assertEqual(launch.signature.identifier, "com.google.Chrome")
 
     def test_browser_rejects_unapproved_path_and_identity_changes(self) -> None:
         unapproved = self.root / "Chromium.app" / "Contents" / "MacOS" / "Chromium"
@@ -57,20 +113,51 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
             self.store.enroll("browser", unapproved, approval_provider=self.approver)
 
         with patch(
-            "scripts.trusted_media_tools.SYSTEM_BROWSER_EXECUTABLES",
-            frozenset({str(self.chrome_path.resolve())}),
-        ):
+            "scripts.trusted_media_tools.BROWSER_APPLICATION_POLICIES",
+            {str(self.chrome_path.resolve()): self._browser_policy()},
+        ), patch("scripts.trusted_media_tools.subprocess.run", side_effect=self._codesign_success):
             self.store.enroll("browser", self.chrome_path, approval_provider=self.approver)
             self.chrome_path.chmod(0o700)
             with self.assertRaisesRegex(TrustedMediaToolError, "identity changed"):
-                self.store.resolve_verified("browser")
+                self.store.reverify_browser_for_launch()
             self.chrome_path.chmod(0o755)
             replacement = self.root / "replacement"
             replacement.write_bytes(b"trusted browser")
             replacement.chmod(0o755)
             os.replace(replacement, self.chrome_path)
             with self.assertRaisesRegex(TrustedMediaToolError, "identity changed"):
-                self.store.resolve_verified("browser")
+                self.store.reverify_browser_for_launch()
+
+    def test_browser_signature_is_checked_with_fixed_codesign_argv(self) -> None:
+        policy = {str(self.chrome_path.resolve()): self._browser_policy()}
+        calls: list[list[str]] = []
+
+        def record_codesign(argv, **kwargs):
+            calls.append(argv)
+            return self._codesign_success(argv, **kwargs)
+
+        with patch("scripts.trusted_media_tools.BROWSER_APPLICATION_POLICIES", policy), patch(
+            "scripts.trusted_media_tools.subprocess.run", side_effect=record_codesign
+        ):
+            self.store.enroll("browser", self.chrome_path, approval_provider=self.approver)
+            self.store.reverify_browser_for_launch()
+        self.assertTrue(all(call[0] == "/usr/bin/codesign" for call in calls))
+        self.assertTrue(any(call[1:5] == ["--verify", "--strict", "--deep", "--verbose=2"] for call in calls))
+        self.assertTrue(any(call[1:4] == ["-d", "--verbose=4", "-r-"] for call in calls))
+
+    def test_browser_reverification_rejects_changed_signature(self) -> None:
+        policy = {str(self.chrome_path.resolve()): self._browser_policy()}
+        with patch("scripts.trusted_media_tools.BROWSER_APPLICATION_POLICIES", policy), patch(
+            "scripts.trusted_media_tools.subprocess.run", side_effect=self._codesign_success
+        ):
+            self.store.enroll("browser", self.chrome_path, approval_provider=self.approver)
+        changed_signature = subprocess.CompletedProcess(
+            ["/usr/bin/codesign"], 0, stdout="", stderr="Identifier=com.google.Chrome\nTeamIdentifier=FOREIGN\n"
+        )
+        with patch("scripts.trusted_media_tools.BROWSER_APPLICATION_POLICIES", policy), patch(
+            "scripts.trusted_media_tools.subprocess.run", return_value=changed_signature
+        ), self.assertRaisesRegex(TrustedMediaToolError, "signature"):
+            self.store.reverify_browser_for_launch()
 
     def test_enrollment_rejects_symlink_and_group_writable_binary(self) -> None:
         link = self.root / "ffmpeg-link"
