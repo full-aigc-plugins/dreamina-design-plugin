@@ -117,10 +117,38 @@ class TaskServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "download-001"; target.mkdir(mode=0o700)
             canonical = target / f"artifact-{digest}.mp4"; canonical.write_bytes(media); canonical.chmod(0o400)
-            (target / ".verified-stale.tmp").write_bytes(b"partial")
+            stale = target / (".verified-" + "f" * 32 + ".tmp")
+            stale.write_bytes(b"partial")
             receipts = TaskService(Adapter()).verify_download_dir(str(target))
             self.assertEqual([item["sha256"] for item in receipts], [digest])
-            self.assertFalse((target / ".verified-stale.tmp").exists())
+            self.assertFalse(stale.exists())
+
+    def test_cleanup_deletes_only_exact_internal_temp_name(self):
+        media = b"\0\0\0\x18ftypisom" + b"x" * 20
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "download-001"; target.mkdir(mode=0o700)
+            class Downloading(Adapter):
+                def run(self, args):
+                    (target / (".verified-" + "a" * 32 + ".tmp")).write_bytes(b"partial")
+                    (target / "clip.tmp").write_bytes(media)
+                    (target / ".verified-output.mp4").write_bytes(media)
+                    return super().run(args)
+            receipts = TaskService(Downloading()).query("external-1", download_dir=str(target))["artifacts"]
+            self.assertEqual(len(receipts), 1)
+            self.assertFalse((target / (".verified-" + "a" * 32 + ".tmp")).exists())
+            self.assertTrue((target / "clip.tmp").exists())
+            self.assertTrue((target / ".verified-output.mp4").exists())
+
+    def test_unsupported_non_owned_name_fails_without_deletion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "download-001"; target.mkdir(mode=0o700)
+            class Downloading(Adapter):
+                def run(self, args):
+                    (target / "provider.tmp").write_bytes(b"not-media")
+                    return super().run(args)
+            with self.assertRaisesRegex(ValueError, "unsupported"):
+                TaskService(Downloading()).query("external-1", download_dir=str(target))
+            self.assertTrue((target / "provider.tmp").exists())
 
     def test_canonical_extension_must_match_verified_media_type(self):
         media = b"\x89PNG\r\n\x1a\n" + b"x" * 24

@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from scripts.dreamina_adapter import DreaminaResult
 from scripts.video_batch_executor import VideoBatchExecutor
+from scripts.video_evaluation_service import VideoEvaluationService
 from scripts.video_service import build_video_request_fingerprint
 
 
@@ -104,13 +105,26 @@ class VideoBatchExecutorTests(unittest.TestCase):
 
     def record_retry(self):
         task = self.executor._load(PROJECT_ID, "v001")["tasks"][0]
-        binding = {"project_id": PROJECT_ID, "batch_version": "v001", "design_version": "v001",
-                   "shot_id": "S01", "attempt": 1, "artifact_sha256": task["artifacts"][0]["sha256"],
-                   "submit_id": task["submit_id"], "evaluation_id": "eval_1", "decision": "retry"}
-        return self.executor._record_evaluation_decision(
-            PROJECT_ID, "v001", "S01", 1, "retry", artifact_sha256=binding["artifact_sha256"],
-            submit_id=binding["submit_id"], evaluation_id="eval_1",
-            evaluation_fingerprint=self.executor._evaluation_fingerprint(binding), design_version="v001")
+        return self.executor.apply_evaluation_decision(self.make_receipt(task))
+
+    def make_receipt(self, task):
+        bound = {"project_id": PROJECT_ID, "batch_version": "v001", "shot_id": "S01", "attempt": 1,
+                 "artifact_sha256": task["artifacts"][0]["sha256"], "design_version": "v001",
+                 "design_fingerprint": "b" * 64, "quote_fingerprint": "c" * 64,
+                 "allowance_id": "ba_" + "2" * 32}
+        artifact = {**bound, **task["artifacts"][0], "verified_sha256": task["artifacts"][0]["sha256"],
+                    "probe": {"width": 1280, "height": 720, "codec": "h264", "duration_seconds": 4},
+                    "frames": {"readable": True, "start_anchor": True, "end_anchor": True}}
+        design_shot = {**bound, "id": "S01", "width": 1280, "height": 720, "codec": "h264",
+                       "duration_seconds": 4, "aspect_ratio": "16:9"}
+        gates = {name: {"status": "passed", "evidence": "reviewed"} for name in (
+            "intent", "composition", "identity_continuity", "camera_behavior", "rhythm_function",
+            "temporal_defects", "source_copying", "subtitle_safe_area")}
+        gates["identity_continuity"]["status"] = "failed"
+        return VideoEvaluationService().evaluate(artifact, design_shot, {"binding": bound, "gates": gates},
+            allowance=self.allowance.get(bound["allowance_id"]), quote=self.store.document,
+            evaluation_id="eval_executor", evaluator={"provider": "codex", "model": "test",
+            "evaluated_at": "2026-09-14T02:00:00Z"})
 
     def test_run_next_submits_only_next_request_in_shot_and_attempt_order(self):
         result = self.executor.run_next(PROJECT_ID, "v001", 1)
@@ -347,30 +361,27 @@ class VideoBatchExecutorTests(unittest.TestCase):
     def test_evaluation_mutator_is_not_public_task9_api(self):
         self.assertFalse(hasattr(self.executor, "record_evaluation_decision"))
 
+    def test_action_only_evaluation_shape_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "contract"):
+            self.executor.apply_evaluation_decision({"action": "retry"})
+
     def test_private_evaluation_handoff_rejects_stale_artifact_digest(self):
         self.executor.run_next(PROJECT_ID, "v001", 1)
         self.adapter.status = "success"; self.adapter.download = True
         self.executor.reconcile(PROJECT_ID, "v001")
-        with self.assertRaisesRegex(ValueError, "artifact digest"):
-            self.executor._record_evaluation_decision(
-                PROJECT_ID, "v001", "S01", 1, "retry", artifact_sha256="f" * 64,
-                submit_id="submit_1", evaluation_id="eval_1",
-                evaluation_fingerprint="a" * 64, design_version="v001")
+        receipt = self.make_receipt(self.executor._load(PROJECT_ID, "v001")["tasks"][0])
+        receipt["binding"]["artifact_sha256"] = "f" * 64
+        with self.assertRaisesRegex(ValueError, "fingerprint|artifact"):
+            self.executor.apply_evaluation_decision(receipt)
 
     def test_explicit_retry_decision_must_bind_prequoted_fingerprint_before_submission(self):
         self.executor.run_next(PROJECT_ID, "v001", 1)
         self.adapter.status = "success"; self.adapter.download = True
         state = self.executor.reconcile(PROJECT_ID, "v001")
         task = state["tasks"][0]
-        decision = {"action": "retry", "repair_directive": "identity_consistency",
-                    "request_fingerprint": build_video_request_fingerprint(request("shot one repaired")),
-                    "failed_gates": ["identity_continuity"],
-                    "binding": {"project_id": PROJECT_ID, "batch_version": "v001", "shot_id": "S01",
-                    "attempt": 1, "artifact_sha256": task["artifacts"][0]["sha256"],
-                    "design_version": "v001", "design_fingerprint": "b" * 64,
-                    "quote_fingerprint": "c" * 64, "allowance_id": "ba_" + "2" * 32}}
-        persisted = self.executor.apply_evaluation_decision(decision)
-        self.assertEqual(persisted["tasks"][0]["evaluation_decision"], decision)
+        receipt = self.make_receipt(task)
+        persisted = self.executor.apply_evaluation_decision(receipt)
+        self.assertEqual(persisted["tasks"][0]["evaluation_receipt"], receipt)
         self.assertEqual(self.executor.run_next(PROJECT_ID, "v001", 1)["new_submissions"], 1)
 
     def test_existing_symlink_broad_or_foreign_download_root_fails_without_mutation(self):

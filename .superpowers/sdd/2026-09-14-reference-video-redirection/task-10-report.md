@@ -26,3 +26,17 @@
 - All media, model evaluations, allowances, and provider responses were synthetic. No network, real Dreamina invocation, paid request, native approval, release, or publication occurred.
 - The environment does not provide the third-party `jsonschema` package, so validation evidence uses the repository's dependency-free Draft 2020-12 contract validator plus contract tests.
 - Existing uncommitted Task 9 hardening in `dreamina_adapter.py` and `task_service.py` was preserved and excluded from this Task 10 commit.
+
+## Fix Round 1: Production Allowance, Canonical Receipt, and Task 9 Cleanup
+
+- Replaced fabricated allowance `repair_directive/state` consumption with the real allowance contract. Retry directive and fingerprint now come only from the immutable quote; availability comes from the activated allowance request list, state, and irreversible reservation history.
+- Added a real `VideoBatchAllowance.activate/get/reserve/commit` integration test. The exact next prequoted retry is selected while available; reserved and exhausted states return `manual_review`.
+- Replaced gate arrays with two closed objects keyed by all eight measured and all eight semantic gate names. Missing, extra, and wrong-domain keys are rejected by both service validation and the JSON schema.
+- Defined one canonical receipt containing exact bindings, artifact receipt plus probe/frame evidence, both gate objects, failed gates, nested decision, evaluator provenance/timestamp, and a canonical fingerprint.
+- Removed the action-only private persistence shape. `VideoBatchExecutor.apply_evaluation_decision` validates the full receipt and fingerprint, reloads quote and allowance, re-verifies the artifact immediately before the decision, checks decision/gate/directive consistency, and persists the whole receipt once.
+- Carried the Task 9 ruling into `TaskService`: only `^\.verified-[a-f0-9]{32}\.tmp$` is cleanup-owned. Valid media named `clip.tmp` or `.verified-output.mp4` is verified and canonicalized without deletion; unsupported provider names fail without deletion.
+- RED evidence: valid `.tmp`/`.verified-*` media was deleted; unsupported `.tmp` data was silently deleted; keyed-gate/evaluate APIs were absent; and executor rejected the required complete receipt shape.
+- Final Task 10/9/8/7 focused regression: 182 tests passed in 0.844 seconds.
+- Final full regression: 532 tests passed in 17.035 seconds.
+- Python compilation, all-schema JSON parsing, shared contract validation, fixture fingerprint validation, distribution validation, secret-scan tests, and `git diff --check` passed.
+- All evidence remained synthetic/local; no network, real Dreamina, paid request, native production approval, release, or publication occurred.

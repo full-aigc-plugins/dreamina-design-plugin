@@ -20,7 +20,7 @@ import re
 import unittest
 from pathlib import Path
 
-from scripts.json_contracts import canonical_fingerprint, validate_contract
+from scripts.json_contracts import ContractValidationError, canonical_fingerprint, validate_contract
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMAS_DIR = ROOT / "schemas"
@@ -107,6 +107,20 @@ class SchemaPresenceTests(unittest.TestCase):
 
 
 class ClosedSchemaTests(unittest.TestCase):
+    def test_shot_evaluation_schema_requires_each_domain_gate_exactly_once(self) -> None:
+        fixture = load_json(ROOT / "tests" / "fixtures" / "reference_video" / "valid-evaluation.json")
+        validate_contract(fixture, "shot_evaluation.schema.json")
+        core = {key: value for key, value in fixture.items() if key != "evaluation_fingerprint"}
+        self.assertEqual(fixture["evaluation_fingerprint"], canonical_fingerprint(core))
+        for domain, mutation in (
+            ("measured_gates", lambda gates: gates.pop("duration")),
+            ("semantic_gates", lambda gates: gates.update({"watermark": {"status": "passed", "evidence": "x"}})),
+            ("semantic_gates", lambda gates: gates.update({"duration": gates.pop("intent")})),
+        ):
+            candidate = json.loads(json.dumps(fixture)); mutation(candidate[domain])
+            with self.subTest(domain=domain, keys=sorted(candidate[domain])), self.assertRaises(ContractValidationError):
+                validate_contract(candidate, "shot_evaluation.schema.json")
+
     def test_rights_and_redesign_reuse_dimensions_are_exact_and_closed(self) -> None:
         expected = [
             "timing", "shot_sizes", "camera_moves", "rhythm", "transitions",

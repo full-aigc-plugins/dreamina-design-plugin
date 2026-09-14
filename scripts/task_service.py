@@ -85,7 +85,7 @@ class TaskService:
         TaskService._assert_directory_entry(parent_fd, directory_name, directory_fd)
         for name in names:
             if "/" in name or name in {".", ".."}: raise ValueError("unsafe downloaded artifact name")
-            if name.startswith(".verified-") or name.endswith(".tmp"):
+            if re.fullmatch(r"\.verified-[a-f0-9]{32}\.tmp", name):
                 try: os.unlink(name, dir_fd=directory_fd); os.fsync(directory_fd)
                 except FileNotFoundError: pass
                 continue
