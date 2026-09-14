@@ -27,7 +27,8 @@ class SubtitleServiceTests(unittest.TestCase):
         target = self.root / "captions.srt"
         receipt = service.write_srt(cues, target, target_duration_seconds=2)
         self.assertEqual(target.read_bytes(), first.encode("utf-8"))
-        self.assertEqual(receipt["encoding"], "utf-8")
+        self.assertEqual(receipt["mime_type"], "application/x-subrip")
+        self.assertEqual(receipt["size_bytes"], len(first.encode("utf-8")))
 
     def test_rejects_negative_reversed_overlapping_or_out_of_bounds_cues(self) -> None:
         invalid = (

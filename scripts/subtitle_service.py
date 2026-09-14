@@ -88,7 +88,12 @@ class SubtitleService:
             os.replace(temporary, output); os.chmod(output, 0o600)
         finally:
             Path(temporary).unlink(missing_ok=True)
-        return {"format": format_name, "encoding": "utf-8", "path": str(output), "sha256": hashlib.sha256(payload).hexdigest()}
+        return {"provider": "subtitle-service", "path": str(output),
+                "sha256": hashlib.sha256(payload).hexdigest(), "size_bytes": len(payload),
+                "mime_type": "application/x-subrip" if format_name == "srt" else "text/x-ssa",
+                "provenance": {"kind": "generated_subtitle", "rights_declared": ["subtitles"],
+                    "approved_root": None, "source": "rewritten_script_or_narration_timing",
+                    "voice": None, "model": None, "source_voice_cloned": False}}
 
 
 __all__ = ["SubtitleService", "SubtitleTimelineError"]

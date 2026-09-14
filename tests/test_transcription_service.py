@@ -14,6 +14,7 @@ from scripts.transcription_service import (
     WhisperCliProvider,
 )
 from scripts.trusted_media_tools import TrustedMediaToolError
+from scripts.json_contracts import validate_contract
 
 
 class RecordingAdapter:
@@ -84,6 +85,21 @@ class TranscriptionServiceTests(unittest.TestCase):
         self.assertEqual(result["segments"], [])
         with self.assertRaises(TranscriptionUnavailableError):
             service.require_transcript(self.source, language=None)
+
+    def test_complete_and_blocked_outputs_are_exact_plan_contract_variants(self) -> None:
+        complete = TranscriptionService(WhisperCliProvider(RecordingAdapter({"language": "en", "segments": []}), self.model, self.root)).transcribe(self.source, language="en")
+        blocked = TranscriptionService(WhisperCliProvider(RecordingAdapter(error=TrustedMediaToolError("x")), self.model, self.root)).transcribe(self.source, language=None)
+        self.assertEqual(set(complete), {"status", "provider", "model", "artifact_sha256", "segments"})
+        self.assertEqual(set(blocked), {"status", "reason", "detail", "segments"})
+        for transcript in (complete, blocked):
+            plan = self._minimal_plan(transcript)
+            validate_contract(plan, "audio_plan.schema.json")
+
+    @staticmethod
+    def _minimal_plan(transcript):
+        from scripts.json_contracts import canonical_fingerprint
+        core = {"schema_version":"1.0","version":"v001","project_id":"vp_"+"1"*24,"design_fingerprint":"2"*64,"batch_fingerprint":"3"*64,"creative_mode":"original_redesign","audio_policy":"subtitles_only","target_duration_seconds":1.0,"source_rights":None,"preserve":[],"transcript":transcript,"rewritten_script":[],"narration":None,"music":None,"effects":[],"subtitles":[],"provenance":{"remote_services_used":False,"source_voice_cloned":False}}
+        return {**core,"plan_fingerprint":canonical_fingerprint(core)}
 
 
 if __name__ == "__main__":

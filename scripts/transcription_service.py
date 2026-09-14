@@ -103,7 +103,9 @@ class TranscriptionService:
             segments = self._provider.transcribe(audio_path, language=language)
         except (TrustedMediaToolError, MediaAdapterError, OSError) as exc:
             return {"status": "blocked", "reason": "asr_provider_unavailable", "segments": [], "detail": type(exc).__name__}
-        return {"status": "complete", "reason": None, "segments": segments}
+        digest = hashlib.sha256(Path(audio_path).read_bytes()).hexdigest()
+        return {"status": "complete", "provider": "whisper", "model": str(self._provider._model),
+                "artifact_sha256": digest, "segments": segments}
 
     def require_transcript(self, audio_path: Path, *, language: str | None) -> list[dict[str, Any]]:
         result = self.transcribe(audio_path, language=language)
