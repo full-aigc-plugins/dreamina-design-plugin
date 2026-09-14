@@ -18,6 +18,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+try:  # Windows does not provide fcntl; safe opening then fails closed below.
+    import fcntl
+except ImportError:  # pragma: no cover - platform-dependent safety boundary
+    fcntl = None  # type: ignore[assignment]
+
 
 PINNED_REVISION = "18f2f63987337df0975a89973d38d50f3231ee31"
 SOURCE_URL = "https://github.com/eternityspring/reelbench-skills.git"
@@ -76,23 +81,153 @@ def _lstat(path: Path) -> os.stat_result | None:
         return None
 
 
-def _is_directory(path: Path) -> bool:
-    metadata = _lstat(path)
-    return metadata is not None and stat.S_ISDIR(metadata.st_mode)
+@dataclass
+class DirectoryHandle:
+    """One opened directory and its stable identity within an FD-rooted walk."""
+
+    fd: int
+    dev: int
+    ino: int
+    parent_fd: int | None
+    name: str | None
+    display: str
 
 
-def _read_regular_file(path: Path, max_bytes: int) -> bytes | None:
-    """Read one bounded regular file without following a replaced symlink."""
-    before = _lstat(path)
+@dataclass
+class DirectoryPath:
+    """Retained FD chain from an anchor directory to a caller-supplied root."""
+
+    handles: list[DirectoryHandle]
+
+    @property
+    def root(self) -> DirectoryHandle:
+        return self.handles[-1]
+
+    def close(self) -> None:
+        for handle in reversed(self.handles):
+            try:
+                os.close(handle.fd)
+            except OSError:
+                pass
+            if handle.parent_fd is not None:
+                try:
+                    os.close(handle.parent_fd)
+                except OSError:
+                    pass
+
+
+def _safe_open_supported() -> bool:
+    return isinstance(getattr(os, "O_NOFOLLOW", None), int) and isinstance(
+        getattr(os, "O_DIRECTORY", None), int
+    )
+
+
+def _directory_flags() -> int:
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _identity(metadata: os.stat_result) -> tuple[int, int, int]:
+    return metadata.st_dev, metadata.st_ino, metadata.st_size
+
+
+def _open_directory_at(parent_fd: int, name: str, display: str) -> DirectoryHandle | None:
+    """Open a child directory from a validated parent FD without following links."""
+    try:
+        before = os.lstat(name, dir_fd=parent_fd)
+        if not stat.S_ISDIR(before.st_mode):
+            return None
+        descriptor = os.open(name, _directory_flags(), dir_fd=parent_fd)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISDIR(opened.st_mode) or _identity(opened) != _identity(before):
+            os.close(descriptor)
+            return None
+        return DirectoryHandle(
+            fd=descriptor,
+            dev=opened.st_dev,
+            ino=opened.st_ino,
+            parent_fd=os.dup(parent_fd),
+            name=name,
+            display=display,
+        )
+    except OSError:
+        return None
+
+
+def _open_directory_path(path: Path, display: str) -> DirectoryPath | None:
+    """Open a raw caller path component-by-component from a trusted anchor FD."""
+    if not _safe_open_supported():
+        return None
+    raw = Path(path)
+    parts = raw.parts
+    absolute = raw.is_absolute()
+    components = list(parts[1:] if absolute else parts)
+    if any(component in {"", ".", ".."} for component in components):
+        return None
+    try:
+        anchor_fd = os.open("/" if absolute else ".", _directory_flags())
+        anchor = os.fstat(anchor_fd)
+        if not stat.S_ISDIR(anchor.st_mode):
+            os.close(anchor_fd)
+            return None
+    except OSError:
+        return None
+    handles = [
+        DirectoryHandle(
+            fd=anchor_fd,
+            dev=anchor.st_dev,
+            ino=anchor.st_ino,
+            parent_fd=None,
+            name=None,
+            display=display,
+        )
+    ]
+    for component in components:
+        child = _open_directory_at(handles[-1].fd, component, display)
+        if child is None:
+            DirectoryPath(handles).close()
+            return None
+        handles.append(child)
+    return DirectoryPath(handles)
+
+
+def _handle_is_current(handle: DirectoryHandle) -> bool:
+    try:
+        opened = os.fstat(handle.fd)
+        if not stat.S_ISDIR(opened.st_mode) or (opened.st_dev, opened.st_ino) != (handle.dev, handle.ino):
+            return False
+        if handle.parent_fd is None or handle.name is None:
+            return True
+        current = _open_directory_at(handle.parent_fd, handle.name, handle.display)
+        if current is None:
+            return False
+        try:
+            return (current.dev, current.ino) == (handle.dev, handle.ino)
+        finally:
+            os.close(current.fd)
+            if current.parent_fd is not None:
+                os.close(current.parent_fd)
+    except OSError:
+        return False
+
+
+def _path_is_current(path: DirectoryPath) -> bool:
+    return all(_handle_is_current(handle) for handle in path.handles)
+
+
+def _read_regular_at(parent_fd: int, name: str, max_bytes: int) -> bytes | None:
+    """Read one bounded regular child through its validated parent directory FD."""
+    try:
+        before = os.lstat(name, dir_fd=parent_fd)
+    except OSError:
+        return None
     if (
-        before is None
-        or not stat.S_ISREG(before.st_mode)
+        not stat.S_ISREG(before.st_mode)
         or before.st_size < 0
         or before.st_size > max_bytes
     ):
         return None
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
     except OSError:
         return None
     try:
@@ -120,6 +255,9 @@ def _read_regular_file(path: Path, max_bytes: int) -> bytes | None:
             or after.st_size != opened.st_size
         ):
             return None
+        current = os.lstat(name, dir_fd=parent_fd)
+        if _identity(current) != _identity(before) or not stat.S_ISREG(current.st_mode):
+            return None
         return b"".join(chunks)
     except OSError:
         return None
@@ -127,40 +265,52 @@ def _read_regular_file(path: Path, max_bytes: int) -> bytes | None:
         os.close(descriptor)
 
 
-def _collect_regular_files(root: Path, prefix: str) -> tuple[dict[str, bytes], list[str]]:
-    """Collect only regular files while rejecting every symlink/special entry."""
-    metadata = _lstat(root)
-    if metadata is None or not stat.S_ISDIR(metadata.st_mode):
-        return {}, [prefix]
+def _close_handle(handle: DirectoryHandle) -> None:
+    try:
+        os.close(handle.fd)
+    finally:
+        if handle.parent_fd is not None:
+            os.close(handle.parent_fd)
 
+
+def _collect_regular_files(root: DirectoryHandle, prefix: str) -> tuple[dict[str, bytes], list[str]]:
+    """Collect only regular files while rejecting every symlink/special entry."""
     files: dict[str, bytes] = {}
     diagnostics: list[str] = []
 
-    def visit(directory: Path, relative: Path) -> None:
-        directory_metadata = _lstat(directory)
-        if directory_metadata is None or not stat.S_ISDIR(directory_metadata.st_mode):
+    def visit(directory: DirectoryHandle, relative: Path) -> None:
+        if not _handle_is_current(directory):
             diagnostics.append((Path(prefix) / relative).as_posix())
             return
         try:
-            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+            entries = sorted(os.listdir(directory.fd))
         except OSError:
             diagnostics.append((Path(prefix) / relative).as_posix())
             return
         for entry in entries:
-            child = Path(entry.path)
-            child_relative = relative / entry.name
+            child_relative = relative / entry
             display = (Path(prefix) / child_relative).as_posix()
-            child_metadata = _lstat(child)
-            if child_metadata is None:
+            try:
+                child_metadata = os.lstat(entry, dir_fd=directory.fd)
+            except OSError:
                 diagnostics.append(display)
                 continue
             if stat.S_ISDIR(child_metadata.st_mode):
-                visit(child, child_relative)
+                child = _open_directory_at(directory.fd, entry, display)
+                if child is None:
+                    diagnostics.append(display)
+                    continue
+                try:
+                    visit(child, child_relative)
+                    if not _handle_is_current(child):
+                        diagnostics.append(display)
+                finally:
+                    _close_handle(child)
                 continue
             if not stat.S_ISREG(child_metadata.st_mode):
                 diagnostics.append(display)
                 continue
-            data = _read_regular_file(child, MAX_SNAPSHOT_FILE_BYTES)
+            data = _read_regular_at(directory.fd, entry, MAX_SNAPSHOT_FILE_BYTES)
             if data is None:
                 diagnostics.append(display)
                 continue
@@ -168,18 +318,6 @@ def _collect_regular_files(root: Path, prefix: str) -> tuple[dict[str, bytes], l
 
     visit(root, Path())
     return files, diagnostics
-
-
-def _safe_lock_file(plugin_root: Path) -> tuple[Path | None, list[str]]:
-    upstream_directory = plugin_root / "upstream"
-    upstream_metadata = _lstat(upstream_directory)
-    if upstream_metadata is None or not stat.S_ISDIR(upstream_metadata.st_mode):
-        return None, ["upstream"]
-    lock_path = upstream_directory / "reelbench.lock.json"
-    lock_metadata = _lstat(lock_path)
-    if lock_metadata is None or not stat.S_ISREG(lock_metadata.st_mode):
-        return None, ["upstream/reelbench.lock.json"]
-    return lock_path, []
 
 
 def _safe_lock_key(key: object) -> bool:
@@ -193,13 +331,20 @@ def _safe_lock_key(key: object) -> bool:
     )
 
 
-def _read_lock(plugin_root: Path) -> tuple[dict[str, Any] | None, list[str]]:
-    lock_path, path_errors = _safe_lock_file(plugin_root)
-    if lock_path is None:
-        return None, path_errors
-    lock_bytes = _read_regular_file(lock_path, MAX_LOCK_BYTES)
-    if lock_bytes is None:
-        return None, ["upstream/reelbench.lock.json"]
+def _read_lock(plugin_root: DirectoryHandle) -> tuple[dict[str, Any] | None, list[str]]:
+    upstream_directory = _open_directory_at(plugin_root.fd, "upstream", "upstream")
+    if upstream_directory is None:
+        return None, ["upstream"]
+    try:
+        lock_bytes = _read_regular_at(
+            upstream_directory.fd,
+            "reelbench.lock.json",
+            MAX_LOCK_BYTES,
+        )
+        if lock_bytes is None or not _handle_is_current(upstream_directory):
+            return None, ["upstream/reelbench.lock.json"]
+    finally:
+        _close_handle(upstream_directory)
     try:
         lock = json.loads(
             lock_bytes.decode("utf-8"),
@@ -278,17 +423,36 @@ def _packaged_frontmatter_is_exact(packaged: bytes, packaged_name: str) -> bool:
     ) == 1
 
 
-def _resolve_upstream_skills_root(upstream_root: Path) -> Path:
-    skills_root = upstream_root / "skills"
-    return skills_root if _is_directory(skills_root) else upstream_root
+def _descriptor_workdir(handle: DirectoryHandle) -> tuple[str, tuple[int, ...]] | None:
+    """Produce a Git workdir from an already-open directory, never raw input."""
+    if fcntl is not None and hasattr(fcntl, "F_GETPATH"):
+        try:
+            raw = fcntl.fcntl(handle.fd, fcntl.F_GETPATH, b"\0" * 1024)
+            if isinstance(raw, bytes):
+                path = raw.split(b"\0", 1)[0].decode("utf-8")
+                if path:
+                    return path, ()
+        except OSError:
+            pass
+    descriptor_path = f"/proc/self/fd/{handle.fd}"
+    if os.path.isdir("/proc/self/fd"):
+        return descriptor_path, (handle.fd,)
+    return None
 
 
-def _run_git(upstream_root: Path, args: list[str], *, text: bool = False) -> subprocess.CompletedProcess[Any]:
+def _run_git(
+    workdir: str,
+    pass_fds: tuple[int, ...],
+    args: list[str],
+    *,
+    text: bool = False,
+) -> subprocess.CompletedProcess[Any]:
     return subprocess.run(
-        ["git", "-C", str(upstream_root), *args],
+        ["git", "-C", workdir, *args],
         check=False,
         capture_output=True,
         text=text,
+        pass_fds=pass_fds,
     )
 
 
@@ -296,22 +460,27 @@ def _canonical_origin(url: str) -> bool:
     return url.strip().rstrip("/").removesuffix(".git") == SOURCE_URL.removesuffix(".git")
 
 
-def _git_snapshot_files(upstream_root: Path) -> tuple[dict[str, tuple[str, bytes]] | None, list[str]]:
+def _git_snapshot_files(upstream_root: DirectoryHandle) -> tuple[dict[str, tuple[str, bytes]] | None, list[str]]:
     """Read bytes only from the pinned commit after validating Git provenance."""
-    is_git = _run_git(upstream_root, ["rev-parse", "--is-inside-work-tree"], text=True)
+    descriptor_workdir = _descriptor_workdir(upstream_root)
+    if descriptor_workdir is None:
+        return None, ["runtime.descriptor_path"]
+    workdir, pass_fds = descriptor_workdir
+    is_git = _run_git(workdir, pass_fds, ["rev-parse", "--is-inside-work-tree"], text=True)
     if is_git.returncode != 0 or is_git.stdout.strip() != "true":
         return None, []
-    origin = _run_git(upstream_root, ["config", "--get", "remote.origin.url"], text=True)
+    origin = _run_git(workdir, pass_fds, ["config", "--get", "remote.origin.url"], text=True)
     if origin.returncode != 0 or not _canonical_origin(origin.stdout):
         return None, ["upstream.origin"]
-    revision = _run_git(upstream_root, ["rev-parse", "--verify", f"{PINNED_REVISION}^{{commit}}"], text=True)
+    revision = _run_git(workdir, pass_fds, ["rev-parse", "--verify", f"{PINNED_REVISION}^{{commit}}"], text=True)
     if revision.returncode != 0 or revision.stdout.strip() != PINNED_REVISION:
         return None, ["upstream.revision"]
-    head = _run_git(upstream_root, ["rev-parse", "HEAD"], text=True)
+    head = _run_git(workdir, pass_fds, ["rev-parse", "HEAD"], text=True)
     if head.returncode != 0 or head.stdout.strip() != PINNED_REVISION:
         return None, ["upstream.HEAD"]
     listed = _run_git(
-        upstream_root,
+        workdir,
+        pass_fds,
         [
             "ls-tree",
             "-r",
@@ -335,7 +504,7 @@ def _git_snapshot_files(upstream_root: Path) -> tuple[dict[str, tuple[str, bytes
                 return None, ["upstream.tree"]
             upstream_name = parts[0]
             relative = Path(*parts[1:]).as_posix()
-            content = _run_git(upstream_root, ["show", f"{PINNED_REVISION}:{git_path}"])
+            content = _run_git(workdir, pass_fds, ["show", f"{PINNED_REVISION}:{git_path}"])
             if content.returncode != 0:
                 return None, ["upstream.revision"]
             files[f"{upstream_name}/{relative}"] = (git_blob, content.stdout)
@@ -344,15 +513,41 @@ def _git_snapshot_files(upstream_root: Path) -> tuple[dict[str, tuple[str, bytes
     return files, []
 
 
-def _filesystem_snapshot_files(upstream_root: Path) -> tuple[dict[str, tuple[str, bytes]], list[str]]:
-    skills_root = _resolve_upstream_skills_root(upstream_root)
+def _filesystem_snapshot_files(upstream_root: DirectoryHandle) -> tuple[dict[str, tuple[str, bytes]], list[str]]:
     files: dict[str, tuple[str, bytes]] = {}
     diagnostics: list[str] = []
+    skills_root = upstream_root
+    owns_skills_root = False
+    try:
+        skills_metadata = os.lstat("skills", dir_fd=upstream_root.fd)
+    except OSError:
+        skills_metadata = None
+    if skills_metadata is not None:
+        if not stat.S_ISDIR(skills_metadata.st_mode):
+            return {}, ["upstream/skills"]
+        opened_skills = _open_directory_at(upstream_root.fd, "skills", "upstream/skills")
+        if opened_skills is None:
+            return {}, ["upstream/skills"]
+        skills_root = opened_skills
+        owns_skills_root = True
     for upstream_name in ALIASES:
-        tree, tree_errors = _collect_regular_files(skills_root / upstream_name, upstream_name)
-        diagnostics.extend(tree_errors)
-        for key, source in tree.items():
-            files[key] = (_git_blob(source), source)
+        directory = _open_directory_at(skills_root.fd, upstream_name, upstream_name)
+        if directory is None:
+            diagnostics.append(upstream_name)
+            continue
+        try:
+            tree, tree_errors = _collect_regular_files(directory, upstream_name)
+            diagnostics.extend(tree_errors)
+            if not _handle_is_current(directory):
+                diagnostics.append(upstream_name)
+            for key, source in tree.items():
+                files[key] = (_git_blob(source), source)
+        finally:
+            _close_handle(directory)
+    if owns_skills_root:
+        if not _handle_is_current(skills_root):
+            diagnostics.append("upstream/skills")
+        _close_handle(skills_root)
     return files, diagnostics
 
 
@@ -360,9 +555,16 @@ def verify_reelbench_snapshot(
     plugin_root: Path, upstream_root: Path | None = None
 ) -> ReelBenchSnapshotReport:
     """Verify packaged bytes and, when possible, provenance from the pinned Git tree."""
-    root = Path(plugin_root)
-    root_metadata = _lstat(root)
-    if root_metadata is None or not stat.S_ISDIR(root_metadata.st_mode):
+    if not _safe_open_supported():
+        return ReelBenchSnapshotReport(
+            revision=PINNED_REVISION,
+            packaged_names=[],
+            mismatches=["runtime.O_NOFOLLOW"],
+            source_status="UNVERIFIABLE",
+            source_reason="the platform cannot safely open untrusted paths without O_NOFOLLOW",
+        )
+    plugin_path = _open_directory_path(Path(plugin_root), "plugin_root")
+    if plugin_path is None:
         return ReelBenchSnapshotReport(
             revision=PINNED_REVISION,
             packaged_names=[],
@@ -370,8 +572,11 @@ def verify_reelbench_snapshot(
             source_status="UNVERIFIABLE",
             source_reason="plugin_root is missing, a symlink, or not a directory",
         )
-    lock, mismatches = _read_lock(root)
+    lock, mismatches = _read_lock(plugin_path.root)
     if lock is None:
+        if not _path_is_current(plugin_path):
+            mismatches.append("plugin_root")
+        plugin_path.close()
         return ReelBenchSnapshotReport(
             revision=PINNED_REVISION,
             packaged_names=[],
@@ -385,19 +590,37 @@ def verify_reelbench_snapshot(
     expected_keys = set(lock_files)
     packaged_names: list[str] = []
     local_files: dict[str, bytes] = {}
-    skills_metadata = _lstat(root / "skills")
-    if skills_metadata is None or not stat.S_ISDIR(skills_metadata.st_mode):
+    skills_directory = _open_directory_at(plugin_path.root.fd, "skills", "skills")
+    if skills_directory is None:
         mismatches.append("skills")
     else:
-        for upstream_name, packaged_name in ALIASES.items():
-            tree, tree_errors = _collect_regular_files(root / "skills" / packaged_name, upstream_name)
-            local_files.update(tree)
-            mismatches.extend(tree_errors)
-            skill_key = f"{upstream_name}/SKILL.md"
-            if skill_key in tree and _packaged_frontmatter_is_exact(tree[skill_key], packaged_name):
-                packaged_names.append(packaged_name)
-            else:
-                mismatches.append(skill_key)
+        try:
+            for upstream_name, packaged_name in ALIASES.items():
+                skill_directory = _open_directory_at(
+                    skills_directory.fd,
+                    packaged_name,
+                    upstream_name,
+                )
+                if skill_directory is None:
+                    mismatches.append(upstream_name)
+                    continue
+                try:
+                    tree, tree_errors = _collect_regular_files(skill_directory, upstream_name)
+                    local_files.update(tree)
+                    mismatches.extend(tree_errors)
+                    if not _handle_is_current(skill_directory):
+                        mismatches.append(upstream_name)
+                    skill_key = f"{upstream_name}/SKILL.md"
+                    if skill_key in tree and _packaged_frontmatter_is_exact(tree[skill_key], packaged_name):
+                        packaged_names.append(packaged_name)
+                    else:
+                        mismatches.append(skill_key)
+                finally:
+                    _close_handle(skill_directory)
+        finally:
+            if not _handle_is_current(skills_directory):
+                mismatches.append("skills")
+            _close_handle(skills_directory)
 
     for key in sorted(set(local_files) ^ expected_keys):
         mismatches.append(key)
@@ -410,50 +633,62 @@ def verify_reelbench_snapshot(
     source_status = "PARTIAL"
     source_reason = "upstream_root not provided; local bytes match the closed lock only"
     if upstream_root is not None:
-        supplied_root = Path(upstream_root)
-        supplied_metadata = _lstat(supplied_root)
-        if supplied_metadata is None or not stat.S_ISDIR(supplied_metadata.st_mode):
+        upstream_path = _open_directory_path(Path(upstream_root), "upstream_root")
+        if upstream_path is None:
             mismatches.append("upstream_root")
             source_status = "UNVERIFIABLE"
             source_reason = "upstream_root is missing, a symlink, or not a directory"
         else:
-            source_files, git_errors = _git_snapshot_files(supplied_root)
-            if git_errors:
-                mismatches.extend(git_errors)
-                source_status = "UNVERIFIABLE"
-                source_reason = "pinned Git provenance could not be verified"
-            elif source_files is not None:
-                source_status = "PINNED_GIT"
-                source_reason = "origin, HEAD, and source bytes match the pinned Git tree"
-            else:
-                source_files, filesystem_errors = _filesystem_snapshot_files(supplied_root)
-                mismatches.extend(filesystem_errors)
-                source_status = "PARTIAL"
-                source_reason = "source bytes were compared from a non-Git directory"
-            if source_files is not None:
-                for key in sorted(set(source_files) ^ expected_keys):
-                    mismatches.append(key)
-                for key in sorted(expected_keys & set(source_files)):
-                    entry = lock_files[key]
-                    assert isinstance(entry, dict)
-                    git_blob, source_bytes = source_files[key]
-                    upstream_name, relative = key.split("/", 1)
-                    try:
-                        expected_packaged = (
-                            _skill_alias_bytes(source_bytes, upstream_name, ALIASES[upstream_name])
-                            if relative == "SKILL.md"
-                            else source_bytes
-                        )
-                    except ValueError:
+            try:
+                source_files, git_errors = _git_snapshot_files(upstream_path.root)
+                if git_errors:
+                    mismatches.extend(git_errors)
+                    source_status = "UNVERIFIABLE"
+                    source_reason = "pinned Git provenance could not be verified"
+                elif source_files is not None:
+                    source_status = "PINNED_GIT"
+                    source_reason = "origin, HEAD, and the pinned Git tree are available"
+                else:
+                    source_files, filesystem_errors = _filesystem_snapshot_files(upstream_path.root)
+                    mismatches.extend(filesystem_errors)
+                    source_status = "PARTIAL"
+                    source_reason = "source bytes were compared from a non-Git directory"
+                if source_files is not None:
+                    for key in sorted(set(source_files) ^ expected_keys):
                         mismatches.append(key)
-                        continue
-                    if (
-                        git_blob != entry["git_blob"]
-                        or _sha256(source_bytes) != entry["upstream_sha256"]
-                        or _sha256(expected_packaged) != entry["packaged_sha256"]
-                        or local_files.get(key) != expected_packaged
-                    ):
-                        mismatches.append(key)
+                    for key in sorted(expected_keys & set(source_files)):
+                        entry = lock_files[key]
+                        assert isinstance(entry, dict)
+                        git_blob, source_bytes = source_files[key]
+                        upstream_name, relative = key.split("/", 1)
+                        try:
+                            expected_packaged = (
+                                _skill_alias_bytes(source_bytes, upstream_name, ALIASES[upstream_name])
+                                if relative == "SKILL.md"
+                                else source_bytes
+                            )
+                        except ValueError:
+                            mismatches.append(key)
+                            continue
+                        if (
+                            git_blob != entry["git_blob"]
+                            or _sha256(source_bytes) != entry["upstream_sha256"]
+                            or _sha256(expected_packaged) != entry["packaged_sha256"]
+                            or local_files.get(key) != expected_packaged
+                        ):
+                            mismatches.append(key)
+            finally:
+                if not _path_is_current(upstream_path):
+                    mismatches.append("upstream_root")
+                    source_status = "UNVERIFIABLE"
+                    source_reason = "upstream_root changed after initial validation"
+                upstream_path.close()
+
+    if not _path_is_current(plugin_path):
+        mismatches.append("plugin_root")
+    plugin_path.close()
+    if source_status == "PINNED_GIT" and mismatches:
+        source_reason = "pinned Git source was available; snapshot comparison reported mismatches"
 
     return ReelBenchSnapshotReport(
         revision=PINNED_REVISION,

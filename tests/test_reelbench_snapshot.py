@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +23,7 @@ from scripts.verify_reelbench_snapshot import (  # noqa: E402
     main,
     verify_reelbench_snapshot,
 )
+import scripts.verify_reelbench_snapshot as snapshot  # noqa: E402
 
 
 ALIASES = {
@@ -44,8 +46,11 @@ class ReelBenchSnapshotTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name) / "plugin"
-        self.upstream = Path(self.tmp.name) / "upstream"
+        # The verifier correctly rejects ancestor symlinks, while macOS places
+        # temporary directories under the lexical /var -> /private/var link.
+        self.base = Path(os.path.realpath(self.tmp.name))
+        self.root = self.base / "plugin"
+        self.upstream = self.base / "upstream"
         self.root.mkdir()
         self._write_independent_fixture()
 
@@ -244,7 +249,7 @@ class ReelBenchSnapshotTests(unittest.TestCase):
         self.assertEqual(json.loads(invalid.stdout)["mismatches"], ["lock:source"])
 
     def test_cli_rejects_raw_plugin_and_upstream_root_symlinks_in_all_modes(self) -> None:
-        plugin_link = Path(self.tmp.name) / "plugin-link"
+        plugin_link = self.base / "plugin-link"
         plugin_link.symlink_to(self.root, target_is_directory=True)
         command = [
             sys.executable,
@@ -257,7 +262,7 @@ class ReelBenchSnapshotTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertEqual(json.loads(result.stdout)["mismatches"], ["plugin_root"])
 
-        upstream_link = Path(self.tmp.name) / "upstream-link"
+        upstream_link = self.base / "upstream-link"
         upstream_link.symlink_to(self.upstream, target_is_directory=True)
         result = subprocess.run(
             [
@@ -276,8 +281,8 @@ class ReelBenchSnapshotTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertEqual(json.loads(result.stdout)["mismatches"], ["upstream_root"])
 
-        dangling = Path(self.tmp.name) / "dangling-plugin"
-        dangling.symlink_to(Path(self.tmp.name) / "missing-plugin", target_is_directory=True)
+        dangling = self.base / "dangling-plugin"
+        dangling.symlink_to(self.base / "missing-plugin", target_is_directory=True)
         dangling_result = subprocess.run(
             [
                 sys.executable,
@@ -292,6 +297,65 @@ class ReelBenchSnapshotTests(unittest.TestCase):
         )
         self.assertEqual(dangling_result.returncode, 2)
         self.assertEqual(json.loads(dangling_result.stdout)["mismatches"], ["plugin_root"])
+
+    def _replace_after_open(self, target: Path, replacement: Path, opener_name: str):
+        """Replace one path only after its original directory FD was acquired."""
+        original_opener = getattr(snapshot, opener_name)
+        replaced = False
+
+        def open_then_replace(*args, **kwargs):
+            nonlocal replaced
+            handle = original_opener(*args, **kwargs)
+            opened_path = Path(args[0]) if opener_name == "_open_directory_path" else None
+            is_target = (
+                opened_path == target
+                if opener_name == "_open_directory_path"
+                else args[2] == "video-shots" and target.name == "dreamina-video-shots"
+            )
+            if not replaced and is_target:
+                replaced = True
+                old = target.with_name(target.name + "-old")
+                target.rename(old)
+                replacement.rename(target)
+            return handle
+
+        return mock.patch.object(snapshot, opener_name, side_effect=open_then_replace)
+
+    def test_post_open_path_replacements_fail_closed(self) -> None:
+        replacement = self.base / "plugin-replacement"
+        shutil.copytree(self.root, replacement)
+        with self._replace_after_open(self.root, replacement, "_open_directory_path"):
+            report = verify_reelbench_snapshot(self.root, self.upstream)
+        self.assertIn("plugin_root", report.mismatches)
+
+        self._write_independent_fixture()
+        skill = self.root / "skills/dreamina-video-shots"
+        skill_replacement = self.base / "skill-replacement"
+        shutil.copytree(skill, skill_replacement)
+        with self._replace_after_open(skill, skill_replacement, "_open_directory_at"):
+            report = verify_reelbench_snapshot(self.root, self.upstream)
+        self.assertTrue(report.mismatches)
+
+        self._write_independent_fixture()
+        upstream_replacement = self.base / "upstream-replacement"
+        shutil.copytree(self.upstream, upstream_replacement)
+        with self._replace_after_open(self.upstream, upstream_replacement, "_open_directory_path"):
+            exit_code = main(
+                [
+                    "--plugin-root",
+                    str(self.root),
+                    "--upstream-root",
+                    str(self.upstream),
+                    "--strict-pinned-source",
+                ]
+            )
+        self.assertEqual(exit_code, 2)
+
+    def test_missing_o_nofollow_fails_closed_without_attribute_error(self) -> None:
+        with mock.patch.object(snapshot.os, "O_NOFOLLOW", None):
+            report = verify_reelbench_snapshot(self.root, self.upstream)
+        self.assertEqual(report.source_status, "UNVERIFIABLE")
+        self.assertEqual(report.mismatches, ["runtime.O_NOFOLLOW"])
 
     def test_real_packaged_lock_is_consistent_but_explicitly_partial_without_source(self) -> None:
         report = verify_reelbench_snapshot(ROOT)
