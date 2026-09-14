@@ -80,7 +80,8 @@ class ReelBenchAdapterTests(unittest.TestCase):
         statuses = ["PASS"] * len(REELBENCH_VALIDATE_GATES)
         statuses[REELBENCH_VALIDATE_GATES.index("motion")] = "SKIPPED"
         marks = {"PASS": "✅", "FAIL": "❌", "SKIPPED": "⊘"}
-        output = "\n".join(f"{marks[status]} gate-{index}" for index, status in enumerate(statuses))
+        labels = self.adapter._ENGLISH_GATE_LABELS
+        output = "\n".join(f"{marks[status]} {labels[name]}" for name, status in zip(REELBENCH_VALIDATE_GATES, statuses))
 
         def runner(_argv, **_kwargs):
             return BoundedProcessResult(0, output, "")
@@ -93,6 +94,17 @@ class ReelBenchAdapterTests(unittest.TestCase):
         )
 
         self.assertEqual(result.gates[REELBENCH_VALIDATE_GATES.index("motion")]["status"], "SKIPPED")
+
+    def test_validate_rejects_reordered_unknown_or_inconsistent_gate_output(self) -> None:
+        labels = list(self.adapter._ENGLISH_GATE_LABELS.values())
+        output = "\n".join(f"✅ {label}" for label in reversed(labels))
+
+        self.adapter._runner = lambda *_args, **_kwargs: BoundedProcessResult(0, output, "")
+        with self.assertRaisesRegex(Exception, "gate"):
+            self.adapter.validate(
+                shots=self.project_root / "shots.json", track=self.project_root / "track.json",
+                frames_dir=self.project_root / "frames",
+            )
 
 
 if __name__ == "__main__":

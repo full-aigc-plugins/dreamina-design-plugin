@@ -69,7 +69,14 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
             if argv[2] == "validate":
                 marks = ["✅"] * 15
                 marks[11] = "⊘"
-                return BoundedProcessResult(0, "\n".join(f"{mark} gate-{index}" for index, mark in enumerate(marks)), "")
+                labels = [
+                    "Timeline is continuous", "Durations add up", "Shot numbering", "Shot size vocabulary",
+                    "Category vocabulary", "Camera vocabulary", "Transition vocabulary", "Frame description is checkable",
+                    "No duplicate descriptions", "Subjects reconcile with cast", "Categories carry evidence",
+                    "Camera vs. measured motion", "Boundaries come from detection", "Keyframes present",
+                    "Rhythm annotation is checkable",
+                ]
+                return BoundedProcessResult(0, "\n".join(f"{mark} {label}" for mark, label in zip(marks, labels)), "")
             if argv[2] == "render":
                 return BoundedProcessResult(0, "# bounded report\n", "")
             return BoundedProcessResult(0, "", "")
@@ -168,6 +175,15 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
         self.assertEqual((second["version"], third["version"], fourth["version"]), ("v002", "v003", "v004"))
         self.assertEqual(third["gates"][11]["status"], "SKIPPED")
         self.assertEqual(fourth["artifacts"][0]["path"], "reelbench/v004/report.md")
+
+    def test_render_requires_immediate_validated_parent(self) -> None:
+        seed = self.service.run(self.project_id, action="seed", expected_parent=None,
+                                source_receipt_version=self.source_receipt["version"], threshold=0.3, title="Reference")
+        evidence = self.service.run(self.project_id, action="evidence", expected_parent=seed["version"],
+                                    source_receipt_version=self.source_receipt["version"])
+        with self.assertRaisesRegex(ValueError, "validated"):
+            self.service.run(self.project_id, action="render", expected_parent=evidence["version"],
+                             source_receipt_version=self.source_receipt["version"], mode="md")
 
 
 if __name__ == "__main__":

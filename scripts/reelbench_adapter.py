@@ -5,13 +5,17 @@ from __future__ import annotations
 import math
 import os
 import re
+import json
+import shutil
+import tempfile
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from scripts.bounded_process import BoundedProcessError, BoundedProcessResult, run_bounded
 from scripts.reelbench_contracts import REELBENCH_VALIDATE_GATES
-from scripts.trusted_media_tools import TrustedExecutable
+from scripts.trusted_media_tools import TrustedExecutable, TrustedMediaToolStore
 
 
 MAX_STDOUT_BYTES = 8 * 1024 * 1024
@@ -20,6 +24,15 @@ MAX_ACTION_SECONDS = 120.0
 MAX_TITLE_CHARS = 512
 _GATE_MARK = {"✅": "PASS", "❌": "FAIL", "⊘": "SKIPPED"}
 _GATE_LINE = re.compile(r"^(?P<mark>[✅❌⊘])\s+(?P<evidence>.+)$")
+_ENGLISH_GATE_LABELS = {
+    "timeline": "Timeline is continuous", "duration": "Durations add up", "numbering": "Shot numbering",
+    "size": "Shot size vocabulary", "category": "Category vocabulary", "camera": "Camera vocabulary",
+    "transition": "Transition vocabulary", "frame-text": "Frame description is checkable",
+    "dedup": "No duplicate descriptions", "subjects": "Subjects reconcile with cast",
+    "category-evidence": "Categories carry evidence", "motion": "Camera vs. measured motion",
+    "boundary": "Boundaries come from detection", "frames": "Keyframes present",
+    "rhythm": "Rhythm annotation is checkable",
+}
 
 
 class ReelBenchAdapterError(RuntimeError):
@@ -37,6 +50,7 @@ class ReelBenchAdapterResult:
     stderr: str
     returncode: int
     gates: tuple[dict[str, str], ...] = ()
+    tool_identities: tuple[dict[str, str | int], ...] = ()
 
 
 class ReelBenchAdapter:
@@ -48,6 +62,7 @@ class ReelBenchAdapter:
         project_root: Path,
         shots_script: Path,
         tools: Mapping[str, TrustedExecutable],
+        tool_store: TrustedMediaToolStore | None = None,
         runner: Callable[..., BoundedProcessResult] = run_bounded,
     ) -> None:
         self._project_root = Path(project_root).resolve(strict=True)
@@ -60,8 +75,12 @@ class ReelBenchAdapter:
             raise ValueError("ReelBench requires exactly trusted node, ffmpeg, and ffprobe tools")
         if any(tool.kind != kind or not Path(tool.source_path).is_absolute() or tool.size_bytes < 1 for kind, tool in tools.items()):
             raise ValueError("trusted ReelBench tool identities are invalid")
+        if runner is run_bounded and tool_store is None:
+            raise ValueError("real ReelBench execution requires descriptor-verified trusted media tools")
         self._tools = dict(tools)
+        self._tool_store = tool_store
         self._runner = runner
+        self._ENGLISH_GATE_LABELS = _ENGLISH_GATE_LABELS
 
     @property
     def tool_identities(self) -> list[dict[str, str | int]]:
@@ -93,11 +112,12 @@ class ReelBenchAdapter:
     def validate(self, *, shots: Path, track: Path, frames_dir: Path) -> ReelBenchAdapterResult:
         """Run upstream gates without collapsing PASS, FAIL, or SKIPPED semantics."""
         shots_path, track_path, frames_path = self._paths(shots, track, frames_dir)
-        result = self._run("validate", [str(shots_path), "--track", str(track_path), "--frames", str(frames_path)], allow_failure=True)
+        result = self._run("validate", [str(shots_path), "--track", str(track_path), "--frames", str(frames_path), "--lang", "en"], allow_failure=True)
         gates = self._parse_gates(result.stdout)
-        if result.returncode not in {0, 1}:
+        failed = any(gate["status"] == "FAIL" for gate in gates)
+        if result.returncode not in {0, 1} or (result.returncode == 0 and failed) or (result.returncode == 1 and not failed):
             raise ReelBenchAdapterError(f"validate exited unexpectedly: {result.returncode}")
-        return ReelBenchAdapterResult(result.action, result.argv, result.shell, result.stdout, result.stderr, result.returncode, gates)
+        return ReelBenchAdapterResult(result.action, result.argv, result.shell, result.stdout, result.stderr, result.returncode, gates, result.tool_identities)
 
     def render(self, *, shots: Path, track: Path, frames_dir: Path, source: Path, mode: str) -> ReelBenchAdapterResult:
         """Render the unchanged Markdown or offline HTML report to bounded stdout."""
@@ -107,22 +127,76 @@ class ReelBenchAdapter:
         return self._run("render", [str(shots_path), f"--{mode}", "--track", str(track_path), "--frames", str(frames_path), "--video", str(source_path)])
 
     def _run(self, action: str, rest: Sequence[str], *, allow_failure: bool = False) -> ReelBenchAdapterResult:
-        argv = [self._tools["node"].source_path, str(self._shots_script), action, *rest]
+        staged_root: Path | None = None
+        staged_tools = None
+        tools = self._tools
+        script = self._shots_script
+        environment = self._environment()
+        if self._tool_store is not None:
+            staged_tools = self._tool_store.load_required(("node", "ffmpeg", "ffprobe"))
+            staged_root = Path(tempfile.mkdtemp(prefix=".reelbench-exec-", dir=self._project_root))
+            os.chmod(staged_root, 0o700)
+            script = self._verify_and_stage_script(staged_root)
+            bin_dir = staged_root / "bin"
+            bin_dir.mkdir(mode=0o700)
+            for kind in ("ffmpeg", "ffprobe"):
+                os.link(staged_tools[kind].staged_path, bin_dir / kind, follow_symlinks=False)
+                os.chmod(bin_dir / kind, 0o500)
+            environment = {"PATH": str(bin_dir), "LANG": "C", "LC_ALL": "C"}
+            tools = {kind: self._identity_from_path(kind, Path(staged_tools[kind].source_path)) for kind in staged_tools}
+        argv = [str(staged_tools["node"].staged_path) if staged_tools else tools["node"].source_path, str(script), action, *rest]
         try:
             result = self._runner(
                 argv,
-                env=self._environment(),
+                env=environment,
                 timeout_seconds=MAX_ACTION_SECONDS,
                 stdout_cap=MAX_STDOUT_BYTES,
                 stderr_cap=MAX_STDERR_BYTES,
             )
         except (BoundedProcessError, OSError) as exc:
             raise ReelBenchAdapterError(f"{action} did not complete safely") from exc
+        finally:
+            if staged_tools is not None:
+                for tool in staged_tools.values():
+                    self._tool_store.release(tool)
+            if staged_root is not None:
+                shutil.rmtree(staged_root, ignore_errors=True)
         if not isinstance(result, BoundedProcessResult):
             raise ReelBenchAdapterError("bounded runner returned an invalid result")
         if result.returncode != 0 and not allow_failure:
             raise ReelBenchAdapterError(f"{action} failed with exit {result.returncode}")
-        return ReelBenchAdapterResult(action, list(argv), False, result.stdout, result.stderr, result.returncode)
+        identities = tuple({"kind": kind, **tools[kind].to_record()} for kind in sorted(tools))
+        return ReelBenchAdapterResult(action, list(argv), False, result.stdout, result.stderr, result.returncode, (), identities)
+
+    def _verify_and_stage_script(self, root: Path) -> Path:
+        lock = self._shots_script.parents[3] / "upstream" / "reelbench.lock.json"
+        try:
+            expected = json.loads(lock.read_text(encoding="utf-8"))["files"]["video-shots/scripts/video-shots.mjs"]["packaged_sha256"]
+            descriptor = os.open(self._shots_script, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except (OSError, KeyError, json.JSONDecodeError) as exc:
+            raise ReelBenchAdapterError("pinned ReelBench script cannot be verified") from exc
+        try:
+            content = bytearray()
+            digest = hashlib.sha256()
+            while chunk := os.read(descriptor, 1024 * 1024):
+                content.extend(chunk); digest.update(chunk)
+            if digest.hexdigest() != expected:
+                raise ReelBenchAdapterError("packaged ReelBench script differs from its lock")
+        finally:
+            os.close(descriptor)
+        target = root / "video-shots.mjs"
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o500)
+        try:
+            os.write(fd, content); os.fsync(fd)
+        finally:
+            os.close(fd)
+        return target
+
+    @staticmethod
+    def _identity_from_path(kind: str, path: Path) -> TrustedExecutable:
+        info = path.stat()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        return TrustedExecutable(kind, str(path), info.st_uid, info.st_mode & 0o777, info.st_dev, info.st_ino, info.st_size, digest)
 
     def _environment(self) -> dict[str, str]:
         executable_dirs = [str(Path(self._tools[kind].source_path).parent) for kind in ("ffmpeg", "ffprobe")]
@@ -160,14 +234,17 @@ class ReelBenchAdapter:
 
     @staticmethod
     def _parse_gates(stdout: str) -> tuple[dict[str, str], ...]:
-        found = []
+        found: list[dict[str, str]] = []
         for line in stdout.splitlines():
             matched = _GATE_LINE.fullmatch(line)
             if matched is not None:
-                found.append((_GATE_MARK[matched.group("mark")], matched.group("evidence")[:2048]))
+                found.append({"status": _GATE_MARK[matched.group("mark")], "evidence": matched.group("evidence")[:2048]})
         if len(found) != len(REELBENCH_VALIDATE_GATES):
             raise ReelBenchAdapterError("validate output did not contain exactly 15 gate lines")
-        return tuple({"name": name, "status": status, "evidence": evidence} for name, (status, evidence) in zip(REELBENCH_VALIDATE_GATES, found, strict=True))
+        receipts = tuple({"name": name, **entry} for name, entry in zip(REELBENCH_VALIDATE_GATES, found, strict=True))
+        if any(not (entry["evidence"] == _ENGLISH_GATE_LABELS[entry["name"]] or entry["evidence"].startswith(_ENGLISH_GATE_LABELS[entry["name"]] + "　")) for entry in receipts):
+            raise ReelBenchAdapterError("validate gate labels are unknown, duplicated, or reordered")
+        return receipts
 
 
 __all__ = ["ReelBenchAdapter", "ReelBenchAdapterError", "ReelBenchAdapterResult"]

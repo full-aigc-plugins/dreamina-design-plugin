@@ -466,10 +466,11 @@ class VideoProjectStore:
                 # filesystem.  A foreign path injected between allocation and
                 # publication raises FileExistsError rather than being replaced.
                 os.link(temporary, path, follow_symlinks=False)
+                published = True
                 os.unlink(temporary)
             else:
                 os.replace(temporary, path)
-            published = True
+                published = True
             os.chmod(path, 0o600)
             directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             try:
