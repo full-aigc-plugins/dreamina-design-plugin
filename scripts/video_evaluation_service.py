@@ -135,7 +135,7 @@ class _ArtifactSnapshot(AbstractContextManager):
             self.digest, self.size_bytes = digest.hexdigest(), copied
             self.assert_stable()
         except Exception:
-            self.__exit__(None, None, None)
+            self._cleanup(active_exception=True)
             raise
 
     def assert_stable(self) -> None:
@@ -152,17 +152,30 @@ class _ArtifactSnapshot(AbstractContextManager):
                 or snapshot_now != self.snapshot_identity or snapshot_path_now != self.snapshot_identity:
             raise EvaluationContractError("artifact identity changed during evaluation")
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
+    def _cleanup(self, *, active_exception: bool) -> None:
+        first_error: BaseException | None = None
         for name in ("snapshot_fd", "source_fd"):
             descriptor = getattr(self, name)
+            setattr(self, name, None)
             if descriptor is not None:
                 try:
                     os.close(descriptor)
-                finally:
-                    setattr(self, name, None)
-        if self.temporary is not None:
-            self.temporary.cleanup()
-            self.temporary = None
+                except BaseException as error:
+                    if first_error is None:
+                        first_error = error
+        temporary = self.temporary
+        self.temporary = None
+        if temporary is not None:
+            try:
+                temporary.cleanup()
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None and not active_exception:
+            raise first_error
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self._cleanup(active_exception=exc_type is not None or exc_value is not None)
 
 
 class VideoEvaluationService:

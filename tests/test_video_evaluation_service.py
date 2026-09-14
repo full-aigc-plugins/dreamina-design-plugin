@@ -6,9 +6,14 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 from scripts.json_contracts import validate_contract
-from scripts.video_evaluation_service import EvaluationContractError, VideoEvaluationService
+from scripts.video_evaluation_service import (
+    EvaluationContractError,
+    VideoEvaluationService,
+    _ArtifactSnapshot,
+)
 from tests.test_video_batch_allowance import RecordingApprover, make_allowances, make_quote
 
 MEASURED = ("artifact_integrity", "dimensions", "codec", "duration", "aspect_ratio",
@@ -31,6 +36,129 @@ class SyntheticTrustedMediaAdapter:
         frame = {"requested_at_seconds": 0.0, "sha256": "7" * 64, "size_bytes": 16}
         return {"readable": True, "start_anchor": frame,
                 "end_anchor": {**frame, "requested_at_seconds": 3.95}}
+
+
+class RecordingTemporaryDirectory:
+    def __init__(self, name: str, *, error: BaseException | None = None):
+        self.name = name
+        self.error = error
+        self.cleanup_calls = 0
+
+    def cleanup(self):
+        self.cleanup_calls += 1
+        if self.error is not None:
+            raise self.error
+
+
+class ArtifactSnapshotCleanupTests(unittest.TestCase):
+    def snapshot(self, temporary):
+        snapshot = _ArtifactSnapshot.__new__(_ArtifactSnapshot)
+        snapshot.snapshot_fd = 101
+        snapshot.source_fd = 102
+        snapshot.temporary = temporary
+        return snapshot
+
+    def test_cleanup_attempts_every_owned_resource_once_and_raises_first_error(self):
+        for failures, expected in (
+            ({101}, "snapshot close failed"),
+            ({102}, "source close failed"),
+            ({"temporary"}, "temporary cleanup failed"),
+            ({101, 102, "temporary"}, "snapshot close failed"),
+        ):
+            with self.subTest(failures=failures):
+                errors = {101: RuntimeError("snapshot close failed"),
+                          102: RuntimeError("source close failed"),
+                          "temporary": RuntimeError("temporary cleanup failed")}
+                temporary = RecordingTemporaryDirectory(
+                    "/unused", error=errors["temporary"] if "temporary" in failures else None)
+                snapshot = self.snapshot(temporary)
+                close_calls = []
+
+                def close(descriptor):
+                    close_calls.append(descriptor)
+                    if descriptor in failures:
+                        raise errors[descriptor]
+
+                with mock.patch("scripts.video_evaluation_service.os.close", side_effect=close):
+                    with self.assertRaisesRegex(RuntimeError, expected) as raised:
+                        snapshot.__exit__(None, None, None)
+                first_failed_resource = next(resource for resource in (101, 102, "temporary")
+                                             if resource in failures)
+                self.assertIs(raised.exception, errors[first_failed_resource])
+                self.assertEqual(close_calls, [101, 102])
+                self.assertEqual(temporary.cleanup_calls, 1)
+                self.assertIsNone(snapshot.snapshot_fd)
+                self.assertIsNone(snapshot.source_fd)
+                self.assertIsNone(snapshot.temporary)
+                with mock.patch("scripts.video_evaluation_service.os.close") as repeated_close:
+                    snapshot.__exit__(None, None, None)
+                repeated_close.assert_not_called()
+                self.assertEqual(temporary.cleanup_calls, 1)
+
+    def test_cleanup_does_not_mask_active_body_exception(self):
+        body_error = LookupError("body failed")
+        temporary = RecordingTemporaryDirectory(
+            "/unused", error=RuntimeError("temporary cleanup failed"))
+        snapshot = self.snapshot(temporary)
+        close_calls = []
+
+        def close(descriptor):
+            close_calls.append(descriptor)
+            raise RuntimeError("close failed")
+
+        with mock.patch("scripts.video_evaluation_service.os.close", side_effect=close):
+            with self.assertRaises(LookupError) as raised:
+                with snapshot:
+                    raise body_error
+        self.assertIs(raised.exception, body_error)
+        self.assertEqual(close_calls, [101, 102])
+        self.assertEqual(temporary.cleanup_calls, 1)
+
+    def test_constructor_failure_preserves_original_error_after_all_cleanup_attempts(self):
+        original_error = LookupError("constructor failed")
+        cleanup_errors = {"source": RuntimeError("source close failed"),
+                          "snapshot": RuntimeError("snapshot close failed")}
+        close_attempts = []
+        opened = {}
+        real_open = __import__("os").open
+        real_close = __import__("os").close
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "source.mp4"
+            source.write_bytes(b"private video")
+            source.chmod(0o600)
+            staging = Path(root) / "staging"
+            staging.mkdir()
+            temporary = RecordingTemporaryDirectory(
+                str(staging), error=RuntimeError("temporary cleanup failed"))
+
+            def open_file(path, flags, mode=0o777):
+                descriptor = real_open(path, flags, mode)
+                if Path(path) == source:
+                    opened["source"] = descriptor
+                elif Path(path).name == "artifact.snapshot" \
+                        and not flags & __import__("os").O_WRONLY:
+                    opened["snapshot"] = descriptor
+                return descriptor
+
+            def close_file(descriptor):
+                kind = next((name for name, fd in opened.items() if fd == descriptor), "output")
+                if kind != "output":
+                    close_attempts.append(kind)
+                real_close(descriptor)
+                if kind in cleanup_errors:
+                    raise cleanup_errors[kind]
+
+            artifact = {"path": str(source), "size_bytes": source.stat().st_size}
+            with mock.patch("scripts.video_evaluation_service.tempfile.TemporaryDirectory",
+                            return_value=temporary), \
+                    mock.patch("scripts.video_evaluation_service.os.open", side_effect=open_file), \
+                    mock.patch("scripts.video_evaluation_service.os.close", side_effect=close_file), \
+                    mock.patch.object(_ArtifactSnapshot, "assert_stable", side_effect=original_error):
+                with self.assertRaises(LookupError) as raised:
+                    _ArtifactSnapshot(artifact, max_bytes=1024)
+            self.assertIs(raised.exception, original_error)
+            self.assertEqual(close_attempts, ["snapshot", "source"])
+            self.assertEqual(temporary.cleanup_calls, 1)
 
 
 class VideoEvaluationServiceTests(unittest.TestCase):
