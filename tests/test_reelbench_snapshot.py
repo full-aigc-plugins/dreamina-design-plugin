@@ -428,6 +428,7 @@ class ReelBenchSnapshotTests(unittest.TestCase):
         """Track real FD ownership, and clean up leaks even when a RED assertion fails."""
         real_open, real_dup, real_close = os.open, os.dup, os.close
         acquired: set[int] = set()
+        failed_closes: list[int] = []
 
         def track_acquisition(operation):
             def acquire(*args, **kwargs):
@@ -437,7 +438,12 @@ class ReelBenchSnapshotTests(unittest.TestCase):
             return acquire
 
         def close(descriptor):
-            real_close(descriptor)
+            try:
+                real_close(descriptor)
+            except OSError:
+                # Record duplicate closes even if production cleanup suppresses them.
+                failed_closes.append(descriptor)
+                raise
             acquired.discard(descriptor)
 
         try:
@@ -448,6 +454,7 @@ class ReelBenchSnapshotTests(unittest.TestCase):
             ):
                 yield
             self.assertEqual(acquired, set(), f"new descriptors leaked: {sorted(acquired)}")
+            self.assertEqual(failed_closes, [], "descriptor close failed or was attempted twice")
         finally:
             for descriptor in acquired:
                 real_close(descriptor)
@@ -550,6 +557,74 @@ class ReelBenchSnapshotTests(unittest.TestCase):
         self._write_lock()
         with self._assert_fd_balance():
             self.assertEqual(self._report().mismatches, ["lock:source"])
+
+    def test_public_verification_closes_all_fds_after_later_handle_construction_failure(self) -> None:
+        real_handle = snapshot.DirectoryHandle
+        for failure_point in ("upstream", "skills", "video-shots", "upstream_root", "upstream/skills"):
+            for error_type in (MemoryError, KeyboardInterrupt, SystemExit):
+                with self.subTest(failure_point=failure_point, error_type=error_type):
+                    failure = error_type("later handle failed")
+
+                    def construct(**kwargs):
+                        if kwargs["display"] == failure_point:
+                            raise failure
+                        return real_handle(**kwargs)
+
+                    with (
+                        self._assert_fd_balance(),
+                        mock.patch.object(snapshot, "DirectoryHandle", side_effect=construct),
+                    ):
+                        with self.assertRaises(error_type) as raised:
+                            verify_reelbench_snapshot(self.root, self.upstream)
+                        self.assertIs(raised.exception, failure)
+
+    def test_public_verification_closes_all_fds_after_later_read_failure(self) -> None:
+        real_read = os.read
+        for target in (
+            self.root / "upstream/reelbench.lock.json",
+            self.root / "skills/dreamina-video-shots/SKILL.md",
+            self.upstream / "skills/video-shots/SKILL.md",
+        ):
+            metadata = target.stat()
+            for error_type in (MemoryError, KeyboardInterrupt, SystemExit):
+                with self.subTest(target=target, error_type=error_type):
+                    failure = error_type("later read failed")
+
+                    def read(descriptor, size):
+                        opened = os.fstat(descriptor)
+                        if (opened.st_dev, opened.st_ino) == (metadata.st_dev, metadata.st_ino):
+                            raise failure
+                        return real_read(descriptor, size)
+
+                    with (
+                        self._assert_fd_balance(),
+                        mock.patch.object(snapshot.os, "read", side_effect=read),
+                    ):
+                        with self.assertRaises(error_type) as raised:
+                            verify_reelbench_snapshot(self.root, self.upstream)
+                        self.assertIs(raised.exception, failure)
+
+    def test_public_verification_closes_all_fds_when_final_identity_check_raises(self) -> None:
+        for target in ("skills", "upstream/skills", "upstream_root", "plugin_root"):
+            helper = "_path_is_current" if target.endswith("_root") else "_handle_is_current"
+            real_check = getattr(snapshot, helper)
+            for error_type in (MemoryError, KeyboardInterrupt, SystemExit):
+                with self.subTest(target=target, error_type=error_type):
+                    failure = error_type("identity check failed")
+
+                    def check(resource):
+                        handle = resource.root if helper == "_path_is_current" else resource
+                        if handle.display == target:
+                            raise failure
+                        return real_check(resource)
+
+                    with (
+                        self._assert_fd_balance(),
+                        mock.patch.object(snapshot, helper, side_effect=check),
+                    ):
+                        with self.assertRaises(error_type) as raised:
+                            verify_reelbench_snapshot(self.root, self.upstream)
+                        self.assertIs(raised.exception, failure)
 
     def test_real_packaged_lock_is_consistent_but_explicitly_partial_without_source(self) -> None:
         report = verify_reelbench_snapshot(ROOT)

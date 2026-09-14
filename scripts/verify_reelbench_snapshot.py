@@ -554,25 +554,28 @@ def _filesystem_snapshot_files(upstream_root: DirectoryHandle) -> tuple[dict[str
             return {}, ["upstream/skills"]
         skills_root = opened_skills
         owns_skills_root = True
-    for upstream_name in ALIASES:
-        directory = _open_directory_at(skills_root.fd, upstream_name, upstream_name)
-        if directory is None:
-            diagnostics.append(upstream_name)
-            continue
-        try:
-            tree, tree_errors = _collect_regular_files(directory, upstream_name)
-            diagnostics.extend(tree_errors)
-            if not _handle_is_current(directory):
+    try:
+        for upstream_name in ALIASES:
+            directory = _open_directory_at(skills_root.fd, upstream_name, upstream_name)
+            if directory is None:
                 diagnostics.append(upstream_name)
-            for key, source in tree.items():
-                files[key] = (_git_blob(source), source)
-        finally:
-            _close_handle(directory)
-    if owns_skills_root:
-        if not _handle_is_current(skills_root):
-            diagnostics.append("upstream/skills")
-        _close_handle(skills_root)
-    return files, diagnostics
+                continue
+            try:
+                tree, tree_errors = _collect_regular_files(directory, upstream_name)
+                diagnostics.extend(tree_errors)
+                if not _handle_is_current(directory):
+                    diagnostics.append(upstream_name)
+                for key, source in tree.items():
+                    files[key] = (_git_blob(source), source)
+            finally:
+                _close_handle(directory)
+        if owns_skills_root:
+            if not _handle_is_current(skills_root):
+                diagnostics.append("upstream/skills")
+        return files, diagnostics
+    finally:
+        if owns_skills_root:
+            _close_handle(skills_root)
 
 
 def verify_reelbench_snapshot(
@@ -597,131 +600,133 @@ def verify_reelbench_snapshot(
             source_status="UNVERIFIABLE",
             source_reason="plugin_root is missing, a symlink, or not a directory",
         )
-    lock, mismatches = _read_lock(plugin_path.root)
-    if lock is None:
-        if not _path_is_current(plugin_path):
-            mismatches.append("plugin_root")
-        plugin_path.close()
-        return ReelBenchSnapshotReport(
-            revision=PINNED_REVISION,
-            packaged_names=[],
-            mismatches=sorted(set(mismatches)),
-            source_status="INVALID_LOCK",
-            source_reason="lock manifest is missing, unsafe, malformed, or invalid",
-        )
+    # Own the root chain across every return and unexpected exception below.
+    try:
+        lock, mismatches = _read_lock(plugin_path.root)
+        if lock is None:
+            if not _path_is_current(plugin_path):
+                mismatches.append("plugin_root")
+            return ReelBenchSnapshotReport(
+                revision=PINNED_REVISION,
+                packaged_names=[],
+                mismatches=sorted(set(mismatches)),
+                source_status="INVALID_LOCK",
+                source_reason="lock manifest is missing, unsafe, malformed, or invalid",
+            )
 
-    lock_files = lock["files"]
-    assert isinstance(lock_files, dict)
-    expected_keys = set(lock_files)
-    packaged_names: list[str] = []
-    local_files: dict[str, bytes] = {}
-    skills_directory = _open_directory_at(plugin_path.root.fd, "skills", "skills")
-    if skills_directory is None:
-        mismatches.append("skills")
-    else:
-        try:
-            for upstream_name, packaged_name in ALIASES.items():
-                skill_directory = _open_directory_at(
-                    skills_directory.fd,
-                    packaged_name,
-                    upstream_name,
-                )
-                if skill_directory is None:
-                    mismatches.append(upstream_name)
-                    continue
-                try:
-                    tree, tree_errors = _collect_regular_files(skill_directory, upstream_name)
-                    local_files.update(tree)
-                    mismatches.extend(tree_errors)
-                    if not _handle_is_current(skill_directory):
-                        mismatches.append(upstream_name)
-                    skill_key = f"{upstream_name}/SKILL.md"
-                    if skill_key in tree and _packaged_frontmatter_is_exact(tree[skill_key], packaged_name):
-                        packaged_names.append(packaged_name)
-                    else:
-                        mismatches.append(skill_key)
-                finally:
-                    _close_handle(skill_directory)
-        finally:
-            if not _handle_is_current(skills_directory):
-                mismatches.append("skills")
-            _close_handle(skills_directory)
-
-    for key in sorted(set(local_files) ^ expected_keys):
-        mismatches.append(key)
-    for key in sorted(expected_keys & set(local_files)):
-        entry = lock_files[key]
-        assert isinstance(entry, dict)
-        if _sha256(local_files[key]) != entry["packaged_sha256"]:
-            mismatches.append(key)
-
-    source_status = "PARTIAL"
-    source_reason = "upstream_root not provided; pinned Git provenance was not checked"
-    if upstream_root is not None:
-        upstream_path = _open_directory_path(Path(upstream_root), "upstream_root")
-        if upstream_path is None:
-            mismatches.append("upstream_root")
-            source_status = "UNVERIFIABLE"
-            source_reason = "upstream_root is missing, a symlink, or not a directory"
+        lock_files = lock["files"]
+        assert isinstance(lock_files, dict)
+        expected_keys = set(lock_files)
+        packaged_names: list[str] = []
+        local_files: dict[str, bytes] = {}
+        skills_directory = _open_directory_at(plugin_path.root.fd, "skills", "skills")
+        if skills_directory is None:
+            mismatches.append("skills")
         else:
             try:
-                source_files, git_errors = _git_snapshot_files(upstream_path.root)
-                if git_errors:
-                    mismatches.extend(git_errors)
-                    source_status = "UNVERIFIABLE"
-                    source_reason = "pinned Git provenance could not be verified"
-                elif source_files is not None:
-                    source_status = "PINNED_GIT"
-                    source_reason = "origin, HEAD, and the pinned Git tree are available"
-                else:
-                    source_files, filesystem_errors = _filesystem_snapshot_files(upstream_path.root)
-                    mismatches.extend(filesystem_errors)
-                    source_status = "PARTIAL"
-                    source_reason = "source bytes were compared from a non-Git directory"
-                if source_files is not None:
-                    for key in sorted(set(source_files) ^ expected_keys):
-                        mismatches.append(key)
-                    for key in sorted(expected_keys & set(source_files)):
-                        entry = lock_files[key]
-                        assert isinstance(entry, dict)
-                        git_blob, source_bytes = source_files[key]
-                        upstream_name, relative = key.split("/", 1)
-                        try:
-                            expected_packaged = (
-                                _skill_alias_bytes(source_bytes, upstream_name, ALIASES[upstream_name])
-                                if relative == "SKILL.md"
-                                else source_bytes
-                            )
-                        except ValueError:
-                            mismatches.append(key)
-                            continue
-                        if (
-                            git_blob != entry["git_blob"]
-                            or _sha256(source_bytes) != entry["upstream_sha256"]
-                            or _sha256(expected_packaged) != entry["packaged_sha256"]
-                            or local_files.get(key) != expected_packaged
-                        ):
-                            mismatches.append(key)
+                for upstream_name, packaged_name in ALIASES.items():
+                    skill_directory = _open_directory_at(
+                        skills_directory.fd,
+                        packaged_name,
+                        upstream_name,
+                    )
+                    if skill_directory is None:
+                        mismatches.append(upstream_name)
+                        continue
+                    try:
+                        tree, tree_errors = _collect_regular_files(skill_directory, upstream_name)
+                        local_files.update(tree)
+                        mismatches.extend(tree_errors)
+                        if not _handle_is_current(skill_directory):
+                            mismatches.append(upstream_name)
+                        skill_key = f"{upstream_name}/SKILL.md"
+                        if skill_key in tree and _packaged_frontmatter_is_exact(tree[skill_key], packaged_name):
+                            packaged_names.append(packaged_name)
+                        else:
+                            mismatches.append(skill_key)
+                    finally:
+                        _close_handle(skill_directory)
+                if not _handle_is_current(skills_directory):
+                    mismatches.append("skills")
             finally:
-                if not _path_is_current(upstream_path):
-                    mismatches.append("upstream_root")
-                    source_status = "UNVERIFIABLE"
-                    source_reason = "upstream_root changed after initial validation"
-                upstream_path.close()
+                _close_handle(skills_directory)
 
-    if not _path_is_current(plugin_path):
-        mismatches.append("plugin_root")
-    plugin_path.close()
-    if source_status == "PINNED_GIT" and mismatches:
-        source_reason = "pinned Git source was available; snapshot comparison reported mismatches"
+        for key in sorted(set(local_files) ^ expected_keys):
+            mismatches.append(key)
+        for key in sorted(expected_keys & set(local_files)):
+            entry = lock_files[key]
+            assert isinstance(entry, dict)
+            if _sha256(local_files[key]) != entry["packaged_sha256"]:
+                mismatches.append(key)
 
-    return ReelBenchSnapshotReport(
-        revision=PINNED_REVISION,
-        packaged_names=sorted(packaged_names),
-        mismatches=sorted(set(mismatches)),
-        source_status=source_status,
-        source_reason=source_reason,
-    )
+        source_status = "PARTIAL"
+        source_reason = "upstream_root not provided; pinned Git provenance was not checked"
+        if upstream_root is not None:
+            upstream_path = _open_directory_path(Path(upstream_root), "upstream_root")
+            if upstream_path is None:
+                mismatches.append("upstream_root")
+                source_status = "UNVERIFIABLE"
+                source_reason = "upstream_root is missing, a symlink, or not a directory"
+            else:
+                try:
+                    source_files, git_errors = _git_snapshot_files(upstream_path.root)
+                    if git_errors:
+                        mismatches.extend(git_errors)
+                        source_status = "UNVERIFIABLE"
+                        source_reason = "pinned Git provenance could not be verified"
+                    elif source_files is not None:
+                        source_status = "PINNED_GIT"
+                        source_reason = "origin, HEAD, and the pinned Git tree are available"
+                    else:
+                        source_files, filesystem_errors = _filesystem_snapshot_files(upstream_path.root)
+                        mismatches.extend(filesystem_errors)
+                        source_status = "PARTIAL"
+                        source_reason = "source bytes were compared from a non-Git directory"
+                    if source_files is not None:
+                        for key in sorted(set(source_files) ^ expected_keys):
+                            mismatches.append(key)
+                        for key in sorted(expected_keys & set(source_files)):
+                            entry = lock_files[key]
+                            assert isinstance(entry, dict)
+                            git_blob, source_bytes = source_files[key]
+                            upstream_name, relative = key.split("/", 1)
+                            try:
+                                expected_packaged = (
+                                    _skill_alias_bytes(source_bytes, upstream_name, ALIASES[upstream_name])
+                                    if relative == "SKILL.md"
+                                    else source_bytes
+                                )
+                            except ValueError:
+                                mismatches.append(key)
+                                continue
+                            if (
+                                git_blob != entry["git_blob"]
+                                or _sha256(source_bytes) != entry["upstream_sha256"]
+                                or _sha256(expected_packaged) != entry["packaged_sha256"]
+                                or local_files.get(key) != expected_packaged
+                            ):
+                                mismatches.append(key)
+                    if not _path_is_current(upstream_path):
+                        mismatches.append("upstream_root")
+                        source_status = "UNVERIFIABLE"
+                        source_reason = "upstream_root changed after initial validation"
+                finally:
+                    upstream_path.close()
+
+        if not _path_is_current(plugin_path):
+            mismatches.append("plugin_root")
+        if source_status == "PINNED_GIT" and mismatches:
+            source_reason = "pinned Git source was available; snapshot comparison reported mismatches"
+
+        return ReelBenchSnapshotReport(
+            revision=PINNED_REVISION,
+            packaged_names=sorted(packaged_names),
+            mismatches=sorted(set(mismatches)),
+            source_status=source_status,
+            source_reason=source_reason,
+        )
+    finally:
+        plugin_path.close()
 
 
 def main(argv: list[str] | None = None) -> int:
