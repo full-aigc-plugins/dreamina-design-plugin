@@ -1,12 +1,21 @@
 {
   "name": "codex-dreamina-design",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Dreamina image and video design workflows with runtime CLI discovery and resumable operations.",
-  "author": {"name": "Full Stack Skills / PartMe.AI", "url": "https://github.com/partme-ai"},
+  "author": {
+    "name": "Full Stack Skills / PartMe.AI",
+    "url": "https://github.com/partme-ai"
+  },
   "homepage": "https://github.com/partme-ai/codex-dreamina-design-plugin",
   "repository": "https://github.com/partme-ai/codex-dreamina-design-plugin",
   "license": "Apache-2.0",
-  "keywords": ["dreamina", "design", "image-generation", "video-generation", "codex"],
+  "keywords": [
+    "dreamina",
+    "design",
+    "image-generation",
+    "video-generation",
+    "codex"
+  ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
@@ -15,7 +24,11 @@
     "longDescription": "Create and edit Dreamina images and videos through current CLI capabilities, explicit generation approval, stable submission identities, resumable queries, and verified downloads.",
     "developerName": "Full Stack Skills / PartMe.AI",
     "category": "Creativity",
-    "capabilities": ["Interactive", "Read", "Write"],
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
     "websiteURL": "https://github.com/partme-ai/codex-dreamina-design-plugin",
     "privacyPolicyURL": "https://github.com/partme-ai/codex-dreamina-design-plugin/blob/main/PRIVACY.md",
     "termsOfServiceURL": "https://github.com/partme-ai/codex-dreamina-design-plugin/blob/main/TERMS.md",

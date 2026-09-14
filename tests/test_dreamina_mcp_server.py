@@ -71,7 +71,7 @@ class McpConfigurationTests(unittest.TestCase):
 class McpStdioTests(unittest.TestCase):
     def test_initialize_preserves_released_server_version(self) -> None:
         response = run_mcp_initialize()
-        self.assertEqual(response["result"]["serverInfo"]["version"], "0.3.0")
+        self.assertEqual(response["result"]["serverInfo"]["version"], "0.4.0")
 
     def test_query_adapter_failure_is_marked_retryable(self) -> None:
         class BrokenTools:

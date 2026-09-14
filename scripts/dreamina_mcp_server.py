@@ -273,7 +273,7 @@ def _handle(message: Mapping[str, Any], tools: DreaminaMcpTools) -> dict | None:
     method = message.get("method")
     request_id = message.get("id")
     if method == "initialize":
-        return _response(request_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "dreamina-design", "version": "0.3.0"}})
+        return _response(request_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "dreamina-design", "version": "0.4.0"}})
     if method == "notifications/initialized":
         return None
     if method == "tools/list":
