@@ -108,32 +108,42 @@ class ReelBenchAdapterTests(unittest.TestCase):
             )
 
     def test_fixed_helper_keeps_pinned_workspace_for_real_node_child_after_path_swap(self) -> None:
-        node = next((Path(entry) / "node" for entry in os.environ["PATH"].split(os.pathsep) if (Path(entry) / "node").is_file()), None)
+        import json
+        import shutil
+        from scripts.reelbench_exec_helper import HELPER_CODE
+        node = shutil.which("node")
         if node is None:
             self.skipTest("node is unavailable")
-        workspace = Path(self.temp.name) / "workspace"; workspace.mkdir(mode=0o700)
-        (workspace / "source").mkdir(mode=0o700); (workspace / "source" / "digest").write_bytes(b"pinned-bytes")
-        bin_dir = workspace / "bin"; bin_dir.mkdir(mode=0o700)
-        probe = bin_dir / "ffprobe"
-        probe.write_text("#!/bin/sh\n/bin/cat \"$1\" > observed.bin\n", encoding="utf-8"); probe.chmod(0o500)
-        script = workspace / "probe.mjs"
-        script.write_text("import { execFileSync } from 'node:child_process'; execFileSync('ffprobe', ['source/digest']);\n", encoding="utf-8")
-        fd = os.open(workspace, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        moved = Path(self.temp.name) / "workspace-pinned"; os.rename(workspace, moved)
-        replacement = Path(self.temp.name) / "workspace"; replacement.mkdir(mode=0o700)
-        helper = Path(__file__).resolve().parents[1] / "scripts" / "reelbench_exec_helper.py"
+        workspace = Path(self.temp.name) / "workspace"
+        workspace.mkdir(mode=0o700)
+        (workspace / "source").mkdir(mode=0o700)
+        (workspace / "source/digest").write_bytes(b"pinned-bytes")
+        (workspace / "tools/bin").mkdir(parents=True, mode=0o700)
+        shutil.copyfile(node, workspace / "tools/node")
+        (workspace / "tools/node").chmod(0o500)
+        probe = workspace / "tools/bin/ffprobe"
+        probe.write_text('#!/bin/sh\n/bin/cat "$1" > observed.bin\n')
+        probe.chmod(0o500)
+        (workspace / "script").mkdir()
+        script = workspace / "script/video-shots.mjs"
+        script.write_text("import { execFileSync } from 'node:child_process'; execFileSync('ffprobe', ['source/digest']);\n")
+        manifest = {p.relative_to(workspace).as_posix(): {"size_bytes": p.stat().st_size,
+                    "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+                    for p in (workspace / "source/digest", workspace / "tools/node", probe, script)}
+        fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
+        moved = Path(self.temp.name) / "workspace-pinned"
+        workspace.rename(moved)
+        workspace.mkdir(mode=0o700)
         try:
             completed = subprocess.run(
-                [os.sys.executable, str(helper), str(fd), str(node), "probe.mjs"],
-                env={"PATH": str(moved / "bin"), "LANG": "C", "LC_ALL": "C"},
-                pass_fds=(fd,), capture_output=True, text=True, timeout=10,
-            )
+                ["/usr/bin/python3", "-I", "-c", HELPER_CODE, str(fd), json.dumps(manifest),
+                 "tools/node", "script/video-shots.mjs"],
+                env={"PATH": "tools/bin"}, pass_fds=(fd,), capture_output=True, text=True, timeout=10)
         finally:
-            try: os.close(fd)
-            except OSError: pass
+            os.close(fd)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual((moved / "observed.bin").read_bytes(), b"pinned-bytes")
-        self.assertFalse((replacement / "observed.bin").exists())
+        self.assertEqual(list(workspace.iterdir()), [])
 
 
 if __name__ == "__main__":

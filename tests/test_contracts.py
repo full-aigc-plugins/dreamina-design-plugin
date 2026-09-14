@@ -143,6 +143,12 @@ class ClosedSchemaTests(unittest.TestCase):
             "committed_at": "2026-09-15T00:00:01Z",
             "evidence_fingerprint": "7" * 64,
         }
+        receipt["parent_fingerprint"] = None
+        receipt["commands"] = [{"action": "seed", "argv": ["tools/node", "script/video-shots.mjs", "seed"],
+                                "returncode": 0, "tool_identities": receipt["tool_identities"]}]
+        receipt["consumed_artifacts"] = [{"version": "v001", "receipt_fingerprint": "8" * 64,
+            "path": "source/source.mp4", "workspace_path": "source/" + "2" * 64,
+            "sha256": "2" * 64, "size_bytes": 1}]
         validate_contract(receipt, "reelbench_evidence.schema.json")
         with self.assertRaises(ContractValidationError):
             validate_contract({**receipt, "unknown": True}, "reelbench_evidence.schema.json")

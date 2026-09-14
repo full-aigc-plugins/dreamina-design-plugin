@@ -17,7 +17,7 @@ def evidence(action: str = "validate") -> dict[str, object]:
         for name in REELBENCH_VALIDATE_GATES
     ] if action == "validate" else []
     receipt: dict[str, object] = {
-        "schema_version": "1.0", "version": "v001", "parent_version": None,
+        "schema_version": "1.0", "version": "v001", "parent_version": None, "parent_fingerprint": None,
         "project_id": "vp_" + "1" * 24, "source_receipt_version": "v001",
         "source_sha256": "2" * 64, "action": action,
         "upstream": {"source": "https://github.com/eternityspring/reelbench-skills.git", "revision": "18f2f63987337df0975a89973d38d50f3231ee31", "lock_fingerprint": "3" * 64},
@@ -26,6 +26,24 @@ def evidence(action: str = "validate") -> dict[str, object]:
         "artifacts": [{"path": "reelbench/v001/report.md", "size_bytes": 1, "mime_type": "text/markdown", "sha256": "6" * 64}],
         "created_at": "2026-09-15T00:00:00Z", "committed_at": "2026-09-15T00:00:01Z",
     }
+    arguments = {
+        "seed": ["source/" + "2" * 64, "--threshold", "0.30", "--min", "0.30", "--track", "output/track.json", "--title", "Reference"],
+        "validate": ["inputs/shots.json", "--track", "inputs/track.json", "--frames", "inputs/frames", "--lang", "en"],
+    }.get(action, [])
+    if action in {"seed", "evidence", "validate", "render"}:
+        template = receipt["tool_identities"][0]
+        receipt["tool_identities"] = [{**template, "kind": kind, "source_path": f"/trusted/{kind}"} for kind in ("node", "ffmpeg", "ffprobe")]
+    receipt["commands"] = [{"action": action, "argv": ["tools/node", "script/video-shots.mjs", action, *arguments],
+                            "returncode": 0, "tool_identities": receipt["tool_identities"]}]
+    if action == "seed":
+        receipt["artifacts"] = [{"path": f"reelbench/v001/{name}", "size_bytes": 1,
+                                "mime_type": "application/json", "sha256": "6" * 64} for name in ("shots.json", "track.json")]
+    if action == "validate":
+        receipt["artifacts"] = []
+    receipt["consumed_artifacts"] = [{"version": "v001", "receipt_fingerprint": "7" * 64,
+        "path": "source/source.mp4", "workspace_path": "source/" + "2" * 64,
+        "sha256": "2" * 64, "size_bytes": 1}]
+    receipt["argv_fingerprint"] = canonical_fingerprint({"commands": receipt["commands"]})
     receipt["evidence_fingerprint"] = canonical_fingerprint(receipt)
     return receipt
 
@@ -45,6 +63,32 @@ def comparison() -> dict[str, object]:
 
 
 class ReelBenchContractTests(unittest.TestCase):
+    def test_resigned_command_path_tampering_is_rejected(self):
+        receipt = evidence("seed")
+        receipt["commands"][0]["argv"][3] = "/etc/passwd"
+        receipt["argv_fingerprint"] = canonical_fingerprint({"commands": receipt["commands"]})
+        with self.assertRaises(ValueError):
+            self.validate_signed(receipt)
+
+    def test_resigned_consumed_source_path_must_match_digest(self):
+        receipt = evidence("seed")
+        receipt["consumed_artifacts"][0]["workspace_path"] = "source/wrong"
+        with self.assertRaises(ValueError):
+            self.validate_signed(receipt)
+
+    def test_seed_without_track_artifact_is_not_complete(self):
+        receipt = evidence("seed")
+        receipt["artifacts"] = [a for a in receipt["artifacts"] if not a["path"].endswith("track.json")]
+        with self.assertRaises(ValueError):
+            self.validate_signed(receipt)
+
+    def test_shots_receipt_missing_ffprobe_identity_is_rejected(self):
+        receipt = evidence("seed")
+        receipt["tool_identities"] = [item for item in receipt["tool_identities"] if item["kind"] != "ffprobe"]
+        receipt["commands"][0]["tool_identities"] = receipt["tool_identities"]
+        receipt["argv_fingerprint"] = canonical_fingerprint({"commands": receipt["commands"]})
+        with self.assertRaises(ValueError):
+            self.validate_signed(receipt)
     @staticmethod
     def sync_receipt():
         receipt = evidence("verify")

@@ -4,6 +4,7 @@ import hashlib
 import os
 import tempfile
 import unittest
+import fcntl
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +12,19 @@ from scripts.bounded_process import BoundedProcessResult
 from scripts.trusted_media_tools import TrustedExecutable
 from scripts.json_contracts import canonical_fingerprint
 from scripts.video_project_store import VersionCommitIndeterminateError, VideoProjectStore
+
+
+def fixture_path(value):
+    """Resolve a synthetic descriptor path only inside the non-process test double."""
+    value = str(value)
+    if not value.startswith("/dev/fd/"):
+        return Path(value)
+    number, tail = value[8:].split("/", 1)
+    if os.sys.platform == "darwin":
+        base = fcntl.fcntl(int(number), 50, bytes(1024)).split(b"\0", 1)[0].decode()
+    else:
+        base = os.readlink(f"/proc/self/fd/{number}")
+    return Path(base) / tail
 
 
 class ReelBenchProjectServiceTests(unittest.TestCase):
@@ -50,10 +64,11 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
         }
 
         def runner(argv, **_kwargs):
+            argv = [str(fixture_path(arg)) if arg.startswith("/dev/fd/") else arg for arg in argv]
             if argv[2] == "seed":
                 track = Path(argv[argv.index("--track") + 1])
                 track.write_text('{"hz": 5, "values": []}\n', encoding="utf-8")
-                return BoundedProcessResult(0, '{"meta":{"durationSeconds":8},"shots":[]}\n', "")
+                return BoundedProcessResult(0, '{"meta":{"durationSeconds":8},"shots":[{"id":"S01","start":0,"end":8,"seconds":8}]}\n', "")
             if argv[2] == "frames":
                 target = Path(argv[argv.index("--dir") + 1])
                 target.mkdir()
@@ -119,13 +134,14 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
 
     def test_same_bytes_source_replacement_during_execution_fails_closed(self) -> None:
         def runner(argv, **_kwargs):
+            argv = [str(fixture_path(arg)) if arg.startswith("/dev/fd/") else arg for arg in argv]
             track = Path(argv[argv.index("--track") + 1])
             track.write_text('{"hz": 5, "values": []}\n', encoding="utf-8")
             replacement = self.source.with_name("source-replacement.mp4")
             replacement.write_bytes(self.source.read_bytes())
             replacement.chmod(0o400)
             os.replace(replacement, self.source)
-            return BoundedProcessResult(0, '{"meta":{"durationSeconds":8},"shots":[]}\n', "")
+            return BoundedProcessResult(0, '{"meta":{"durationSeconds":8},"shots":[{"id":"S01","start":0,"end":8,"seconds":8}]}\n', "")
 
         self.service._adapter._runner = runner
         with self.assertRaisesRegex(ValueError, "identity changed"):
@@ -146,10 +162,12 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
             )
 
         with patch.object(self.store, "write_version", side_effect=publish_then_report_indeterminate):
-            recovered = self.service.run(
-                self.project_id, action="seed", expected_parent=None,
-                source_receipt_version=self.source_receipt["version"], threshold=0.3, title="Reference",
-            )
+            with self.assertRaises(VersionCommitIndeterminateError) as caught:
+                self.service.run(
+                    self.project_id, action="seed", expected_parent=None,
+                    source_receipt_version=self.source_receipt["version"], threshold=0.3, title="Reference",
+                )
+        recovered = self.service.reconcile_indeterminate(caught.exception)
 
         self.assertEqual(recovered["version"], "v001")
         self.assertEqual(recovered["evidence_fingerprint"], canonical_fingerprint({key: value for key, value in recovered.items() if key != "evidence_fingerprint"}))

@@ -162,9 +162,12 @@ class VideoProjectStore:
         schema_name: str | None = None,
         parent_version_field: str | None = None,
         version: str | None = None,
+        project_fd: int | None = None,
     ) -> dict[str, Any]:
         if FAMILY.fullmatch(family) is None:
             raise ValueError("invalid version family")
+        if project_fd is not None:
+            return self._write_version_at(project_fd, project_id, family, payload, schema_name, version)
         with self._exclusive_lock(project_id):
             self.get(project_id)
             family_root = self.project_root(project_id) / family
@@ -477,11 +480,45 @@ class VideoProjectStore:
                 pass
             try:
                 os.unlink(temporary)
-            except FileNotFoundError:
+            except OSError:
                 pass
             if published and indeterminate_error is not None:
                 raise indeterminate_error from exc
             raise
+
+    def _write_version_at(self, project_fd, project_id, family, payload, schema_name, version):
+        """Create-only publication below a caller-owned, exclusively locked project inode."""
+        from scripts import reelbench_workspace as ws
+        self._validate_project_id(project_id)
+        if version is None or re.fullmatch(r"v[0-9]{3,}", version) is None:
+            raise ValueError("descriptor publication requires an exact version")
+        document = dict(payload)
+        document["version"] = version
+        if schema_name is not None:
+            validate_contract(document, schema_name)
+        ws.mkdir(project_fd, family)
+        error = VersionCommitIndeterminateError(project_id=project_id, family=family, version=version,
+            path=self._root / project_id / family / f"{version}.json",
+            payload_fingerprint=canonical_fingerprint(document))
+        with ws.directory(project_fd, family) as fd:
+            temporary = f".{version}.json.{secrets.token_hex(12)}"
+            visible = False
+            try:
+                ws.write(fd, temporary, (json.dumps(document, sort_keys=True, ensure_ascii=False) + "\n").encode())
+                os.link(temporary, f"{version}.json", src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
+                visible = True
+                os.unlink(temporary, dir_fd=fd)
+                os.fsync(fd)
+                os.fsync(project_fd)
+            except BaseException as exc:
+                try:
+                    os.unlink(temporary, dir_fd=fd)
+                except OSError:
+                    pass
+                if visible:
+                    raise error from exc
+                raise
+        return document
 
 
 

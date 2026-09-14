@@ -6,17 +6,19 @@ import math
 import os
 import re
 import json
-import shutil
-import tempfile
 import hashlib
-import sys
+import stat
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 from scripts.bounded_process import BoundedProcessError, BoundedProcessResult, run_bounded
 from scripts.reelbench_contracts import REELBENCH_VALIDATE_GATES
 from scripts.trusted_media_tools import TrustedExecutable, TrustedMediaToolStore
+from scripts import reelbench_workspace as workspace
+from scripts.reelbench_exec_helper import HELPER_CODE
 
 
 MAX_STDOUT_BYTES = 8 * 1024 * 1024
@@ -82,6 +84,72 @@ class ReelBenchAdapter:
         self._tool_store = tool_store
         self._runner = runner
         self._ENGLISH_GATE_LABELS = _ENGLISH_GATE_LABELS
+        self._workspace = ContextVar("reelbench_workspace", default=None)
+
+    @contextmanager
+    def execution_workspace(self, descriptor: int, consumed=()):
+        """Stage tools once for the complete action; release every acquired handle."""
+        staged = {}
+        token = None
+        manifest = {item["workspace_path"]: {key: item[key] for key in ("size_bytes", "sha256")} for item in consumed}
+        try:
+            identities = self.tool_identities
+            if self._tool_store is not None:
+                staged = self._tool_store.load_required(("node", "ffmpeg", "ffprobe"))
+                identities = []
+                for kind in ("node", "ffmpeg", "ffprobe"):
+                    target = "tools/node" if kind == "node" else f"tools/bin/{kind}"
+                    tool = staged[kind]
+                    path = Path(tool.staged_path)
+                    parent = workspace.open_absolute(path.parent)
+                    try:
+                        record, info = workspace.copy(parent, path.name, descriptor, target,
+                            maximum=256 * 1024 * 1024, expected={"sha256": tool.sha256, "size_bytes": path.stat().st_size}, mode=0o500)
+                    finally:
+                        os.close(parent)
+                    identities.append({"kind": kind, "source_path": target, "owner_uid": info.st_uid,
+                        "mode": stat.S_IMODE(info.st_mode), "device": info.st_dev, "inode": info.st_ino, **record})
+                    manifest[target] = {**record, "inode": info.st_ino, "device": info.st_dev, "mode": stat.S_IMODE(info.st_mode)}
+                script_parent = workspace.open_absolute(self._shots_script.parent)
+                try:
+                    script = workspace.read(script_parent, self._shots_script.name)
+                finally:
+                    os.close(script_parent)
+                lock_parent = workspace.open_absolute(self._shots_script.parents[3] / "upstream")
+                try:
+                    lock = json.loads(workspace.read(lock_parent, "reelbench.lock.json"))
+                finally:
+                    os.close(lock_parent)
+                expected = lock["files"]["video-shots/scripts/video-shots.mjs"]["packaged_sha256"]
+                if hashlib.sha256(script).hexdigest() != expected:
+                    raise ReelBenchAdapterError("packaged ReelBench script differs from its lock")
+                workspace.write(descriptor, "script/video-shots.mjs", script, mode=0o400)
+                manifest["script/video-shots.mjs"] = {"size_bytes": len(script), "sha256": hashlib.sha256(script).hexdigest()}
+                for filename in ("report.css", "report.js"):
+                    asset_parent = workspace.open_absolute(self._shots_script.parent)
+                    try:
+                        content = workspace.read(asset_parent, filename)
+                    finally:
+                        os.close(asset_parent)
+                    expected = lock["files"][f"video-shots/scripts/{filename}"]["packaged_sha256"]
+                    if hashlib.sha256(content).hexdigest() != expected:
+                        raise ReelBenchAdapterError("packaged report asset differs from its lock")
+                    workspace.write(descriptor, "script/" + filename, content, mode=0o400)
+                    manifest["script/" + filename] = {"size_bytes": len(content), "sha256": expected}
+            token = self._workspace.set((descriptor, identities, manifest))
+            yield
+        finally:
+            if token is not None:
+                self._workspace.reset(token)
+            cleanup_error = None
+            for tool in staged.values():
+                try:
+                    self._tool_store.release(tool)
+                except BaseException as exc:
+                    if cleanup_error is None:
+                        cleanup_error = exc
+            if cleanup_error is not None:
+                raise cleanup_error
 
     @property
     def tool_identities(self) -> list[dict[str, str | int]]:
@@ -128,112 +196,43 @@ class ReelBenchAdapter:
         return self._run("render", [str(shots_path), f"--{mode}", "--track", str(track_path), "--frames", str(frames_path), "--video", str(source_path)])
 
     def _run(self, action: str, rest: Sequence[str], *, allow_failure: bool = False) -> ReelBenchAdapterResult:
-        staged_root: Path | None = None
-        staged_tools = None
-        workspace_fd: int | None = None
-        tools = self._tools
-        script = self._shots_script
-        environment = self._environment()
-        if self._tool_store is not None:
-            staged_tools = self._tool_store.load_required(("node", "ffmpeg", "ffprobe"))
-            staged_root = Path(tempfile.mkdtemp(prefix=".reelbench-exec-", dir=self._project_root))
-            os.chmod(staged_root, 0o700)
-            script = self._verify_and_stage_script(staged_root)
-            bin_dir = staged_root / "bin"
-            bin_dir.mkdir(mode=0o700)
-            for kind in ("ffmpeg", "ffprobe"):
-                os.link(staged_tools[kind].staged_path, bin_dir / kind, follow_symlinks=False)
-                os.chmod(bin_dir / kind, 0o500)
-            environment = {"PATH": str(bin_dir), "LANG": "C", "LC_ALL": "C"}
-            tools = {kind: self._identity_from_path(kind, Path(staged_tools[kind].source_path)) for kind in staged_tools}
-            source_index = 0 if action == "seed" else (rest.index("--video") + 1 if "--video" in rest else None)
-            if source_index is not None:
-                private_source = self._private_source_copy(Path(rest[source_index]), staged_root)
-                rest = [str(private_source) if index == source_index else value for index, value in enumerate(rest)]
-            workspace_fd = os.open(staged_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
-            helper = Path(__file__).with_name("reelbench_exec_helper.py")
-            argv = [sys.executable, str(helper), str(workspace_fd), str(staged_tools["node"].staged_path), str(script), action, *rest]
+        active = self._workspace.get()
+        if self._tool_store is not None and active is None:
+            raise ReelBenchAdapterError("production execution requires an owned action workspace")
+        identities = tuple(active[1] if active else self.tool_identities)
+        logical = ["tools/node", "script/video-shots.mjs", action, *rest]
+        if active and self._tool_store is not None:
+            descriptor = active[0]
+            manifest = dict(active[2])
+            # Bound every input available to the unchanged upstream script. Output
+            # files from earlier commands are included before the next command.
+            for root in ("output",):
+                try:
+                    manifest.update({f"{root}/{key}": value for key, value in workspace.inventory(descriptor, root,
+                        max_bytes=2 * 1024 * 1024 * 1024, file_maximum=2 * 1024 * 1024 * 1024).items()})
+                except FileNotFoundError:
+                    pass
+            argv = ["/usr/bin/python3", "-I", "-c", HELPER_CODE, str(descriptor),
+                    json.dumps(manifest, sort_keys=True), *logical]
+            environment = {"PATH": "tools/bin", "LANG": "C", "LC_ALL": "C"}
         else:
-            argv = [tools["node"].source_path, str(script), action, *rest]
+            argv = [self._tools["node"].source_path, str(self._shots_script), action, *rest]
+            environment = self._environment()
         try:
-            result = self._runner(
-                argv,
-                env=environment,
-                timeout_seconds=MAX_ACTION_SECONDS,
-                stdout_cap=MAX_STDOUT_BYTES,
-                stderr_cap=MAX_STDERR_BYTES,
-                pass_fds=(workspace_fd,) if workspace_fd is not None else (),
-            )
+            result = self._runner(argv, env=environment, timeout_seconds=MAX_ACTION_SECONDS,
+                stdout_cap=MAX_STDOUT_BYTES, stderr_cap=MAX_STDERR_BYTES,
+                pass_fds=(active[0],) if active and self._tool_store is not None else ())
         except (BoundedProcessError, OSError) as exc:
             raise ReelBenchAdapterError(f"{action} did not complete safely") from exc
-        finally:
-            if staged_tools is not None:
-                for tool in staged_tools.values():
-                    self._tool_store.release(tool)
-            if staged_root is not None:
-                shutil.rmtree(staged_root, ignore_errors=True)
-            if workspace_fd is not None:
-                os.close(workspace_fd)
         if not isinstance(result, BoundedProcessResult):
             raise ReelBenchAdapterError("bounded runner returned an invalid result")
         if result.returncode != 0 and not allow_failure:
             raise ReelBenchAdapterError(f"{action} failed with exit {result.returncode}")
-        identities = tuple({"kind": kind, **tools[kind].to_record()} for kind in sorted(tools))
-        return ReelBenchAdapterResult(action, list(argv), False, result.stdout, result.stderr, result.returncode, (), identities)
-
-    def _verify_and_stage_script(self, root: Path) -> Path:
-        lock = self._shots_script.parents[3] / "upstream" / "reelbench.lock.json"
-        try:
-            expected = json.loads(lock.read_text(encoding="utf-8"))["files"]["video-shots/scripts/video-shots.mjs"]["packaged_sha256"]
-            descriptor = os.open(self._shots_script, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        except (OSError, KeyError, json.JSONDecodeError) as exc:
-            raise ReelBenchAdapterError("pinned ReelBench script cannot be verified") from exc
-        try:
-            content = bytearray()
-            digest = hashlib.sha256()
-            while chunk := os.read(descriptor, 1024 * 1024):
-                content.extend(chunk); digest.update(chunk)
-            if digest.hexdigest() != expected:
-                raise ReelBenchAdapterError("packaged ReelBench script differs from its lock")
-        finally:
-            os.close(descriptor)
-        target = root / "video-shots.mjs"
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o500)
-        try:
-            os.write(fd, content); os.fsync(fd)
-        finally:
-            os.close(fd)
-        return target
-
-    @staticmethod
-    def _identity_from_path(kind: str, path: Path) -> TrustedExecutable:
-        info = path.stat()
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        return TrustedExecutable(kind, str(path), info.st_uid, info.st_mode & 0o777, info.st_dev, info.st_ino, info.st_size, digest)
-
-    @staticmethod
-    def _private_source_copy(source: Path, workspace: Path) -> Path:
-        """Publish source bytes under the pinned workspace; Node children use no caller pathname."""
-        descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        try:
-            digest = hashlib.sha256(); chunks: list[bytes] = []
-            while chunk := os.read(descriptor, 1024 * 1024):
-                digest.update(chunk); chunks.append(chunk)
-        finally:
-            os.close(descriptor)
-        source_root = workspace / "source"; source_root.mkdir(mode=0o700)
-        target = source_root / digest.hexdigest()
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o400)
-        try:
-            for chunk in chunks:
-                os.write(fd, chunk)
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        directory = os.open(source_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try: os.fsync(directory)
-        finally: os.close(directory)
-        return target
+        if active:
+            prefix = f"/dev/fd/{active[0]}/"
+            logical = [item.removeprefix(prefix) for item in logical]
+        return ReelBenchAdapterResult(action, logical if active else list(argv), False,
+                                      result.stdout, result.stderr, result.returncode, (), identities)
 
     def _environment(self) -> dict[str, str]:
         executable_dirs = [str(Path(self._tools[kind].source_path).parent) for kind in ("ffmpeg", "ffprobe")]
@@ -244,6 +243,15 @@ class ReelBenchAdapter:
 
     def _project_path(self, value: Path) -> Path:
         path = Path(value)
+        active = self._workspace.get()
+        if active:
+            prefix = Path(f"/dev/fd/{active[0]}")
+            try:
+                relative = path.relative_to(prefix)
+                workspace.components(str(relative))
+            except ValueError as exc:
+                raise ValueError("action path must belong to its pinned workspace") from exc
+            return relative if self._tool_store is not None else path
         if not path.is_absolute():
             raise ValueError("ReelBench paths must be absolute")
         candidate = path.resolve(strict=False)
