@@ -31,6 +31,16 @@ from pathlib import Path
 from typing import Iterable
 
 
+# Additive Skills owned by this plugin. They are reported separately and are
+# never counted toward the thirteen canonical upstream Skills.
+PLUGIN_OWNED_SKILLS: tuple[str, ...] = (
+    "codex-dreamina-design-use",
+    "codex-dreamina-video-production",
+    "codex-dreamina-shot-annotator",
+    "codex-dreamina-video-evaluator",
+)
+
+
 EXPECTED_SKILLS: tuple[str, ...] = (
     "dreamina-cli",
     "dreamina-cli-image2image",
@@ -77,6 +87,10 @@ class SkillSnapshotReport:
     parity_status: str = "NOT_RUN"
     parity_reason: str = ""
     parity_mismatches: list[str] = field(default_factory=list)
+    # Additive, plugin-owned Skills. They are deliberately NOT part of the
+    # upstream byte-parity count; the count stays exactly the canonical set.
+    upstream_skill_count: int = 0
+    plugin_owned_skill_names: list[str] = field(default_factory=list)
 
     def to_json(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=2, sort_keys=True)
@@ -161,12 +175,23 @@ class SnapshotVerifier:
             report.missing_skills = list(EXPECTED_SKILLS)
             return
         found: list[str] = []
+        plugin_owned: list[str] = []
         for entry in sorted(self._skills_root.iterdir()):
             if not entry.is_dir():
                 continue
             name = entry.name
             if name.startswith(FORBIDDEN_INSTALLABLE_PREFIXES):
                 report.forbidden_installable_identities.append(name)
+                continue
+            if name in PLUGIN_OWNED_SKILLS:
+                plugin_owned.append(name)
+                skill_md = entry / "SKILL.md"
+                if not skill_md.is_file():
+                    report.missing_skill_md.append(name)
+                    continue
+                parsed = _parse_frontmatter(skill_md.read_text(encoding="utf-8"))
+                if "name" not in parsed or "description" not in parsed:
+                    report.invalid_frontmatter.append(name)
                 continue
             if name in EXPECTED_SKILLS:
                 found.append(name)
@@ -180,6 +205,8 @@ class SnapshotVerifier:
         report.skill_names = found
         report.skill_count = len(found)
         report.missing_skills = [n for n in EXPECTED_SKILLS if n not in found]
+        report.upstream_skill_count = len(found)
+        report.plugin_owned_skill_names = sorted(plugin_owned)
 
     # ------------------------------------------------------------------
     # Parity

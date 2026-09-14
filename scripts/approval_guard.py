@@ -29,7 +29,7 @@ import fcntl
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from scripts.image_service import build_request_fingerprint
 
@@ -203,11 +203,12 @@ class ApprovalGuard:
         request: Mapping[str, Any],
         receipt: Mapping[str, Any],
         private_fields: Iterable[str] = (),
+        fingerprint_builder: Callable[[Mapping[str, Any]], str] = build_request_fingerprint,
     ) -> str:
         session_dir = self._session_dir(session_id)
         if not (session_dir / "session.json").is_file():
             raise SessionNotFoundError(session_id)
-        fingerprint = build_request_fingerprint(dict(request))
+        fingerprint = fingerprint_builder(dict(request))
         private_tokens = tuple(str(token).lower() for token in private_fields)
         scrubbed = _scrub(dict(receipt), private_tokens)
         # Preserve the caller-supplied request_fingerprint rather than
@@ -261,10 +262,11 @@ class ApprovalGuard:
         *,
         request: Mapping[str, Any],
         approval_id: str,
+        fingerprint_builder: Callable[[Mapping[str, Any]], str] = build_request_fingerprint,
     ) -> dict[str, Any]:
         """Atomically validate and consume a single-use approval."""
         session_dir = self._session_dir(session_id)
-        fingerprint = build_request_fingerprint(dict(request))
+        fingerprint = fingerprint_builder(dict(request))
         receipt_path = session_dir / "approvals" / f"{fingerprint}.json"
         with self._exclusive_lock():
             if not receipt_path.is_file():

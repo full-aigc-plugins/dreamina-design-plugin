@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from scripts.output_redactor import redact_value
+
 
 TERMINAL_STATES = {"succeeded", "failed", "cancelled"}
 SUBMIT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -44,6 +46,10 @@ class CancelNotSupportedError(OperationLedgerError):
     """The dreamina CLI reports that cancellation is not supported."""
 
 
+class DurableCommitIndeterminateError(OperationLedgerError):
+    """A replace became visible but parent-directory durability is uncertain."""
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -59,11 +65,16 @@ class OperationLedger:
         self._intents_dir = self._root / "submission_intents"
         self._intents_dir.mkdir(parents=True, exist_ok=True)
         self._index_path = self._root / "index.json"
+        self._batches_dir = self._root / "batches"
+        self._batches_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # Recording
     # ------------------------------------------------------------------
-    def begin_submission(self, *, session_id: str, mode: str, request_fingerprint: str) -> dict[str, Any]:
+    def begin_submission(
+        self, *, session_id: str, mode: str, request_fingerprint: str,
+        allowance_id: str | None = None, reservation_id: str | None = None,
+    ) -> dict[str, Any]:
         if re.fullmatch(r"[a-f0-9]{64}", request_fingerprint) is None:
             raise ValueError("request_fingerprint must be a SHA-256 hex digest")
         path = self._intents_dir / f"{request_fingerprint}.json"
@@ -81,15 +92,27 @@ class OperationLedger:
                 "created_at": _now_iso(),
                 "submit_id": None,
             }
+            if (allowance_id is None) != (reservation_id is None):
+                raise ValueError("allowance_id and reservation_id must be provided together")
+            if allowance_id is not None:
+                intent["allowance_id"] = allowance_id
+                intent["reservation_id"] = reservation_id
             self._atomic_write(path, intent)
             return intent
 
-    def complete_submission_intent(self, *, request_fingerprint: str, submit_id: str | None, error_code: str | None = None) -> dict[str, Any]:
+    def complete_submission_intent(
+        self, *, request_fingerprint: str, submit_id: str | None,
+        error_code: str | None = None, allowance_id: str | None = None,
+        reservation_id: str | None = None,
+    ) -> dict[str, Any]:
         path = self._intents_dir / f"{request_fingerprint}.json"
         with self._exclusive_lock():
             intent = self._load_json(path)
             if not intent:
                 raise OperationNotFoundError(request_fingerprint)
+            if allowance_id is not None or reservation_id is not None:
+                if (intent.get("allowance_id"), intent.get("reservation_id")) != (allowance_id, reservation_id):
+                    raise AmbiguousSubmissionError("submission result does not match its allowance reservation")
             intent["submit_id"] = submit_id
             intent["state"] = "accepted" if submit_id else "manual_review"
             intent["updated_at"] = _now_iso()
@@ -115,6 +138,8 @@ class OperationLedger:
         submit_id: str,
         mode: str,
         request_fingerprint: str,
+        allowance_id: str | None = None,
+        reservation_id: str | None = None,
     ) -> dict[str, Any]:
         with self._exclusive_lock():
             existing = self._read(submit_id)
@@ -134,6 +159,11 @@ class OperationLedger:
                 "required_action": "wait",
                 "history": [{"state": "queued", "at": _now_iso()}],
             }
+            if (allowance_id is None) != (reservation_id is None):
+                raise ValueError("allowance_id and reservation_id must be provided together")
+            if allowance_id is not None:
+                receipt["allowance_id"] = allowance_id
+                receipt["reservation_id"] = reservation_id
             self._atomic_write(self._path_for(submit_id), receipt)
             self._index_add(submit_id, session_id)
             return receipt
@@ -170,6 +200,22 @@ class OperationLedger:
             raise OperationNotFoundError(submit_id)
         return receipt
 
+    def save_batch(self, *, project_id: str, batch_version: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Atomically persist executor state before its next external side effect."""
+        if re.fullmatch(r"vp_[a-f0-9]{24}", project_id) is None or re.fullmatch(r"v[0-9]{3,}", batch_version) is None:
+            raise ValueError("invalid batch identity")
+        document = json.loads(json.dumps(redact_value(dict(payload))))
+        with self._exclusive_lock():
+            self._atomic_write(self._batches_dir / f"{project_id}-{batch_version}.json", document)
+        return document
+
+    def load_batch(self, *, project_id: str, batch_version: str) -> dict[str, Any] | None:
+        """Load durable executor state after a process restart."""
+        if re.fullmatch(r"vp_[a-f0-9]{24}", project_id) is None or re.fullmatch(r"v[0-9]{3,}", batch_version) is None:
+            raise ValueError("invalid batch identity")
+        value = self._load_json(self._batches_dir / f"{project_id}-{batch_version}.json")
+        return value if isinstance(value, dict) else None
+
     # ------------------------------------------------------------------
     # CLI-driven discovery and querying
     # ------------------------------------------------------------------
@@ -180,9 +226,14 @@ class OperationLedger:
     def query(self, *, submit_id: str, adapter: Any) -> dict[str, Any]:
         if self._read(submit_id) is None:
             raise OperationNotFoundError(submit_id)
-        result = adapter.run(["query_result", "--submit_id", submit_id])
-        payload = result.payload if isinstance(result.payload, Mapping) else {}
-        cli_state = str(payload.get("gen_status", "unknown")).lower()
+        from scripts.task_service import TaskService
+        try:
+            queried = TaskService(adapter).query(submit_id)
+            cli_state = str(queried["status"])
+        except (OSError, ValueError):
+            return self.update_state(submit_id=submit_id, state="unknown",
+                                     required_action="manual_review",
+                                     last_error_code="INVALID_QUERY_RESULT")
         state_map = {
             "querying": ("queued", "wait"),
             "success": ("succeeded", "download"),
@@ -262,6 +313,13 @@ class OperationLedger:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(tmp_path, path)
+            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            except OSError as exc:
+                raise DurableCommitIndeterminateError("replace visible; directory fsync failed") from exc
+            finally:
+                os.close(directory_fd)
         except Exception:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
@@ -293,6 +351,7 @@ class OperationLedger:
 __all__ = [
     "AmbiguousSubmissionError",
     "CancelNotSupportedError",
+    "DurableCommitIndeterminateError",
     "OperationLedger",
     "OperationNotFoundError",
     "TERMINAL_STATES",

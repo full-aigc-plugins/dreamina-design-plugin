@@ -19,16 +19,19 @@ Covers:
 from __future__ import annotations
 
 import copy
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.dreamina_adapter import DreaminaResult  # noqa: E402
 from scripts.approval_guard import ApprovalGuard  # noqa: E402
+from scripts.json_contracts import canonical_fingerprint  # noqa: E402
 
 
 class _TestReferencePolicy:
@@ -62,7 +65,7 @@ def synthetic_video_snapshot() -> dict:
     return {
         "cli_version": "1.4.18",
         "captured_at": "2026-09-12T00:00:00Z",
-        "modes": ["text2video", "image2video", "frames2video", "multimodal2video"],
+        "modes": ["text2video", "image2video", "frames2video", "multiframe2video", "multimodal2video"],
         "models": [
             {
                 "name": "seedance-2.5",
@@ -77,6 +80,7 @@ def synthetic_video_snapshot() -> dict:
         ],
         "resolutions": {"video": ["480P", "720P", "1080P"]},
         "ratios": ["16:9", "9:16", "1:1"],
+        "mode_limits": {"multiframe2video": {"min_references": 2, "max_references": 20, "request_duration_min_seconds": 2, "request_duration_max_seconds": 30, "transition_duration_min_seconds": 1, "transition_duration_max_seconds": 8}},
     }
 
 
@@ -108,6 +112,7 @@ def issue_approval(root: Path, request: dict, scope: dict):
             "approved_at": "2026-09-12T00:00:00Z",
             "approver": "test",
         },
+        fingerprint_builder=build_video_request_fingerprint,
     )
     return guard, session_id, approval_id
 
@@ -146,6 +151,56 @@ class VideoServiceModuleTests(unittest.TestCase):
     def test_module_exports_service(self) -> None:
         self.assertIsNotNone(VideoService)
 
+    def test_batch_allowance_reserves_exact_request_and_commits_submit_id(self) -> None:
+        request = {"mode": "text2video", "prompt": "p", "model": "seedance-test", "video_resolution": "720p", "duration_seconds": 4}
+        calls = []
+        class Allowance:
+            def reserve(self, allowance_id, **fields):
+                calls.append(("reserve", allowance_id, fields)); return {"reservation_id": "br_" + "1" * 32}
+            def commit(self, reservation_id, submit_id):
+                calls.append(("commit", reservation_id, submit_id)); return {"reservation_id": reservation_id, "state": "committed", "submit_id": submit_id}
+            def mark_ambiguous(self, *args, **kwargs): raise AssertionError("not ambiguous")
+        class Adapter:
+            def run(self, argv):
+                return DreaminaResult(0, {"submit_id": "submit-1"}, None, "submit-1", "")
+        with tempfile.TemporaryDirectory() as tmp:
+            result = VideoService({"modes": []}, Path(tmp)).submit_with_batch_allowance(
+                request, adapter=Adapter(), allowance=Allowance(), allowance_id="ba_" + "2" * 32,
+                shot_id="S01", attempt=1)
+        self.assertEqual(result["submit_id"], "submit-1")
+        self.assertEqual(calls[0][2]["request_fingerprint"], build_video_request_fingerprint(request))
+        self.assertEqual(calls[1][0], "commit")
+
+    def test_batch_commit_failure_raises_identity_carrying_error(self) -> None:
+        from scripts.video_service import BatchAllowanceCommitError
+        request = {"mode": "text2video", "prompt": "p", "model": "seedance-test", "video_resolution": "720p", "duration_seconds": 4}
+        class Allowance:
+            def reserve(self, *args, **kwargs): return {"reservation_id": "br_" + "1" * 32}
+            def commit(self, *args, **kwargs): raise RuntimeError("indeterminate")
+            def mark_ambiguous(self, *args, **kwargs): return {"state": "ambiguous"}
+        class Adapter:
+            def run(self, argv): return DreaminaResult(0, {}, None, "submit-1", "")
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(BatchAllowanceCommitError) as caught:
+            VideoService({"modes": []}, Path(tmp)).submit_with_batch_allowance(
+                request, adapter=Adapter(), allowance=Allowance(), allowance_id="ba_" + "2" * 32,
+                shot_id="S01", attempt=1)
+        self.assertEqual((caught.exception.submit_id, caught.exception.reservation_id), ("submit-1", "br_" + "1" * 32))
+
+    def test_preinvoke_intent_failure_does_not_claim_remote_ambiguity(self) -> None:
+        request = {"mode": "text2video", "prompt": "p", "model": "seedance-test", "video_resolution": "720p", "duration_seconds": 4}
+        calls = []
+        class Allowance:
+            def reserve(self, *args, **kwargs): return {"reservation_id": "br_" + "1" * 32}
+            def mark_ambiguous(self, *args, **kwargs): calls.append((args, kwargs))
+        class Adapter:
+            def run(self, argv): calls.append(argv); raise AssertionError("must not invoke")
+        with tempfile.TemporaryDirectory() as tmp:
+            service = VideoService({"modes": []}, Path(tmp))
+            service._operation_ledger.begin_submission(session_id="old", mode="text2video", request_fingerprint=build_video_request_fingerprint(request))
+            with self.assertRaises(Exception):
+                service.submit_with_batch_allowance(request, adapter=Adapter(), allowance=Allowance(), allowance_id="ba_" + "2" * 32, shot_id="S01", attempt=1)
+        self.assertEqual(calls, [])
+
 
 class FingerprintTests(unittest.TestCase):
     def test_fingerprint_is_stable(self) -> None:
@@ -156,6 +211,18 @@ class FingerprintTests(unittest.TestCase):
         a = {"mode": "text2video", "prompt": "p", "model": "seedance-2.5", "video_resolution": "720P", "ratio": "16:9", "duration_seconds": 8}
         b = dict(a, duration_seconds=10)
         self.assertNotEqual(build_video_request_fingerprint(a), build_video_request_fingerprint(b))
+
+    def test_fingerprint_matches_shared_canonical_contract_fingerprint(self) -> None:
+        from scripts.json_contracts import canonical_fingerprint
+        request = {"mode": "text2video", "prompt": "p", "model": "seedance-2.5", "video_resolution": "720P", "ratio": "16:9", "duration_seconds": 8}
+        self.assertEqual(build_video_request_fingerprint(request), canonical_fingerprint(request))
+
+    def test_unicode_fingerprint_preserves_legacy_direct_approval_encoding(self) -> None:
+        request = {"mode": "text2video", "prompt": "晨雾中的蓝色工作室", "model": "seedance-2.5", "video_resolution": "720P", "ratio": "16:9", "duration_seconds": 4}
+        self.assertEqual(build_video_request_fingerprint(request), "f12e3b94d504052c1448f9faf982a393129e73bcfcccc85a834667d48628fb86")
+        with tempfile.TemporaryDirectory() as tmp:
+            guard, session_id, approval_id = issue_approval(Path(tmp), request, {})
+            guard.consume_approval(session_id, request=request, approval_id=approval_id, fingerprint_builder=build_video_request_fingerprint)
 
 
 class TextToVideoTests(unittest.TestCase):
@@ -269,6 +336,16 @@ class ImageToVideoTests(unittest.TestCase):
         )
         self.assertEqual(len(req["references"]), 1)
         self.assertEqual(req["references"][0]["role"], "subject")
+
+    def test_image2video_accepts_one_validated_style_reference(self) -> None:
+        req = self.service.build_request(
+            mode="image2video", prompt="x", model="seedance-2.5",
+            video_resolution="720P", ratio="16:9",
+            references=[{"path": "/style.png", "role": "style", "sha256": "a" * 64}],
+        )
+        self.assertEqual(req["references"], [
+            {"path": "/style.png", "role": "style", "sha256": "a" * 64}
+        ])
 
     def test_image2video_rejects_extra_reference_before_subject(self) -> None:
         with self.assertRaises(InvalidReferenceError):
@@ -601,8 +678,85 @@ class SubmitSemanticsTests(unittest.TestCase):
         self.assertIn("4", adapter.calls[0])
         self.assertEqual(result["submit_id"], "vsub-2")
 
+    def test_direct_submit_preserves_adapter_exception_after_legacy_bookkeeping(self) -> None:
+        req = self.service.build_request(
+            mode="text2video",
+            prompt="x",
+            model="seedance-2.5",
+            video_resolution="720P",
+            ratio="16:9",
+        )
+        fingerprint = build_video_request_fingerprint(req)
+        approval = {
+            "request_fingerprint": fingerprint,
+            "acknowledged_cost": "credits",
+            "acknowledged_scope": {
+                "model": "seedance-2.5",
+                "video_resolution": "720P",
+                "ratio": "16:9",
+                "duration_seconds": 4,
+            },
+            "approved_at": "2026-09-12T00:00:00Z",
+            "approver": "test",
+        }
+        self.service.record_web_prerequisite_acknowledgement()
+        approvals_root = Path(self.tmp.name) / "approvals"
+        guard, session_id, approval_id = issue_approval(approvals_root, req, {})
+
+        class SentinelAdapterError(RuntimeError):
+            pass
+
+        sentinel = SentinelAdapterError("legacy adapter failure")
+
+        class _FailingAdapter:
+            def run(self, args):
+                raise sentinel
+
+        with patch.object(guard, "consume_approval", wraps=guard.consume_approval) as consume:
+            try:
+                self.service.submit(
+                    req,
+                    adapter=_FailingAdapter(),
+                    approval_guard=guard,
+                    session_id=session_id,
+                    approval_id=approval_id,
+                    web_prerequisite_cleared=False,
+                )
+            except Exception as caught:
+                self.assertIs(caught, sentinel)
+            else:
+                self.fail("direct submit must re-raise the adapter exception")
+            self.assertEqual(consume.call_count, 1)
+
+        receipt_path = approvals_root / "sessions" / session_id / "approvals" / f"{fingerprint}.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        self.assertIsNotNone(receipt["consumed_at"])
+        intent_path = Path(self.tmp.name) / "ledger" / "submission_intents" / f"{fingerprint}.json"
+        intent = json.loads(intent_path.read_text(encoding="utf-8"))
+        self.assertEqual(intent["state"], "manual_review")
+        self.assertEqual(intent["last_error_code"], "SentinelAdapterError")
+        self.assertIsNone(intent["submit_id"])
+        self.assertNotIn("allowance_id", intent)
+        self.assertNotIn("reservation_id", intent)
+
 
 class MultiFrameVideoTests(unittest.TestCase):
+    def test_multiframe_transition_duration_rejects_bool_and_non_integer(self) -> None:
+        snapshot = synthetic_video_snapshot()
+        with tempfile.TemporaryDirectory() as tmp:
+            service = VideoService(snapshot=snapshot, ledger_dir=Path(tmp), reference_policy=_TestReferencePolicy())
+            for value in (True, 1.5, "2"):
+                with self.subTest(value=value), self.assertRaisesRegex(Exception, "integer"):
+                    service.build_request(mode="multiframe2video", prompt="story", model=None, video_resolution="720P", duration_seconds=3, references=[{"path":"/a.png","role":"frame"},{"path":"/b.png","role":"frame"}], transitions=[{"prompt":"pan","duration_seconds":value}])
+
+    def test_multiframe_requires_live_mode_limits(self) -> None:
+        snapshot = synthetic_video_snapshot()
+        del snapshot["mode_limits"]
+        with tempfile.TemporaryDirectory() as tmp:
+            service = VideoService(snapshot=snapshot, ledger_dir=Path(tmp), reference_policy=_TestReferencePolicy())
+            with self.assertRaisesRegex(UnsupportedCapabilityError, "mode limits"):
+                service.build_request(mode="multiframe2video", prompt="story", model=None, video_resolution="720P", duration_seconds=3, references=[{"path":"/a.png","role":"frame"},{"path":"/b.png","role":"frame"}])
+
     def test_multiframe_argv_preserves_order_and_transitions(self) -> None:
         argv = VideoService._request_to_argv({"mode":"multiframe2video","prompt":"story","video_resolution":"720p","duration_seconds":3,"references":[{"path":"/a.png","role":"frame"},{"path":"/b.png","role":"frame"}],"transitions":[{"prompt":"pan","duration_seconds":3}]})
         self.assertEqual(argv, ["multiframe2video","--prompt","story","--video_resolution","720p","--duration","3","--images","/a.png,/b.png","--transition-prompt","pan","--transition-duration","3"])

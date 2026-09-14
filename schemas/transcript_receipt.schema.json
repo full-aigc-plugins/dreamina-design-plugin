@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/transcript_receipt.schema.json",
+  "title": "Dreamina Versioned Local Transcript Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "version", "project_id", "status", "provider", "model", "executable", "source_sha256", "language", "segments", "transcript_fingerprint"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "project_id": {"type": "string", "pattern": "^vp_[a-f0-9]{24}$"},
+    "status": {"type": "string", "const": "complete"},
+    "provider": {"type": "string", "const": "whisper"},
+    "model": {"$ref": "#/$defs/fileIdentity"},
+    "executable": {"type": "object", "additionalProperties": false, "required": ["kind", "path", "sha256"], "properties": {"kind": {"const": "whisper"}, "path": {"type": "string", "pattern": "^/"}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
+    "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "language": {"type": "string", "pattern": "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$"},
+    "segments": {"type": "array", "maxItems": 10000, "items": {"$ref": "#/$defs/segment"}},
+    "transcript_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  },
+  "$defs": {
+    "fileIdentity": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {"path": {"type": "string", "pattern": "^/"}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
+    "segment": {"type": "object", "additionalProperties": false, "required": ["start", "end", "language", "text", "avg_logprob", "no_speech_probability", "requires_review", "provider", "model", "artifact_sha256"], "properties": {"start": {"type": "number", "minimum": 0, "maximum": 21600}, "end": {"type": "number", "exclusiveMinimum": 0, "maximum": 21600}, "language": {"type": "string", "pattern": "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$"}, "text": {"type": "string", "minLength": 1, "maxLength": 500}, "avg_logprob": {"type": "number", "minimum": -20, "maximum": 0}, "no_speech_probability": {"type": "number", "minimum": 0, "maximum": 1}, "requires_review": {"type": "boolean"}, "provider": {"const": "whisper"}, "model": {"type": "string", "pattern": "^/"}, "artifact_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}
+  }
+}

@@ -24,7 +24,7 @@
       "type": "array",
       "items": {
         "type": "string",
-        "enum": ["text2image", "image2image", "text2video", "image2video", "frames2video", "multimodal2video"]
+        "enum": ["text2image", "image2image", "text2video", "image2video", "frames2video", "multiframe2video", "multimodal2video"]
       },
       "minItems": 1,
       "uniqueItems": true
@@ -81,6 +81,35 @@
       "properties": {
         "min_seconds": {"type": "integer", "minimum": 1},
         "max_seconds": {"type": "integer", "minimum": 1}
+      }
+    },
+    "mode_limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "multiframe2video": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min_references", "max_references", "request_duration_min_seconds", "request_duration_max_seconds", "transition_duration_min_seconds", "transition_duration_max_seconds"],
+          "properties": {
+            "min_references": {"type": "integer", "minimum": 1},
+            "max_references": {"type": "integer", "minimum": 1},
+            "request_duration_min_seconds": {"type": "integer", "minimum": 1},
+            "request_duration_max_seconds": {"type": "integer", "minimum": 1},
+            "transition_duration_min_seconds": {"type": "integer", "minimum": 1},
+            "transition_duration_max_seconds": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
+    "pricing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["credit_ceiling_per_attempt", "source", "captured_at"],
+      "properties": {
+        "credit_ceiling_per_attempt": {"type": "integer", "minimum": 1},
+        "source": {"type": "string", "minLength": 1},
+        "captured_at": {"type": "string", "format": "date-time"}
       }
     }
   }

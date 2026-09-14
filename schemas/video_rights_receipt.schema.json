@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/video_rights_receipt.schema.json",
+  "title": "Dreamina Video Rights Assertion Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "version", "receipt_id", "project_id", "source_sha256", "creative_mode", "design_fingerprint", "declarant", "rights_basis", "evidence", "allowed_media", "allowed_reuse", "purpose", "audience", "territory", "expires_at", "asserted_at", "native_confirmation", "disclaimer"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "receipt_id": {"type": "string", "pattern": "^rr_[a-f0-9]{24}$"},
+    "project_id": {"type": "string", "pattern": "^vp_[a-f0-9]{24}$"},
+    "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "creative_mode": {"type": "string", "const": "authorized_replication"},
+    "design_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "declarant": {"type": "string", "minLength": 1, "maxLength": 300},
+    "rights_basis": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "evidence": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["reference", "sha256"], "properties": {"reference": {"type": "string", "minLength": 1, "maxLength": 1000}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}},
+    "allowed_media": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "enum": ["video", "image", "audio", "text"]}},
+    "allowed_reuse": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "enum": ["timing", "shot_sizes", "camera_moves", "rhythm", "transitions", "audio_beats", "likeness", "voice", "dialogue", "music", "brand", "artwork", "distinctive_props", "effects", "ambience"]}},
+    "purpose": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "audience": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "territory": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "expires_at": {"type": "string", "format": "date-time", "minLength": 1},
+    "asserted_at": {"type": "string", "format": "date-time", "minLength": 1},
+    "native_confirmation": {"type": "string", "const": "native-video-rights-confirmed"},
+    "disclaimer": {"type": "string", "const": "User-supplied assertion recorded as engineering authorization evidence; not ownership verification or legal advice."}
+  }
+}

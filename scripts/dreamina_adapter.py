@@ -51,6 +51,13 @@ CAPABILITY_MODES = (
 class DreaminaAdapterError(RuntimeError):
     """Base class for all adapter-level errors."""
 
+    def __init__(self, message: str, *, invocation_started: bool = False,
+                 outcome_ambiguous: bool = False, submit_id: str | None = None) -> None:
+        self.invocation_started = invocation_started
+        self.outcome_ambiguous = outcome_ambiguous
+        self.submit_id = submit_id
+        super().__init__(message)
+
 
 class CLINotFoundError(DreaminaAdapterError):
     """The configured `dreamina` binary could not be located or executed."""
@@ -205,25 +212,25 @@ class DreaminaAdapter:
 
         stdout_bytes_size = len(stdout_text.encode("utf-8"))
         if stdout_bytes_size > self.max_output_bytes:
-            raise InvalidJSONError(
-                f"dreamina CLI output exceeded {self.max_output_bytes} bytes"
-            )
+            raise InvalidJSONError(f"dreamina CLI output exceeded {self.max_output_bytes} bytes",
+                                   invocation_started=True, outcome_ambiguous=True)
 
         stderr_lower = stderr_text.lower()
         if "upgrade required" in stderr_lower:
-            raise UpgradeRequiredError(stderr_text.strip() or "upgrade required")
+            raise UpgradeRequiredError(stderr_text.strip() or "upgrade required",
+                                       invocation_started=True, outcome_ambiguous=False)
         if returncode != 0:
             if (
                 "not authenticated" in stderr_lower
                 or "permission denied" in stderr_lower
                 or "unauthorized" in stderr_lower
             ):
-                raise PermissionDeniedError(stderr_text.strip() or "permission denied")
+                raise PermissionDeniedError(stderr_text.strip() or "permission denied",
+                                            invocation_started=True, outcome_ambiguous=False)
             payload = _safe_parse_json(stdout_text)
             if payload is None:
-                raise DreaminaAdapterError(
-                    f"dreamina CLI failed (exit {returncode}): {stderr_text.strip()}"
-                )
+                raise DreaminaAdapterError(f"dreamina CLI failed (exit {returncode}): {stderr_text.strip()}",
+                                           invocation_started=True, outcome_ambiguous=False)
             return DreaminaResult(
                 exit_code=returncode,
                 payload=payload,
@@ -234,7 +241,8 @@ class DreaminaAdapter:
 
         payload = _safe_parse_json(stdout_text)
         if payload is None:
-            raise InvalidJSONError("dreamina CLI did not emit JSON on stdout")
+            raise InvalidJSONError("dreamina CLI did not emit JSON on stdout",
+                                   invocation_started=True, outcome_ambiguous=True)
         submit_id = None
         if isinstance(payload, Mapping):
             raw = payload.get("submit_id")
@@ -269,20 +277,37 @@ class DreaminaAdapter:
             env=self.env,
             start_new_session=True,
         )
+        try:
+            return self._communicate_bounded(process)
+        except DreaminaAdapterError:
+            raise
+        except (OSError, subprocess.SubprocessError) as exc:
+            if process.poll() is None:
+                try: self._terminate_process_group(process)
+                except (OSError, subprocess.SubprocessError): pass
+            for stream in (process.stdout, process.stderr):
+                if stream is not None and not stream.closed:
+                    stream.close()
+            raise DreaminaAdapterError(
+                "dreamina CLI failed after process start",
+                invocation_started=True, outcome_ambiguous=True) from exc
+
+    def _communicate_bounded(self, process: subprocess.Popen) -> tuple[int, str, str]:
+        """Read one already-started process; every failure is post-spawn."""
         selector = selectors.DefaultSelector()
         buffers = {"stdout": bytearray(), "stderr": bytearray()}
-        assert process.stdout is not None and process.stderr is not None
-        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
-        deadline = time.monotonic() + self.timeout_seconds
         try:
+            assert process.stdout is not None and process.stderr is not None
+            selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+            selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+            deadline = time.monotonic() + self.timeout_seconds
             while selector.get_map():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     self._terminate_process_group(process)
                     raise TimeoutError(
-                        f"dreamina CLI timed out after {self.timeout_seconds}s; operation NOT resubmitted"
-                    )
+                        f"dreamina CLI timed out after {self.timeout_seconds}s; operation NOT resubmitted",
+                        invocation_started=True, outcome_ambiguous=True)
                 for key, _ in selector.select(timeout=min(remaining, 0.1)):
                     chunk = os.read(key.fileobj.fileno(), 65536)
                     if not chunk:
@@ -293,15 +318,17 @@ class DreaminaAdapter:
                     if len(buffer) > self.max_output_bytes:
                         self._terminate_process_group(process)
                         raise InvalidJSONError(
-                            f"dreamina CLI {key.data} exceeded {self.max_output_bytes} bytes"
-                        )
+                            f"dreamina CLI {key.data} exceeded {self.max_output_bytes} bytes",
+                            invocation_started=True, outcome_ambiguous=True)
             returncode = process.wait(timeout=max(0.1, deadline - time.monotonic()))
         finally:
             selector.close()
             if process.poll() is None:
                 self._terminate_process_group(process)
-            process.stdout.close()
-            process.stderr.close()
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
         return (
             returncode,
             buffers["stdout"].decode("utf-8", errors="replace"),
@@ -366,7 +393,7 @@ class DreaminaAdapter:
             modes = schema_payload.get("modes")
             if isinstance(modes, list):
                 snapshot["modes"] = modes
-            for key in ("models", "resolutions", "ratios", "durations"):
+            for key in ("models", "resolutions", "ratios", "durations", "mode_limits", "pricing"):
                 if key in schema_payload:
                     snapshot[key] = schema_payload[key]
         return snapshot
@@ -397,6 +424,7 @@ def _parse_command_help(command_help: Mapping[str, str]) -> dict:
     resolutions = {"image": set(), "video": set()}
     ratios: set[str] = set()
     duration_bounds: list[int] = []
+    mode_limits: dict[str, dict[str, int]] = {}
     for mode, help_text in command_help.items():
         model_match = re.search(
             r"(?m)(?:^- model_version(?: values)?:|--model_version\s+\w+\s+supported values:|flag values:)\s*([^\n)]+)",
@@ -427,6 +455,18 @@ def _parse_command_help(command_help: Mapping[str, str]) -> dict:
             duration_bounds.extend((int(lower), int(upper)))
         count_match = re.search(r"generate_num:\s*(\d+)-(\d+)", help_text)
         reference_count_match = re.search(r"Upload\s+(\d+)\s+to\s+(\d+)\s+local images", help_text)
+        if mode == "multiframe2video" and reference_count_match:
+            transition_bounds = re.search(r"transition duration\s+(\d+)-(\d+)s", help_text)
+            request_bounds = re.search(r"request duration\s+(\d+)-(\d+)s", help_text)
+            if transition_bounds and request_bounds:
+                mode_limits[mode] = {
+                    "min_references": int(reference_count_match.group(1)),
+                    "max_references": int(reference_count_match.group(2)),
+                    "request_duration_min_seconds": int(request_bounds.group(1)),
+                    "request_duration_max_seconds": int(request_bounds.group(2)),
+                    "transition_duration_min_seconds": int(transition_bounds.group(1)),
+                    "transition_duration_max_seconds": int(transition_bounds.group(2)),
+                }
         for entry in models.values():
             if mode not in entry["modes"]:
                 continue
@@ -499,6 +539,8 @@ def _parse_command_help(command_help: Mapping[str, str]) -> dict:
             "min_seconds": min(duration_bounds),
             "max_seconds": max(duration_bounds),
         }
+    if mode_limits:
+        result["mode_limits"] = mode_limits
     return result
 
 

@@ -7,11 +7,12 @@ from collections.abc import Mapping
 
 
 REDACTED = "[REDACTED]"
-SENSITIVE_KEY = re.compile(r"(?:token|cookie|authorization|device_code|user_code|secret|password)", re.I)
+SENSITIVE_KEY = re.compile(r"(?:token|cookie|authorization|device_code|user_code|secret|password|api[_-]?key|private[_-]?key|signed[_-]?url)", re.I)
 TEXT_PATTERNS = (
     re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+"),
     re.compile(r"(?i)((?:access_token|refresh_token|device_code|user_code|cookie|secret|password)\s*[:=]\s*)[^\s,;]+"),
 )
+SIGNED_URL_PATTERN = re.compile(r"(?i)https?://[^\s]+[?&](?:token|key|signature|sig|expires)=[^\s,;]+")
 
 
 def redact_value(value: object) -> object:
@@ -28,6 +29,7 @@ def redact_value(value: object) -> object:
 
 def redact_text(text: str, *, max_bytes: int) -> str:
     result = str(text)
+    result = SIGNED_URL_PATTERN.sub(REDACTED, result)
     for pattern in TEXT_PATTERNS:
         result = pattern.sub(lambda match: match.group(1) + REDACTED, result)
     encoded = result.encode("utf-8")

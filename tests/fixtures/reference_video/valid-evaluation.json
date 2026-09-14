@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "evaluation_id": "eval_fixture_1",
+  "created_at": "2026-09-14T02:00:00Z",
+  "binding": {"project_id": "vp_111111111111111111111111", "batch_version": "v001", "shot_id": "S01", "attempt": 1, "submit_id": "submit_1", "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "design_version": "v001", "design_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "quote_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "allowance_id": "ba_dddddddddddddddddddddddddddddddd"},
+  "artifact_evidence": {"path": "/verified/artifact.mp4", "mime_type": "video/mp4", "size_bytes": 32, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "provenance": "externally-queried", "probe": {"width": 1280, "height": 720, "codec": "h264", "duration_seconds": 4}, "frames": {"readable": true, "start_anchor": {"requested_at_seconds": 0, "sha256": "7777777777777777777777777777777777777777777777777777777777777777", "size_bytes": 16}, "end_anchor": {"requested_at_seconds": 3.95, "sha256": "8888888888888888888888888888888888888888888888888888888888888888", "size_bytes": 16}}},
+  "measured_gates": {
+    "artifact_integrity": {"status": "passed", "evidence": "trusted digest verification"}, "dimensions": {"status": "passed", "evidence": "trusted probe dimensions"}, "codec": {"status": "passed", "evidence": "trusted probe codec"}, "duration": {"status": "passed", "evidence": "trusted probe duration"}, "aspect_ratio": {"status": "passed", "evidence": "trusted probe aspect ratio"}, "frame_readability": {"status": "passed", "evidence": "trusted decoded frames"}, "start_anchor": {"status": "passed", "evidence": "trusted start frame"}, "end_anchor": {"status": "passed", "evidence": "trusted end frame"}
+  },
+  "semantic_gates": {
+    "intent": {"status": "passed", "evidence": "reviewed intent"}, "composition": {"status": "passed", "evidence": "reviewed composition"}, "identity_continuity": {"status": "passed", "evidence": "reviewed identity"}, "camera_behavior": {"status": "passed", "evidence": "reviewed camera"}, "rhythm_function": {"status": "passed", "evidence": "reviewed rhythm"}, "temporal_defects": {"status": "passed", "evidence": "reviewed temporal stability"}, "source_copying": {"status": "passed", "evidence": "reviewed copying"}, "subtitle_safe_area": {"status": "passed", "evidence": "reviewed subtitle area"}
+  },
+  "failed_gates": [],
+  "decision": {"action": "accepted"},
+  "semantic_evaluator": {"provider_claim": "codex", "model_claim": "test-model", "claimed_evaluated_at": "2026-09-14T02:00:00Z", "trust_level": "untrusted"},
+  "evaluation_fingerprint": "7596c9ff41360700cdd35fba1a197981bf16f6e857ff5a1bec63b2f45eecef02"
+}

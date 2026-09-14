@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "machine_fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "shots": [
+    {
+      "id": "S01",
+      "shot_size": "wide",
+      "category": "establishing",
+      "category_evidence": "The wide room view establishes the location.",
+      "camera": "static",
+      "frame_description": "A presenter stands beside a bright display in a quiet studio.",
+      "rhythm_role": "hook",
+      "rhythm_evidence": "Opening visual introduces the presenter and setting.",
+      "subjects": [{"id": "cast_01", "name": "Presenter"}],
+      "on_screen_text": [],
+      "dialogue": [],
+      "narration": [],
+      "music": ["soft ambient bed"],
+      "sound": [],
+      "confidence": 0.92,
+      "review_note": ""
+    },
+    {
+      "id": "S02",
+      "shot_size": "close_up",
+      "category": "detail",
+      "category_evidence": "The close view isolates the illuminated control panel.",
+      "camera": "static",
+      "frame_description": "A glowing control panel fills the frame with crisp blue indicators.",
+      "rhythm_role": "payoff",
+      "rhythm_evidence": "The detail reveals the product response promised by the opening.",
+      "subjects": [],
+      "on_screen_text": ["READY"],
+      "dialogue": [],
+      "narration": [],
+      "music": ["soft ambient bed"],
+      "sound": ["confirmation chime"],
+      "confidence": 0.88,
+      "review_note": ""
+    }
+  ]
+}

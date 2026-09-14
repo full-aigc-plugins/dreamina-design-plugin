@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -62,10 +63,43 @@ class VideoWebPrerequisiteRequired(VideoServiceError):
     """The first-video web-console prerequisite has not been acknowledged."""
 
 
+class BatchAllowanceCommitError(VideoServiceError):
+    """Provider accepted the request but allowance terminalization is uncertain."""
+
+    def __init__(self, *, submit_id: str, reservation_id: str,
+                 request_fingerprint: str, shot_id: str, attempt: int) -> None:
+        self.submit_id = submit_id
+        self.reservation_id = reservation_id
+        self.request_fingerprint = request_fingerprint
+        self.shot_id = shot_id
+        self.attempt = attempt
+        super().__init__("allowance commit is indeterminate; query the known submit_id")
+
+
+class PostInvokePersistenceError(VideoServiceError):
+    """The provider boundary was crossed and local durable completion failed."""
+
+    def __init__(self, *, submit_id: str | None, result_bytes: bytes,
+                 allowance_id: str | None, reservation_id: str | None,
+                 request_fingerprint: str, cause: Exception) -> None:
+        self.submit_id = submit_id
+        self.result_bytes = bytes(result_bytes)
+        self.evidence_sha256 = hashlib.sha256(self.result_bytes).hexdigest()
+        self.evidence_length = len(self.result_bytes)
+        self.exception_type = _safe_exception_type(cause)
+        self.classification = "known_submit_id" if submit_id else "unknown_remote_outcome"
+        self.allowance_id = allowance_id
+        self.reservation_id = reservation_id
+        self.request_fingerprint = request_fingerprint
+        self.remote_invoked = True
+        self.cause = cause
+        super().__init__("provider invocation crossed; reconcile known identity or require manual review")
+
+
 REFERENCE_LIMIT = 8
 VIDEO_REFERENCE_ROLES = {"style", "subject", "frame", "audio", "reference"}
 MODE_REQUIRED_REFERENCES = {
-    "image2video": {"subject"},
+    "image2video": {"subject", "style"},
     "frames2video": {"frame"},
     "multiframe2video": {"frame"},
 }
@@ -110,26 +144,36 @@ def build_video_request_fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical_bytes(payload)).hexdigest()
 
 
+def _safe_exception_type(exc: Exception) -> str:
+    name = type(exc).__name__
+    if (len(name) > 64 or re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", name) is None
+            or re.search(r"token|secret|password|cookie|authorization", name, re.I)):
+        return "ADAPTER_ERROR"
+    return name
+
+
 class VideoService:
     """Build and submit Dreamina video requests against a capability snapshot."""
 
-    def __init__(self, snapshot: Mapping[str, Any], ledger_dir: Path, reference_policy: Any | None = None) -> None:
+    def __init__(self, snapshot: Mapping[str, Any], ledger_dir: Path | None, reference_policy: Any | None = None) -> None:
         if "modes" not in snapshot:
             raise UnsupportedCapabilityError("snapshot missing modes")
         self._snapshot = snapshot
         self._modes = frozenset(snapshot.get("modes", []))
         self._ratios = frozenset(snapshot.get("ratios", []))
         self._video_resolutions = frozenset(snapshot.get("resolutions", {}).get("video", []))
+        self._mode_limits = snapshot.get("mode_limits", {})
         self._models = {
             entry["name"]: _VideoModelSpec.from_snapshot(entry)
             for entry in snapshot.get("models", [])
             if isinstance(entry, Mapping) and "name" in entry
         }
-        self._ledger_dir = Path(ledger_dir)
-        self._ledger_dir.mkdir(parents=True, exist_ok=True)
+        self._ledger_dir = Path(ledger_dir) if ledger_dir is not None else None
+        if self._ledger_dir is not None:
+            self._ledger_dir.mkdir(parents=True, exist_ok=True)
         self._reference_policy = reference_policy
         from scripts.operation_ledger import OperationLedger
-        self._operation_ledger = OperationLedger(root=self._ledger_dir)
+        self._operation_ledger = OperationLedger(root=self._ledger_dir) if self._ledger_dir is not None else None
         self._web_prerequisite_acknowledged = False
 
     # ------------------------------------------------------------------
@@ -143,6 +187,8 @@ class VideoService:
         Dreamina web console.
         """
         self._web_prerequisite_acknowledged = True
+        if self._ledger_dir is None:
+            raise VideoServiceError("ledger_dir is required to record acknowledgement")
         flag_path = self._ledger_dir / "web_prerequisite.ack"
         flag_path.write_text("acknowledged\n", encoding="utf-8")
 
@@ -168,7 +214,7 @@ class VideoService:
             raise UnsupportedCapabilityError(f"mode not in snapshot: {mode}")
         spec = self._models.get(model)
         if mode == "multiframe2video" and model is None:
-            spec = _VideoModelSpec(name="__fixed__", modes=frozenset({mode}), resolutions=self._video_resolutions, ratios=frozenset(), duration_min_seconds=1, duration_max_seconds=8, web_prerequisite_required=False, audio_reference_max_seconds=None, ratio_forbidden_modes=frozenset({mode}), max_references=20)
+            spec = self._multiframe_spec()
         if spec is None:
             raise UnsupportedCapabilityError(f"unknown model: {model}")
         if mode not in spec.modes:
@@ -201,13 +247,20 @@ class VideoService:
         if mode == "multiframe2video":
             if ratio is not None or model is not None:
                 raise UnsupportedCapabilityError("multiframe2video does not accept model or ratio")
-            if not 2 <= len(normalized_refs) <= 20 or any(ref["role"] != "frame" for ref in normalized_refs):
-                raise InvalidReferenceError("multiframe2video requires 2..20 ordered frame references")
+            if not spec.max_references >= len(normalized_refs) >= int(self._mode_limits[mode]["min_references"]) or any(ref["role"] != "frame" for ref in normalized_refs):
+                raise InvalidReferenceError(
+                    f"multiframe2video requires {self._mode_limits[mode]['min_references']}..{spec.max_references} ordered frame references"
+                )
             if normalized_transitions and len(normalized_transitions) != len(normalized_refs) - 1:
                 raise VideoServiceError("multiframe2video requires exactly N-1 transitions")
+            limits = self._mode_limits[mode]
             for transition in normalized_transitions:
-                if not str(transition.get("prompt", "")).strip() or not 1 <= int(transition.get("duration_seconds", 0)) <= 8:
-                    raise VideoServiceError("transition requires prompt and duration_seconds 1..8")
+                raw_seconds = transition.get("duration_seconds")
+                if isinstance(raw_seconds, bool) or not isinstance(raw_seconds, int):
+                    raise VideoServiceError("transition duration_seconds must be an integer")
+                seconds = raw_seconds
+                if not str(transition.get("prompt", "")).strip() or not int(limits["transition_duration_min_seconds"]) <= seconds <= int(limits["transition_duration_max_seconds"]):
+                    raise VideoServiceError("transition violates advertised duration limits")
 
         request: dict[str, Any] = {
             "mode": mode,
@@ -224,6 +277,21 @@ class VideoService:
         if normalized_transitions:
             request["transitions"] = normalized_transitions
         return request
+
+    def _multiframe_spec(self) -> _VideoModelSpec:
+        limits = self._mode_limits.get("multiframe2video") if isinstance(self._mode_limits, Mapping) else None
+        required = ("min_references", "max_references", "request_duration_min_seconds", "request_duration_max_seconds", "transition_duration_min_seconds", "transition_duration_max_seconds")
+        if not isinstance(limits, Mapping) or any(key not in limits for key in required):
+            raise UnsupportedCapabilityError("snapshot missing multiframe2video mode limits")
+        return _VideoModelSpec(
+            name="__snapshot_mode__", modes=frozenset({"multiframe2video"}),
+            resolutions=self._video_resolutions, ratios=frozenset(),
+            duration_min_seconds=int(limits["request_duration_min_seconds"]),
+            duration_max_seconds=int(limits["request_duration_max_seconds"]),
+            web_prerequisite_required=False, audio_reference_max_seconds=None,
+            ratio_forbidden_modes=frozenset({"multiframe2video"}),
+            max_references=int(limits["max_references"]),
+        )
 
     @staticmethod
     def _validate_references(
@@ -259,6 +327,9 @@ class VideoService:
             size = ref.get("size_bytes")
             if size is not None:
                 entry["size_bytes"] = int(size)
+            sha256 = ref.get("sha256")
+            if sha256 is not None:
+                entry["sha256"] = str(sha256)
             audio_seconds = ref.get("duration_seconds")
             if role == "audio" and audio_seconds is not None:
                 entry["duration_seconds"] = int(audio_seconds)
@@ -279,9 +350,11 @@ class VideoService:
                 f"mode {mode} requires references with at least one of {sorted(required_roles)}"
             )
         if mode == "image2video" and (
-            len(normalized) != 1 or normalized[0]["role"] != "subject"
+            len(normalized) != 1 or normalized[0]["role"] not in {"subject", "style"}
         ):
-            raise InvalidReferenceError("image2video requires exactly one subject reference")
+            raise InvalidReferenceError(
+                "image2video requires exactly one subject or style reference"
+            )
         if mode == "frames2video" and (
             len(normalized) != 2 or any(r["role"] != "frame" for r in normalized)
         ):
@@ -305,7 +378,7 @@ class VideoService:
             raise MissingApprovalError("approval receipt is required before submission")
         spec = self._models.get(request.get("model"))
         if spec is None and request["mode"] == "multiframe2video":
-            spec = _VideoModelSpec(name="__fixed__", modes=frozenset({"multiframe2video"}), resolutions=self._video_resolutions, ratios=frozenset(), duration_min_seconds=1, duration_max_seconds=8, web_prerequisite_required=False, audio_reference_max_seconds=None, ratio_forbidden_modes=frozenset({"multiframe2video"}), max_references=20)
+            spec = self._multiframe_spec()
         if spec.web_prerequisite_required and not self._web_prerequisite_acknowledged:
             # The caller can pass web_prerequisite_cleared=True to indicate the
             # web console step has been observed in the same session, but we
@@ -327,41 +400,161 @@ class VideoService:
         )
         try:
             approval_guard.consume_approval(
-                session_id, request=request, approval_id=approval_id
+                session_id, request=request, approval_id=approval_id,
+                fingerprint_builder=build_video_request_fingerprint,
             )
         except ApprovalGuardError as exc:
             self._operation_ledger.abort_submission_intent(
                 request_fingerprint=fingerprint, reason="APPROVAL_REJECTED"
             )
             raise ApprovalMismatchError(str(exc)) from exc
+        return self._invoke_once(
+            request, adapter=adapter, session_id=session_id,
+            request_fingerprint=fingerprint, begin_intent=False,
+        )
+
+    def submit_with_batch_allowance(
+        self,
+        request: Mapping[str, Any],
+        *,
+        adapter: Any,
+        allowance: Any,
+        allowance_id: str,
+        shot_id: str,
+        attempt: int,
+    ) -> dict[str, Any]:
+        """Reserve an exact approved batch request and cross the provider boundary once."""
+        if self._operation_ledger is None:
+            raise VideoServiceError("ledger_dir is required for batch submission")
+        fingerprint = build_video_request_fingerprint(dict(request))
+        reservation = allowance.reserve(
+            allowance_id, shot_id=shot_id, attempt=attempt,
+            request_fingerprint=fingerprint,
+        )
+        try:
+            result = self._invoke_once(
+                request, adapter=adapter, session_id=allowance_id,
+                request_fingerprint=fingerprint, begin_intent=True,
+                allowance_id=allowance_id,
+                reservation_id=reservation["reservation_id"],
+            )
+        except PostInvokePersistenceError as exc:
+            try:
+                allowance.mark_ambiguous(
+                    reservation["reservation_id"], type(exc).__name__.upper(),
+                    submit_id=exc.submit_id,
+                )
+            except Exception:
+                # Never replace the typed post-invoke evidence with a local
+                # allowance persistence error; the executor must retain ID.
+                pass
+            raise
+        try:
+            committed = allowance.commit(reservation["reservation_id"], result["submit_id"])
+        except Exception as exc:
+            try:
+                allowance.mark_ambiguous(
+                    reservation["reservation_id"], "ALLOWANCE_COMMIT_INDETERMINATE",
+                    submit_id=result["submit_id"],
+                )
+            except Exception:
+                # A committed or ambiguous terminal record is already safe; the
+                # executor will reconcile it by the known provider identifier.
+                pass
+            raise BatchAllowanceCommitError(
+                submit_id=result["submit_id"], reservation_id=reservation["reservation_id"],
+                request_fingerprint=fingerprint, shot_id=shot_id, attempt=attempt,
+            ) from exc
+        return {**result, "reservation": committed}
+
+    def _invoke_once(
+        self,
+        request: Mapping[str, Any],
+        *,
+        adapter: Any,
+        session_id: str,
+        request_fingerprint: str,
+        begin_intent: bool,
+        allowance_id: str | None = None,
+        reservation_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist an invocation intent, invoke once, and durably bind its submit id."""
+        # Direct submission already persisted its intent before approval. Batch
+        # submission reaches this seam immediately after its durable reservation.
+        if begin_intent:
+            self._operation_ledger.begin_submission(
+                session_id=session_id, mode=str(request["mode"]),
+                request_fingerprint=request_fingerprint,
+                allowance_id=allowance_id, reservation_id=reservation_id,
+            )
         argv = self._request_to_argv(request)
         try:
             result: DreaminaResult = adapter.run(argv)
         except Exception as exc:
-            self._operation_ledger.complete_submission_intent(
-                request_fingerprint=fingerprint,
-                submit_id=None,
-                error_code=type(exc).__name__,
-            )
-            raise
+            invocation_started = getattr(exc, "invocation_started", True)
+            outcome_ambiguous = getattr(exc, "outcome_ambiguous", True)
+            if not invocation_started or not outcome_ambiguous:
+                try:
+                    self._operation_ledger.abort_submission_intent(
+                        request_fingerprint=request_fingerprint,
+                        reason="PREINVOKE_OR_DEFINITE_LOCAL_FAILURE")
+                except Exception:
+                    pass
+                raise
+            known_submit_id = getattr(exc, "submit_id", None)
+            try:
+                self._operation_ledger.complete_submission_intent(
+                    request_fingerprint=request_fingerprint, submit_id=known_submit_id,
+                    error_code=_safe_exception_type(exc), allowance_id=allowance_id,
+                    reservation_id=reservation_id)
+            except Exception:
+                pass
+            if known_submit_id:
+                try:
+                    self._operation_ledger.record(
+                        session_id=session_id, submit_id=known_submit_id,
+                        mode=str(request["mode"]), request_fingerprint=request_fingerprint,
+                        allowance_id=allowance_id, reservation_id=reservation_id,
+                    )
+                except Exception:
+                    pass
+            if not begin_intent:
+                raise
+            evidence_bytes = getattr(exc, "result_bytes", None)
+            if not isinstance(evidence_bytes, bytes):
+                evidence_bytes = str(exc).encode("utf-8", "replace")
+            raise PostInvokePersistenceError(
+                submit_id=known_submit_id, result_bytes=evidence_bytes,
+                allowance_id=allowance_id, reservation_id=reservation_id,
+                request_fingerprint=request_fingerprint, cause=exc) from exc
         if not result.submit_id:
-            self._operation_ledger.complete_submission_intent(
-                request_fingerprint=fingerprint,
+            missing = VideoServiceError("Dreamina returned no recoverable submit_id")
+            try:
+                self._operation_ledger.complete_submission_intent(
+                    request_fingerprint=request_fingerprint, submit_id=None,
+                    error_code="MISSING_SUBMIT_ID", allowance_id=allowance_id,
+                    reservation_id=reservation_id)
+            except Exception:
+                pass
+            raise PostInvokePersistenceError(
                 submit_id=None,
-                error_code="MISSING_SUBMIT_ID",
-            )
-            raise VideoServiceError(
-                "Dreamina accepted no recoverable submit_id; manual review required"
-            )
-        self._operation_ledger.complete_submission_intent(
-            request_fingerprint=fingerprint, submit_id=result.submit_id
-        )
-        self._operation_ledger.record(
-            session_id=session_id,
-            submit_id=result.submit_id,
-            mode=str(request["mode"]),
-            request_fingerprint=fingerprint,
-        )
+                result_bytes=json.dumps(result.payload or {}, sort_keys=True, default=str).encode("utf-8"),
+                allowance_id=allowance_id, reservation_id=reservation_id,
+                request_fingerprint=request_fingerprint, cause=missing)
+        result_bytes = json.dumps(result.payload or {}, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        try:
+            self._operation_ledger.complete_submission_intent(
+                request_fingerprint=request_fingerprint, submit_id=result.submit_id,
+                allowance_id=allowance_id, reservation_id=reservation_id)
+            self._operation_ledger.record(
+                session_id=session_id, submit_id=result.submit_id, mode=str(request["mode"]),
+                request_fingerprint=request_fingerprint, allowance_id=allowance_id,
+                reservation_id=reservation_id)
+        except Exception as exc:
+            raise PostInvokePersistenceError(
+                submit_id=result.submit_id, result_bytes=result_bytes,
+                allowance_id=allowance_id, reservation_id=reservation_id,
+                request_fingerprint=request_fingerprint, cause=exc) from exc
         payload = result.payload or {}
         items = payload.get("items") if isinstance(payload, Mapping) else None
         if items is None and isinstance(payload, Mapping):
@@ -403,6 +596,8 @@ class VideoService:
 
 __all__ = [
     "ApprovalMismatchError",
+    "BatchAllowanceCommitError",
+    "PostInvokePersistenceError",
     "DurationOutOfRangeError",
     "InvalidReferenceError",
     "MissingApprovalError",

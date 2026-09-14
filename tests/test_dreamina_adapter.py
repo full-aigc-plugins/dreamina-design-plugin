@@ -24,6 +24,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import MagicMock, patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +33,7 @@ sys.path.insert(0, str(ROOT))
 from scripts.dreamina_adapter import (  # noqa: E402  (path injection above)
     CLINotFoundError,
     DreaminaAdapter,
+    DreaminaAdapterError,
     DreaminaResult,
     InvalidJSONError,
     PermissionDeniedError,
@@ -65,6 +67,8 @@ class DreaminaAdapterConstructionTests(unittest.TestCase):
         with self.assertRaises(CLINotFoundError) as ctx:
             adapter.run(["--help"])
         self.assertNotIn("credential", str(ctx.exception).lower())
+        self.assertFalse(ctx.exception.invocation_started)
+        self.assertFalse(ctx.exception.outcome_ambiguous)
 
     def test_argv_is_passed_without_shell(self) -> None:
         """Subprocess must be invoked with a list, not a shell string."""
@@ -156,8 +160,21 @@ class DreaminaAdapterRunTests(unittest.TestCase):
             """
         )
         adapter.timeout_seconds = 0.2
-        with self.assertRaises(AdapterTimeoutError):
+        with self.assertRaises(AdapterTimeoutError) as caught:
             adapter.run(["slow"])
+        self.assertTrue(caught.exception.invocation_started)
+        self.assertTrue(caught.exception.outcome_ambiguous)
+
+    def test_selector_failure_after_popen_is_typed_ambiguous(self) -> None:
+        adapter = self._make_adapter("#!/bin/sh\necho '{\"ok\": true}'")
+        selector = MagicMock()
+        selector.register.side_effect = OSError("injected selector failure")
+        with patch("scripts.dreamina_adapter.selectors.DefaultSelector", return_value=selector):
+            with self.assertRaises(DreaminaAdapterError) as caught:
+                adapter.run(["anything"])
+        self.assertTrue(caught.exception.invocation_started)
+        self.assertTrue(caught.exception.outcome_ambiguous)
+        selector.close.assert_called_once_with()
 
     def test_stdout_and_stderr_are_separated(self) -> None:
         adapter = self._make_adapter(
@@ -202,6 +219,7 @@ class CapabilitySnapshotTests(unittest.TestCase):
                 "text2image": "- model_version: 5.0, 5.0Pro\n- generate_num: 1-10\n- 5.0 -> resolution_type 2k or 4k\n- 5.0Pro -> resolution_type 1.5k, 2k, or 4k\n- ratio: 16:9, 1:1\n",
                 "image2image": "Upload 1 to 10 local images.\n- model_version: 5.0Pro\n- generate_num: 1-10\n- 5.0Pro -> resolution_type 1.5k, 2k, or 4k\n- ratio: 16:9, 1:1\n",
                 "text2video": "- model_version: seedance2.0, seedance2.0_vip, seedance2.5\n- seedance2.5 -> video_resolution 480p, 720p, or 1080p; duration 4-30s\n- seedance2.0_vip -> video_resolution 720p, 1080p, or 4k; duration 4-15s\n- all other models -> video_resolution 720p; duration 4-15s\n- ratio: 16:9, 9:16\n",
+                "multiframe2video": "Upload 2 to 20 local images; request duration 2-30s; transition duration 1-8s.\n",
             }
         )
         by_name = {entry["name"]: entry for entry in snapshot["models"]}
@@ -210,6 +228,11 @@ class CapabilitySnapshotTests(unittest.TestCase):
         self.assertEqual(by_name["5.0Pro"]["resolutions"], ["1.5k", "2k", "4k"])
         self.assertEqual(by_name["seedance2.0"]["resolutions"], ["720p"])
         self.assertEqual(by_name["seedance2.5"]["duration_max_seconds"], 30)
+        self.assertEqual(snapshot["mode_limits"]["multiframe2video"], {"min_references": 2, "max_references": 20, "request_duration_min_seconds": 2, "request_duration_max_seconds": 30, "transition_duration_min_seconds": 1, "transition_duration_max_seconds": 8})
+
+    def test_multiframe_limits_are_not_invented_when_help_omits_them(self) -> None:
+        snapshot = _parse_command_help({"multiframe2video": "Create a storyboard video.\n"})
+        self.assertNotIn("mode_limits", snapshot)
 
     def test_capability_snapshot_returns_dict(self) -> None:
         """``capability_snapshot`` must rely on argv-only CLI calls."""
