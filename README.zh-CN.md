@@ -6,25 +6,13 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-## 状态与定位
+## 状态与版本
 
 **生产就绪版本 0.2.1。**
 
-离线实施门禁已经满足，但生产验收由
-[`docs/superpowers/plans/2026-09-12-production-readiness-hardening.md`](docs/superpowers/plans/2026-09-12-production-readiness-hardening.md)
-单独跟踪。最低规格 canary、本地安装、输入文件边界、官方验证、最终安全复审、
-远端发布与公开 marketplace 重装均已完成。
+离线实施门禁已经满足，但生产验收由 [`docs/superpowers/plans/2026-09-12-production-readiness-hardening.md`](docs/superpowers/plans/2026-09-12-production-readiness-hardening.md) 单独跟踪。最低规格 canary、本地安装、输入文件边界、官方验证、最终安全复审、远端发布与公开 marketplace 重装均已完成。
 
-```text
-创作意图 -> Prompt 契约 -> 实时发现 CLI 能力
-        -> 明确批准生成 -> 单次提交
-        -> 按 submit_id 查询 -> 验证/下载产物
-```
-
-基线计划 7 个任务已经实现；当前生产加固由 225 个离线测试覆盖。
-计划 13 行完成门禁均已有实测证据 —— 含 Skill snapshot parity 固定到上游
-`full-aigc-skills/dreamina-skills@e8ae588`、严格 TRACE 13/13、plugin 校验、
-凭证零命中，以及**公开 marketplace 安装后经 `codex debug prompt-input` 验证发现全部 14 个 Skill**。
+基线计划 7 个任务已经实现；当前生产加固由 225 个离线测试覆盖。计划 13 行完成门禁均已有实测证据 —— 含 Skill snapshot parity 固定到上游 `full-aigc-skills/dreamina-skills@e8ae588`、严格 TRACE 13/13、plugin 校验、凭证零命中，以及**公开 marketplace 安装后经 `codex debug prompt-input` 验证发现全部 14 个 Skill**。
 
 runtime 门禁为：
 
@@ -33,13 +21,54 @@ read_only_runtime_contract = observed or explicitly blocked
 paid_canary = separately approved or NOT_RUN
 ```
 
-只读 runtime 契约为 `observed`；经授权的 canary 状态为 `APPROVED` 并已达到 `success`，产物与消费证据均已记录。
-基线门禁与严格 runtime 门禁均通过：
+只读 runtime 契约为 `observed`；经授权的 canary 状态为 `APPROVED` 并已达到 `success`，产物与消费证据均已记录。基线门禁与严格 runtime 门禁均通过：
 
 ```text
 $ python3 scripts/validate_distribution_v7.py --plan-gate
 $ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ```
+
+0.3.0 版本提供 11 个强类型 MCP 工具，覆盖即梦 CLI 官方完整生命周期：状态、可信安装更新、OAuth 登录、账户检查、全部图片/视频模式、任务查询/列表/下载、Session CRUD 和有界脱敏日志诊断。高风险与付费操作必须显式确认，不开放任意 Shell 或 argv 执行。
+
+## 快速开始
+
+```bash
+codex plugin marketplace add partme-ai/codex-dreamina-design-plugin --ref main
+codex plugin add codex-dreamina-design@partme-ai-dreamina-design
+```
+
+重启 Codex 或 ChatGPT 桌面应用，打开新任务，让 Codex 起草即梦 Design 图片或视频。先做能力发现，再走明确批准，单次提交，按 `submit_id` 查询，验证后下载。
+
+## 可以做什么
+
+```text
+创作意图 -> Prompt 契约 -> 实时发现 CLI 能力
+        -> 明确批准生成 -> 单次提交
+        -> 按 submit_id 查询 -> 验证/下载产物
+```
+
+插件是已安装 `dreamina` CLI 的严格包装：既不复制也不重放上游 Skill 正文，从不执行任意 Shell，也从不绕过付费操作的确认弹窗。
+
+## 边界与契约
+
+- 已安装的 `dreamina` CLI 负责认证和远程 API。
+- 模型、分辨率、比例、时长和必填参数来自当前 CLI help/schema。
+- 生成会消耗会员权益或积分，必须明确批准。
+- 网页端首次视频生成等前提只报告，不绕过。
+- 结果不确定时按 `submit_id` 查询，不盲目重试提交。
+- 生产付费路径要求先完成受保护的 CLI 信任注册，并通过服务端原生确认弹窗；默认操作始终是取消。
+
+## 文档导航
+
+- [Architecture](docs/Codex-Dreamina-Design-Plugin-Architecture.md) · [架构文档](docs/Codex-Dreamina-Design-Plugin-Architecture.zh_CN.md)
+- [Technical solution](docs/Codex-Dreamina-Design-Plugin-Technical-Solution.md) · [技术方案](docs/Codex-Dreamina-Design-Plugin-Technical-Solution.zh_CN.md)
+- [设计规格](docs/superpowers/specs/2026-09-11-codex-dreamina-design-plugin-design.md)
+- [实施计划](docs/superpowers/plans/2026-09-11-codex-dreamina-design-plugin-implementation.md)
+- [授权决定记录](docs/verification/authorization-decision.md)
+- [离线证据](docs/verification/offline.md)
+- [Skill 发现](docs/verification/skill-discovery.md)
+- [严格 TRACE](docs/verification/skill-trace.md)
+- [CLI runtime](docs/verification/dreamina-cli-runtime.md)
 
 ### runtime 证据
 
@@ -48,38 +77,10 @@ $ python3 scripts/unlock_runtime_gates.py status
 $ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ```
 
-生产付费路径要求先完成受保护的 CLI 信任注册，并通过服务端原生确认弹窗；
-默认操作始终是取消。
-
-完整细节：[授权决定记录](docs/verification/authorization-decision.md) ·
-[离线证据](docs/verification/offline.md) ·
-[Skill 发现](docs/verification/skill-discovery.md) ·
-[严格 TRACE](docs/verification/skill-trace.md) ·
-[CLI runtime](docs/verification/dreamina-cli-runtime.md)
-
-## 边界
-
-- 已安装的 `dreamina` CLI 负责认证和远程 API。
-- 模型、分辨率、比例、时长和必填参数来自当前 CLI help/schema。
-- 生成会消耗会员权益或积分，必须明确批准。
-- 网页端首次视频生成等前提只报告，不绕过。
-- 结果不确定时按 `submit_id` 查询，不盲目重试提交。
-
-## 文档
-
-- [Architecture](docs/Codex-Dreamina-Design-Plugin-Architecture.md) / [中文](docs/Codex-Dreamina-Design-Plugin-Architecture.zh_CN.md)
-- [Technical solution](docs/Codex-Dreamina-Design-Plugin-Technical-Solution.md) / [中文](docs/Codex-Dreamina-Design-Plugin-Technical-Solution.zh_CN.md)
-- [设计规格](docs/superpowers/specs/2026-09-11-codex-dreamina-design-plugin-design.md)
-- [实施计划](docs/superpowers/plans/2026-09-11-codex-dreamina-design-plugin-implementation.md)
-
-## 上游技能迁移
+### 上游技能迁移
 
 事实源迁移已完成，当前仓库为 `full-aigc-skills/dreamina-skills`。插件打包必须固定经过验证的上游提交，不能复制后再独立修改 Skill 正文。
 
 ## 许可证
 
 Apache-2.0，见 [LICENSE](LICENSE)。
-0.3.0 版本提供 11 个强类型 MCP 工具，覆盖即梦 CLI 官方完整生命周期：状态、
-可信安装更新、OAuth 登录、账户检查、全部图片/视频模式、任务查询/列表/下载、
-Session CRUD 和有界脱敏日志诊断。高风险与付费操作必须显式确认，不开放任意
-Shell 或 argv 执行。
