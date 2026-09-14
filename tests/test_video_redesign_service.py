@@ -367,11 +367,21 @@ class VideoRedesignServiceTests(unittest.TestCase):
         target.chmod(0o600)
         real_load = json.load
         replaced = False
+        # Fire only for the receipt itself. The previous version replaced on the
+        # first json.load of any file, which made the test depend on read order:
+        # on macOS the replacement happened to break an unrelated analysis
+        # lookup and the assertion passed for the wrong reason, while on Linux
+        # the same code returned without error.
+        receipt_inode = target.stat().st_ino
 
         def replace_parent(handle):
             nonlocal replaced
             document = real_load(handle)
-            if not replaced:
+            try:
+                current_inode = os.fstat(handle.fileno()).st_ino
+            except (OSError, ValueError):
+                current_inode = None
+            if not replaced and current_inode == receipt_inode:
                 old = family.with_name("rights_receipt-old")
                 os.rename(family, old)
                 family.mkdir(mode=0o700)
