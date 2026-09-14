@@ -296,11 +296,11 @@ class DreaminaAdapter:
         """Read one already-started process; every failure is post-spawn."""
         selector = selectors.DefaultSelector()
         buffers = {"stdout": bytearray(), "stderr": bytearray()}
-        assert process.stdout is not None and process.stderr is not None
-        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
-        deadline = time.monotonic() + self.timeout_seconds
         try:
+            assert process.stdout is not None and process.stderr is not None
+            selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+            selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+            deadline = time.monotonic() + self.timeout_seconds
             while selector.get_map():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -325,8 +325,10 @@ class DreaminaAdapter:
             selector.close()
             if process.poll() is None:
                 self._terminate_process_group(process)
-            process.stdout.close()
-            process.stderr.close()
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
         return (
             returncode,
             buffers["stdout"].decode("utf-8", errors="replace"),

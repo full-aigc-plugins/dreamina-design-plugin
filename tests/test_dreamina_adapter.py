@@ -24,7 +24,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -167,12 +167,14 @@ class DreaminaAdapterRunTests(unittest.TestCase):
 
     def test_selector_failure_after_popen_is_typed_ambiguous(self) -> None:
         adapter = self._make_adapter("#!/bin/sh\necho '{\"ok\": true}'")
-        with patch("scripts.dreamina_adapter.selectors.DefaultSelector.register",
-                   side_effect=OSError("injected selector failure")):
+        selector = MagicMock()
+        selector.register.side_effect = OSError("injected selector failure")
+        with patch("scripts.dreamina_adapter.selectors.DefaultSelector", return_value=selector):
             with self.assertRaises(DreaminaAdapterError) as caught:
                 adapter.run(["anything"])
         self.assertTrue(caught.exception.invocation_started)
         self.assertTrue(caught.exception.outcome_ambiguous)
+        selector.close.assert_called_once_with()
 
     def test_stdout_and_stderr_are_separated(self) -> None:
         adapter = self._make_adapter(
