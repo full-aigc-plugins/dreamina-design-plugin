@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import random
 import signal
 import struct
 import sys
@@ -30,10 +31,17 @@ def _png_chunk(chunk_type: bytes, payload: bytes) -> bytes:
             + struct.pack(">I", zlib.crc32(chunk_type + payload) & 0xFFFFFFFF))
 
 
-def _valid_png() -> bytes:
-    header = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+def _valid_png(width: int = 1, height: int = 1, *, high_detail: bool = False) -> bytes:
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    if high_detail:
+        pixels = random.Random(20260914).randbytes(width * height * 3)
+        rows = b"".join(b"\x00" + pixels[offset:offset + width * 3]
+                        for offset in range(0, len(pixels), width * 3))
+        compressed = zlib.compress(rows, level=0)
+    else:
+        compressed = zlib.compress(b"\x00" + b"\xff\x00\x00" * width * height)
     return (b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", header)
-            + _png_chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00"))
+            + _png_chunk(b"IDAT", compressed)
             + _png_chunk(b"IEND", b""))
 
 
@@ -366,6 +374,41 @@ class MediaAdapterTests(unittest.TestCase):
             + _png_chunk(b"IDAT", b"not-a-zlib-stream") + _png_chunk(b"IEND", b""))
         with self.assertRaisesRegex(MediaOutputError, "decodable"):
             self.adapter.verify_video_frames(self.source, 4.0)
+
+    def test_png_decode_overflow_is_always_typed_media_output_error(self) -> None:
+        header = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+        overflowing = (b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", header)
+            + _png_chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00" * 2))
+            + _png_chunk(b"IEND", b""))
+        self.runner.frame_bytes = overflowing
+        with self.assertRaises(MediaOutputError):
+            self.adapter.verify_image(self.source)
+
+    def test_high_detail_1080p_png_above_text_cap_is_valid_frame_evidence(self) -> None:
+        self.runner.frame_bytes = _valid_png(1920, 1080, high_detail=True)
+        self.assertGreater(len(self.runner.frame_bytes), 4 * 1024 * 1024)
+        image = self.adapter.verify_image(self.source)
+        frames = self.adapter.verify_video_frames(self.source, 4.0)
+        self.assertEqual((image["width"], image["height"]), (1920, 1080))
+        self.assertTrue(frames["readable"])
+        self.assertEqual(self.runner.kwargs["stdout_cap"], 64 * 1024 * 1024)
+
+    def test_binary_runner_terminates_stream_above_64_mib_before_completion(self) -> None:
+        marker = self.root / "frame-completed"
+        code = (
+            "import os,sys,time\n"
+            "chunk=b'x'*(1024*1024)\n"
+            "for _ in range(65):\n"
+            " os.write(sys.stdout.fileno(),chunk); time.sleep(0.001)\n"
+            f"open({str(marker)!r},'wb').write(b'done')\n"
+        )
+        with self.assertRaisesRegex(MediaOutputError, "stdout exceeded 67108864 bytes"):
+            SubprocessMediaRunner().run_binary(
+                [sys.executable, "-c", code], shell=False,
+                env={"PATH": os.environ.get("PATH", "")}, timeout_seconds=10,
+                stdout_cap=64 * 1024 * 1024, stderr_cap=4096,
+                start_new_session=True, terminate_process_group=True)
+        self.assertFalse(marker.exists())
 
     def test_video_frame_verification_rejects_decoder_failure(self) -> None:
         self.runner.exit_code = 1

@@ -84,8 +84,13 @@ def _validate_complete_png(payload: bytes) -> tuple[int, int]:
     try:
         decoder = zlib.decompressobj()
         pixels = decoder.decompress(b"".join(idat_parts), expected_bytes + 1)
-        pixels += decoder.flush(expected_bytes + 1 - len(pixels))
-    except zlib.error as exc:
+        if len(pixels) > expected_bytes:
+            raise MediaOutputError("ffmpeg frame PNG pixel payload exceeds declared dimensions")
+        remaining = expected_bytes + 1 - len(pixels)
+        pixels += decoder.flush(remaining)
+    except MediaOutputError:
+        raise
+    except (ValueError, zlib.error) as exc:
         raise MediaOutputError("ffmpeg frame PNG pixels are not decodable") from exc
     if len(pixels) != expected_bytes or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
         raise MediaOutputError("ffmpeg frame PNG pixel payload is invalid")
@@ -289,10 +294,15 @@ class MediaAdapter:
         *,
         runner=None,
         max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
+        max_frame_output_bytes: int = MAX_DECODED_FRAME_BYTES,
     ) -> None:
+        if isinstance(max_frame_output_bytes, bool) or not isinstance(max_frame_output_bytes, int) \
+                or not 1 <= max_frame_output_bytes <= MAX_DECODED_FRAME_BYTES:
+            raise ValueError("max_frame_output_bytes must be within the supported decoded-frame cap")
         self._tool_store = tool_store
         self._runner = runner or SubprocessMediaRunner()
         self.max_output_bytes = max_output_bytes
+        self.max_frame_output_bytes = max_frame_output_bytes
         self.env = self._minimal_environment()
 
     def run(self, kind: str, argv: Sequence[str], *, timeout_seconds: int,
@@ -327,7 +337,7 @@ class MediaAdapter:
 
     def _run_binary(
         self, kind: str, argv: Sequence[str], *, timeout_seconds: int,
-        pass_fds: Sequence[int] = ()
+        pass_fds: Sequence[int] = (), stdout_cap: int | None = None
     ) -> _BinaryMediaResult:
         """Execute one enrolled kind with bounded binary stdout for frame decoding."""
         if isinstance(argv, (str, bytes)) or not all(isinstance(arg, str) for arg in argv):
@@ -343,7 +353,7 @@ class MediaAdapter:
                     shell=False,
                     env=self.env,
                     timeout_seconds=timeout_seconds,
-                    stdout_cap=self.max_output_bytes,
+                    stdout_cap=self.max_frame_output_bytes if stdout_cap is None else stdout_cap,
                     stderr_cap=self.max_output_bytes,
                     start_new_session=True,
                     terminate_process_group=True,
@@ -401,7 +411,8 @@ class MediaAdapter:
             result = self._run_binary("ffmpeg", ["-v", "error", "-ss", f"{position:.3f}",
                 "-i", source_arg, "-map", "0:v:0", "-frames:v", "1",
                 "-f", "image2pipe", "-vcodec", "png", "-"], timeout_seconds=30,
-                pass_fds=() if source_fd is None else (source_fd,))
+                pass_fds=() if source_fd is None else (source_fd,),
+                stdout_cap=self.max_frame_output_bytes)
             if result.exit_code != 0:
                 raise MediaOutputError(f"ffmpeg frame decode failed with exit {result.exit_code}")
             frame = result.stdout
@@ -421,7 +432,8 @@ class MediaAdapter:
         source_arg = f"/dev/fd/{source_fd}" if source_fd is not None else str(source)
         result = self._run_binary("ffmpeg", ["-v", "error", "-i", source_arg,
             "-map", "0:v:0", "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"],
-            timeout_seconds=30, pass_fds=() if source_fd is None else (source_fd,))
+            timeout_seconds=30, pass_fds=() if source_fd is None else (source_fd,),
+            stdout_cap=self.max_frame_output_bytes)
         if result.exit_code != 0:
             raise MediaOutputError(f"ffmpeg image decode failed with exit {result.exit_code}")
         width, height = _validate_complete_png(result.stdout)
