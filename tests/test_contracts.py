@@ -44,6 +44,8 @@ EXPECTED_SCHEMAS = (
     "shot_evaluation.schema.json",
     "audio_plan.schema.json",
     "transcript_receipt.schema.json",
+    "reelbench_evidence.schema.json",
+    "reelbench_comparison.schema.json",
 )
 
 CREDENTIAL_KEYS = (
@@ -110,6 +112,74 @@ class SchemaPresenceTests(unittest.TestCase):
 
 
 class ClosedSchemaTests(unittest.TestCase):
+    def test_reelbench_receipts_are_closed_and_distinguish_skipped(self) -> None:
+        receipt = {
+            "schema_version": "1.0",
+            "version": "v001",
+            "parent_version": None,
+            "project_id": "vp_" + "1" * 24,
+            "source_receipt_version": "v001",
+            "source_sha256": "2" * 64,
+            "action": "validate",
+            "upstream": {
+                "source": "https://github.com/eternityspring/reelbench-skills.git",
+                "revision": "18f2f63987337df0975a89973d38d50f3231ee31",
+                "lock_fingerprint": "3" * 64,
+            },
+            "tool_identities": [{
+                "kind": "node", "source_path": "/trusted/node", "owner_uid": 501,
+                "mode": 493, "device": 1, "inode": 2, "size_bytes": 3, "sha256": "4" * 64,
+            }],
+            "argv_fingerprint": "5" * 64,
+            "gates": [
+                {"name": "timeline", "status": "PASS", "evidence": "continuous"},
+                {"name": "motion", "status": "SKIPPED", "evidence": "not requested"},
+            ],
+            "artifacts": [{
+                "path": "reelbench/v001/report.md", "size_bytes": 1,
+                "mime_type": "text/markdown", "sha256": "6" * 64,
+            }],
+            "created_at": "2026-09-15T00:00:00Z",
+            "committed_at": "2026-09-15T00:00:01Z",
+            "evidence_fingerprint": "7" * 64,
+        }
+        validate_contract(receipt, "reelbench_evidence.schema.json")
+        with self.assertRaises(ContractValidationError):
+            validate_contract({**receipt, "unknown": True}, "reelbench_evidence.schema.json")
+        invalid_gate = json.loads(json.dumps(receipt))
+        invalid_gate["gates"][1]["status"] = "PASS"
+        validate_contract(invalid_gate, "reelbench_evidence.schema.json")
+        invalid_gate["gates"][1]["status"] = "skipped"
+        with self.assertRaises(ContractValidationError):
+            validate_contract(invalid_gate, "reelbench_evidence.schema.json")
+
+    def test_reelbench_comparison_is_closed_and_requires_all_domains(self) -> None:
+        comparison = {
+            "schema_version": "1.0",
+            "version": "v001",
+            "project_id": "vp_" + "1" * 24,
+            "source_sha256": "2" * 64,
+            "native_analysis_version": "v001",
+            "native_analysis_fingerprint": "3" * 64,
+            "reelbench_evidence_version": "v002",
+            "reelbench_evidence_fingerprint": "4" * 64,
+            "tolerances": {
+                "duration_seconds": 0.1, "boundary_seconds": 0.04, "motion_abs_delta": 0.5,
+            },
+            "domains": {
+                name: {"verdict": "matched", "reasons": []}
+                for name in ("source_identity", "duration", "timeline_continuity", "shot_count", "boundaries", "motion")
+            },
+            "overall": "matched",
+            "compared_at": "2026-09-15T00:00:00Z",
+            "comparison_fingerprint": "5" * 64,
+        }
+        validate_contract(comparison, "reelbench_comparison.schema.json")
+        with self.assertRaises(ContractValidationError):
+            validate_contract(
+                {**comparison, "domains": {**comparison["domains"], "unknown": {"verdict": "matched", "reasons": []}}},
+                "reelbench_comparison.schema.json",
+            )
     def test_shot_evaluation_schema_requires_each_domain_gate_exactly_once(self) -> None:
         fixture = load_json(ROOT / "tests" / "fixtures" / "reference_video" / "valid-evaluation.json")
         validate_contract(fixture, "shot_evaluation.schema.json")

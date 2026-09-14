@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/reelbench_evidence.schema.json",
+  "title": "Immutable ReelBench Evidence Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "version", "parent_version", "project_id", "source_receipt_version", "source_sha256", "action", "upstream", "tool_identities", "argv_fingerprint", "gates", "artifacts", "created_at", "committed_at", "evidence_fingerprint"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "parent_version": {"type": ["string", "null"], "pattern": "^v[0-9]{3,}$"},
+    "project_id": {"type": "string", "pattern": "^vp_[a-f0-9]{24}$"},
+    "source_receipt_version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "action": {"type": "string", "enum": ["seed", "evidence", "validate", "render", "plan", "panels", "export", "verify"]},
+    "upstream": {"$ref": "#/$defs/upstream"},
+    "tool_identities": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/tool_identity"}},
+    "argv_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "gates": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/gate"}},
+    "artifacts": {"type": "array", "maxItems": 256, "uniqueItems": true, "items": {"$ref": "#/$defs/artifact"}},
+    "created_at": {"$ref": "#/$defs/timestamp"},
+    "committed_at": {"$ref": "#/$defs/timestamp"},
+    "evidence_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  },
+  "$defs": {
+    "timestamp": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$"},
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "revision", "lock_fingerprint"],
+      "properties": {
+        "source": {"type": "string", "const": "https://github.com/eternityspring/reelbench-skills.git"},
+        "revision": {"type": "string", "const": "18f2f63987337df0975a89973d38d50f3231ee31"},
+        "lock_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "tool_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "source_path", "owner_uid", "mode", "device", "inode", "size_bytes", "sha256"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["node", "browser", "ffmpeg", "ffprobe"]},
+        "source_path": {"type": "string", "pattern": "^/", "minLength": 2, "maxLength": 4096},
+        "owner_uid": {"type": "integer", "minimum": 0},
+        "mode": {"type": "integer", "minimum": 0, "maximum": 511},
+        "device": {"type": "integer", "minimum": 0},
+        "inode": {"type": "integer", "minimum": 0},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "status", "evidence"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+        "status": {"type": "string", "enum": ["PASS", "FAIL", "SKIPPED"]},
+        "evidence": {"type": "string", "minLength": 1, "maxLength": 2048}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size_bytes", "mime_type", "sha256"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9][A-Za-z0-9._/-]{0,1023}$"},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "mime_type": {"type": "string", "minLength": 1, "maxLength": 255},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    }
+  }
+}

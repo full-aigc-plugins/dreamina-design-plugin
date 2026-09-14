@@ -13,12 +13,23 @@ import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator, Mapping
 
 from scripts.native_approval import NativeApprovalProvider
 
 
-MEDIA_TOOL_KINDS = frozenset({"ffmpeg", "ffprobe", "whisper", "narration"})
+MEDIA_TOOL_KINDS = frozenset({"ffmpeg", "ffprobe", "whisper", "narration", "node", "browser"})
+SYSTEM_BROWSER_EXECUTABLES = frozenset(
+    {
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/microsoft-edge",
+    }
+)
 _DIGEST = re.compile(r"^[a-f0-9]{64}$")
 
 
@@ -36,6 +47,54 @@ class TrustedMediaTool:
     staged_path: str
 
 
+@dataclass(frozen=True)
+class TrustedExecutable(Mapping[str, str | int]):
+    """An exact executable identity verified immediately before use."""
+
+    kind: str
+    source_path: str
+    owner_uid: int
+    mode: int
+    device: int
+    inode: int
+    size_bytes: int
+    sha256: str
+
+    def __getitem__(self, key: str) -> str | int:
+        """Provide legacy mapping access for enrollment callers."""
+        return self.to_record()[key]
+
+    def __iter__(self) -> Iterator[str]:
+        """Iterate the persisted record field names."""
+        return iter(self.to_record())
+
+    def __len__(self) -> int:
+        """Return the number of persisted record fields."""
+        return len(self.to_record())
+
+    def copy(self) -> dict[str, str | int]:
+        """Return a detached persisted-record representation."""
+        return self.to_record()
+
+    def to_record(self) -> dict[str, str | int]:
+        """Return the closed persistent identity record for this tool kind."""
+        record: dict[str, str | int] = {
+            "source_path": self.source_path,
+            "owner_uid": self.owner_uid,
+            "sha256": self.sha256,
+        }
+        if self.kind == "browser":
+            record.update(
+                {
+                    "mode": self.mode,
+                    "device": self.device,
+                    "inode": self.inode,
+                    "size_bytes": self.size_bytes,
+                }
+            )
+        return record
+
+
 class TrustedMediaToolStore:
     """Persist approved tool digests and create verified execution copies."""
 
@@ -45,23 +104,24 @@ class TrustedMediaToolStore:
         )
         self._staging_root = Path(staging_root) if staging_root is not None else None
 
-    def enroll(self, kind: str, path: Path, approval_provider=None) -> dict[str, str | int]:
+    def enroll(self, kind: str, path: Path, approval_provider=None) -> TrustedExecutable:
         """Approve and persist the identity of one fixed-purpose media tool."""
         self._validate_kinds({kind})
         source = Path(path)
-        canonical, owner_uid, digest = self._inspect_source(kind, source)
+        executable = self._inspect_source(kind, source)
         provider = approval_provider or NativeApprovalProvider()
         provider.confirm_media_tool_enrollment(
             kind=kind,
-            path=canonical,
-            owner_uid=owner_uid,
-            sha256=digest,
+            path=executable.source_path,
+            owner_uid=executable.owner_uid,
+            sha256=executable.sha256,
         )
         tools = self._load_config(allow_missing=True)
-        record = {"source_path": canonical, "owner_uid": owner_uid, "sha256": digest}
-        tools[kind] = record
-        self._atomic_write({"version": 1, "tools": tools})
-        return record.copy()
+        tools[kind] = executable
+        self._atomic_write(
+            {"version": 1, "tools": {name: record.to_record() for name, record in tools.items()}}
+        )
+        return executable
 
     def load_required(self, kinds: Iterable[str]) -> dict[str, TrustedMediaTool]:
         """Load, re-hash, and privately stage every requested enrolled tool."""
@@ -76,13 +136,7 @@ class TrustedMediaToolStore:
         loaded: dict[str, TrustedMediaTool] = {}
         try:
             for kind in sorted(required):
-                record = tools[kind]
-                loaded[kind] = self._stage(
-                    kind,
-                    str(record["source_path"]),
-                    int(record["owner_uid"]),
-                    str(record["sha256"]),
-                )
+                loaded[kind] = self._stage(self.resolve_verified(kind, tools=tools))
             return loaded
         except Exception:
             for tool in loaded.values():
@@ -94,6 +148,21 @@ class TrustedMediaToolStore:
         """Remove a private staged executable after its process lifetime."""
         shutil.rmtree(Path(tool.staged_path).parent, ignore_errors=True)
 
+    def resolve_verified(
+        self, kind: str, *, tools: Mapping[str, TrustedExecutable] | None = None
+    ) -> TrustedExecutable:
+        """Return one currently verified executable without copying it for execution."""
+        self._validate_kinds({kind})
+        records = dict(tools) if tools is not None else self._load_config()
+        try:
+            enrolled = records[kind]
+        except KeyError as exc:
+            raise TrustedMediaToolError(f"required media tool is not enrolled: {kind}") from exc
+        current = self._inspect_source(kind, Path(enrolled.source_path))
+        if not self._same_identity(enrolled, current):
+            raise TrustedMediaToolError(f"trusted {kind} identity changed after enrollment")
+        return current
+
     @staticmethod
     def _validate_kinds(kinds: set[str]) -> None:
         if not kinds.issubset(MEDIA_TOOL_KINDS):
@@ -101,7 +170,7 @@ class TrustedMediaToolStore:
             raise TrustedMediaToolError("unsupported media tool kind: " + ", ".join(sorted(unknown)))
 
     @staticmethod
-    def _inspect_source(kind: str, source: Path) -> tuple[str, int, str]:
+    def _inspect_source(kind: str, source: Path) -> TrustedExecutable:
         if not source.is_absolute() or source.is_symlink():
             raise TrustedMediaToolError(
                 "media tool enrollment requires an absolute regular non-symlink file"
@@ -114,7 +183,14 @@ class TrustedMediaToolStore:
             raise TrustedMediaToolError("media tool must be a regular executable file")
         canonical = source.resolve(strict=True)
         system_say = kind == "narration" and str(canonical) == "/usr/bin/say" and source_stat.st_uid == 0
-        if (source_stat.st_uid != os.getuid() and not system_say) or source_stat.st_mode & 0o022:
+        system_browser = kind == "browser" and str(canonical) in SYSTEM_BROWSER_EXECUTABLES
+        if kind == "browser" and not system_browser:
+            raise TrustedMediaToolError("browser enrollment requires an approved system browser executable path")
+        if (
+            source_stat.st_uid != os.getuid()
+            and not system_say
+            and not (system_browser and source_stat.st_uid == 0)
+        ) or source_stat.st_mode & 0o022:
             raise TrustedMediaToolError("media tool owner or write permissions are not trusted")
         for parent in canonical.parents:
             if parent.stat().st_mode & 0o022:
@@ -122,9 +198,18 @@ class TrustedMediaToolStore:
         digest, opened_stat = _digest_opened_file(canonical)
         if (opened_stat.st_dev, opened_stat.st_ino) != (source_stat.st_dev, source_stat.st_ino):
             raise TrustedMediaToolError("media tool changed during enrollment")
-        return str(canonical), opened_stat.st_uid, digest
+        return TrustedExecutable(
+            kind=kind,
+            source_path=str(canonical),
+            owner_uid=opened_stat.st_uid,
+            mode=stat.S_IMODE(opened_stat.st_mode),
+            device=opened_stat.st_dev,
+            inode=opened_stat.st_ino,
+            size_bytes=opened_stat.st_size,
+            sha256=digest,
+        )
 
-    def _load_config(self, *, allow_missing: bool = False) -> dict[str, dict[str, str | int]]:
+    def _load_config(self, *, allow_missing: bool = False) -> dict[str, TrustedExecutable]:
         self._ensure_private_config_directory(create=allow_missing)
         if not self.path.exists():
             if allow_missing:
@@ -152,14 +237,13 @@ class TrustedMediaToolStore:
             raise TrustedMediaToolError("trusted media tool config has unexpected fields")
         if payload["version"] != 1 or not isinstance(payload["tools"], dict):
             raise TrustedMediaToolError("trusted media tool config version is invalid")
-        tools: dict[str, dict[str, str | int]] = {}
+        tools: dict[str, TrustedExecutable] = {}
         for kind, record in payload["tools"].items():
             self._validate_kinds({kind})
-            if not isinstance(record, dict) or set(record) != {
-                "source_path",
-                "owner_uid",
-                "sha256",
-            }:
+            expected_fields = {"source_path", "owner_uid", "sha256"}
+            if kind == "browser":
+                expected_fields |= {"mode", "device", "inode", "size_bytes"}
+            if not isinstance(record, dict) or set(record) != expected_fields:
                 raise TrustedMediaToolError("trusted media tool record has unexpected fields")
             source_path = record["source_path"]
             owner_uid = record["owner_uid"]
@@ -170,31 +254,45 @@ class TrustedMediaToolStore:
                 raise TrustedMediaToolError("trusted media tool digest is invalid")
             if not isinstance(owner_uid, int) or isinstance(owner_uid, bool):
                 raise TrustedMediaToolError("trusted media tool owner UID is invalid")
-            if owner_uid != os.getuid() and not (
-                    kind == "narration" and source_path == "/usr/bin/say" and owner_uid == 0):
+            system_say = kind == "narration" and source_path == "/usr/bin/say" and owner_uid == 0
+            system_browser = kind == "browser" and source_path in SYSTEM_BROWSER_EXECUTABLES and owner_uid == 0
+            if owner_uid != os.getuid() and not system_say and not system_browser:
                 raise TrustedMediaToolError("trusted media tool recorded owner does not match user")
-            tools[kind] = {
-                "source_path": source_path,
-                "owner_uid": owner_uid,
-                "sha256": digest,
-            }
+            browser_identity = {"mode": 0, "device": 0, "inode": 0, "size_bytes": 0}
+            if kind == "browser":
+                browser_identity = {
+                    field: record[field]
+                    for field in ("mode", "device", "inode", "size_bytes")
+                }
+                if (
+                    not isinstance(browser_identity["mode"], int)
+                    or isinstance(browser_identity["mode"], bool)
+                    or not 0 <= browser_identity["mode"] <= 0o777
+                    or any(
+                        not isinstance(browser_identity[field], int)
+                        or isinstance(browser_identity[field], bool)
+                        or browser_identity[field] < 0
+                        for field in ("device", "inode", "size_bytes")
+                    )
+                ):
+                    raise TrustedMediaToolError("trusted browser identity metadata is invalid")
+            tools[kind] = TrustedExecutable(
+                kind=kind,
+                source_path=source_path,
+                owner_uid=owner_uid,
+                mode=browser_identity["mode"],
+                device=browser_identity["device"],
+                inode=browser_identity["inode"],
+                size_bytes=browser_identity["size_bytes"],
+                sha256=digest,
+            )
         return tools
 
-    def _stage(
-        self, kind: str, source_path: str, expected_owner_uid: int, expected_sha256: str
-    ) -> TrustedMediaTool:
+    def _stage(self, executable: TrustedExecutable) -> TrustedMediaTool:
+        kind = executable.kind
+        source_path = executable.source_path
+        expected_sha256 = executable.sha256
         source = Path(source_path)
-        canonical, current_owner_uid, current_sha256 = self._inspect_source(kind, source)
-        if (
-            canonical != source_path
-            or (expected_owner_uid != os.getuid() and not (
-                kind == "narration" and source_path == "/usr/bin/say" and expected_owner_uid == 0))
-            or current_owner_uid != expected_owner_uid
-            or not hmac.compare_digest(current_sha256, expected_sha256)
-        ):
-            raise TrustedMediaToolError(
-                f"trusted {kind} owner, digest, or path changed after enrollment"
-            )
         if self._staging_root is not None:
             self._staging_root.mkdir(parents=True, exist_ok=True)
             os.chmod(self._staging_root, 0o700)
@@ -219,6 +317,24 @@ class TrustedMediaToolStore:
         except Exception:
             shutil.rmtree(private_root, ignore_errors=True)
             raise
+
+    @staticmethod
+    def _same_identity(enrolled: TrustedExecutable, current: TrustedExecutable) -> bool:
+        if (
+            enrolled.kind != current.kind
+            or enrolled.source_path != current.source_path
+            or enrolled.owner_uid != current.owner_uid
+            or not hmac.compare_digest(enrolled.sha256, current.sha256)
+        ):
+            return False
+        if enrolled.kind == "browser":
+            return (
+                enrolled.mode == current.mode
+                and enrolled.device == current.device
+                and enrolled.inode == current.inode
+                and enrolled.size_bytes == current.size_bytes
+            )
+        return True
 
     def _atomic_write(self, payload: dict[str, object]) -> None:
         directory_fd = self._open_private_config_directory(create=True)
@@ -314,6 +430,8 @@ def _digest_opened_file(path: Path) -> tuple[str, os.stat_result]:
 
 __all__ = [
     "MEDIA_TOOL_KINDS",
+    "SYSTEM_BROWSER_EXECUTABLES",
+    "TrustedExecutable",
     "TrustedMediaTool",
     "TrustedMediaToolError",
     "TrustedMediaToolStore",

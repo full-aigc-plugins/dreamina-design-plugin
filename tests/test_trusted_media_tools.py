@@ -25,11 +25,52 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
         self.ffmpeg = self.root / "ffmpeg"
         self.ffmpeg.write_bytes(b"trusted ffmpeg")
         self.ffmpeg.chmod(0o755)
+        self.node_path = self.root / "node"
+        self.node_path.write_bytes(b"trusted node")
+        self.node_path.chmod(0o755)
+        self.chrome_path = self.root / "Google Chrome.app" / "Contents" / "MacOS" / "Google Chrome"
+        self.chrome_path.parent.mkdir(parents=True)
+        self.chrome_path.write_bytes(b"trusted browser")
+        self.chrome_path.chmod(0o755)
         self.approver = _Approve()
         self.store = TrustedMediaToolStore(
             path=self.root / "config" / "trusted-media-tools.json",
             staging_root=self.root / "staged",
         )
+
+    def test_node_and_browser_are_verified_by_exact_identity(self) -> None:
+        with patch(
+            "scripts.trusted_media_tools.SYSTEM_BROWSER_EXECUTABLES",
+            frozenset({str(self.chrome_path.resolve())}),
+        ):
+            node = self.store.enroll("node", self.node_path, approval_provider=self.approver)
+            browser = self.store.enroll("browser", self.chrome_path, approval_provider=self.approver)
+            self.assertEqual(self.store.resolve_verified("node").sha256, node["sha256"])
+            self.assertEqual(self.store.resolve_verified("browser").sha256, browser["sha256"])
+
+    def test_browser_rejects_unapproved_path_and_identity_changes(self) -> None:
+        unapproved = self.root / "Chromium.app" / "Contents" / "MacOS" / "Chromium"
+        unapproved.parent.mkdir(parents=True)
+        unapproved.write_bytes(b"unapproved browser")
+        unapproved.chmod(0o755)
+        with self.assertRaisesRegex(TrustedMediaToolError, "approved system browser"):
+            self.store.enroll("browser", unapproved, approval_provider=self.approver)
+
+        with patch(
+            "scripts.trusted_media_tools.SYSTEM_BROWSER_EXECUTABLES",
+            frozenset({str(self.chrome_path.resolve())}),
+        ):
+            self.store.enroll("browser", self.chrome_path, approval_provider=self.approver)
+            self.chrome_path.chmod(0o700)
+            with self.assertRaisesRegex(TrustedMediaToolError, "identity changed"):
+                self.store.resolve_verified("browser")
+            self.chrome_path.chmod(0o755)
+            replacement = self.root / "replacement"
+            replacement.write_bytes(b"trusted browser")
+            replacement.chmod(0o755)
+            os.replace(replacement, self.chrome_path)
+            with self.assertRaisesRegex(TrustedMediaToolError, "identity changed"):
+                self.store.resolve_verified("browser")
 
     def test_enrollment_rejects_symlink_and_group_writable_binary(self) -> None:
         link = self.root / "ffmpeg-link"
