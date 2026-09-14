@@ -28,7 +28,9 @@ def request(prompt: str) -> dict:
 def quote() -> dict:
     one, retry, two = request("shot one"), request("shot one repaired"), request("shot two")
     return {"project_id": PROJECT_ID, "quote_version": "v001", "design_version": "v001",
-            "design_fingerprint": "b" * 64, "quote_fingerprint": "c" * 64, "items": [
+            "design_fingerprint": "b" * 64, "quote_fingerprint": "c" * 64,
+            "output_profile": {"container": "mp4", "codec": "h264", "width": 1280,
+                               "height": 720, "fps": 24}, "items": [
         {"shot_id": "S01", "attempts": [
           {"attempt_number": 2, "repair_directive": "identity_consistency", "request": retry, "request_fingerprint": build_video_request_fingerprint(retry)},
           {"attempt_number": 1, "request": one, "request_fingerprint": build_video_request_fingerprint(one)}]},
@@ -94,7 +96,9 @@ class TrustedProbeAdapter:
         return {"streams": [{"codec_type": "video", "width": self.width, "height": 720,
                              "codec_name": "h264"}], "format": {"duration": "4.0"}}
     def verify_video_frames(self, path, duration_seconds):
-        return {"readable": True, "start_anchor": True, "end_anchor": True}
+        frame = {"at_seconds": 0.0, "sha256": "7" * 64, "size_bytes": 16}
+        return {"readable": True, "start_anchor": frame,
+                "end_anchor": {**frame, "at_seconds": 3.95}}
 
 
 class TimeoutWithSubmitId(TimeoutError):
@@ -121,7 +125,7 @@ class VideoBatchExecutorTests(unittest.TestCase):
 
     def make_receipt(self, task, *, malformed=False):
         bound = {"project_id": PROJECT_ID, "batch_version": "v001", "shot_id": "S01", "attempt": 1,
-                 "artifact_sha256": task["artifacts"][0]["sha256"], "design_version": "v001",
+                 "submit_id": task["submit_id"], "artifact_sha256": task["artifacts"][0]["sha256"], "design_version": "v001",
                  "design_fingerprint": "b" * 64, "quote_fingerprint": "c" * 64,
                  "allowance_id": "ba_" + "2" * 32}
         artifact = {**bound, **task["artifacts"][0], "verified_sha256": task["artifacts"][0]["sha256"],
@@ -404,6 +408,28 @@ class VideoBatchExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "trusted recomputation"):
             self.executor.apply_evaluation_decision(receipt)
         self.assertNotIn("evaluation_receipt", self.executor._load(PROJECT_ID, "v001")["tasks"][0])
+
+    def test_tampered_frame_digest_cannot_pass_trusted_recomputation(self):
+        self.executor.run_next(PROJECT_ID, "v001", 1)
+        self.adapter.status = "success"; self.adapter.download = True
+        task = self.executor.reconcile(PROJECT_ID, "v001")["tasks"][0]
+        receipt = self.make_receipt(task)
+        receipt["artifact_evidence"]["frames"]["start_anchor"]["sha256"] = "8" * 64
+        receipt["evaluation_fingerprint"] = canonical_fingerprint(
+            {key: value for key, value in receipt.items() if key != "evaluation_fingerprint"})
+        with self.assertRaisesRegex(ValueError, "trusted recomputation"):
+            self.executor.apply_evaluation_decision(receipt)
+
+    def test_evaluation_receipt_must_bind_the_task_submit_id(self):
+        self.executor.run_next(PROJECT_ID, "v001", 1)
+        self.adapter.status = "success"; self.adapter.download = True
+        task = self.executor.reconcile(PROJECT_ID, "v001")["tasks"][0]
+        receipt = self.make_receipt(task)
+        receipt["binding"]["submit_id"] = "submit_foreign"
+        receipt["evaluation_fingerprint"] = canonical_fingerprint(
+            {key: value for key, value in receipt.items() if key != "evaluation_fingerprint"})
+        with self.assertRaisesRegex(ValueError, "submit"):
+            self.executor.apply_evaluation_decision(receipt)
 
     def test_private_evaluation_handoff_rejects_stale_artifact_digest(self):
         self.executor.run_next(PROJECT_ID, "v001", 1)

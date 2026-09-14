@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import selectors
 import signal
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -178,17 +180,36 @@ class MediaAdapter:
             raise MediaOutputError("ffprobe JSON output must be an object")
         return payload
 
-    def verify_video_frames(self, path: Path, duration_seconds: float) -> dict[str, bool]:
-        """Decode one frame at both clip anchors through the enrolled ffmpeg."""
+    def verify_video_frames(self, path: Path, duration_seconds: float) -> dict[str, object]:
+        """Decode and fingerprint one bounded image at both clip anchors."""
         if not Path(path).is_absolute() or duration_seconds <= 0:
             raise MediaOutputError("video frame verification input is invalid")
         positions = {"start_anchor": 0.0, "end_anchor": max(0.0, duration_seconds - 0.05)}
-        decoded = {}
-        for name, position in positions.items():
-            result = self.run("ffmpeg", ["-v", "error", "-ss", f"{position:.3f}", "-i", str(path),
-                "-frames:v", "1", "-f", "null", "-"], timeout_seconds=30)
-            decoded[name] = result.exit_code == 0
-        return {"readable": all(decoded.values()), **decoded}
+        decoded: dict[str, object] = {}
+        with tempfile.TemporaryDirectory(prefix="dreamina-frame-") as temporary:
+            root = Path(temporary)
+            root.chmod(0o700)
+            for name, position in positions.items():
+                output = root / f"{name}.png"
+                result = self.run("ffmpeg", ["-v", "error", "-ss", f"{position:.3f}",
+                    "-i", str(path), "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png",
+                    "-y", str(output)], timeout_seconds=30)
+                if result.exit_code != 0:
+                    raise MediaOutputError(f"ffmpeg frame decode failed with exit {result.exit_code}")
+                try:
+                    size_bytes = output.stat().st_size
+                    if size_bytes <= 0 or size_bytes > self.max_output_bytes:
+                        raise MediaOutputError("ffmpeg frame output size is invalid")
+                    frame = output.read_bytes()
+                except OSError as exc:
+                    raise MediaOutputError("ffmpeg frame output is unavailable") from exc
+                if not frame or not (frame.startswith(b"\x89PNG\r\n\x1a\n")
+                                     or frame.startswith(b"\xff\xd8\xff")):
+                    raise MediaOutputError("ffmpeg frame output is not a valid PNG or JPEG")
+                decoded[name] = {"at_seconds": round(position, 3),
+                                 "sha256": hashlib.sha256(frame).hexdigest(),
+                                 "size_bytes": len(frame)}
+        return {"readable": True, **decoded}
 
     @staticmethod
     def _minimal_environment() -> dict[str, str]:

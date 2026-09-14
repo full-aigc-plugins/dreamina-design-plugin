@@ -369,6 +369,8 @@ class VideoBatchExecutor:
                          and item["attempt"] == binding["attempt"]), None)
             if task is None or task.get("state") != "awaiting_evaluation":
                 raise ValueError("evaluation decision requires an artifact awaiting evaluation")
+            if binding.get("submit_id") != task.get("submit_id"):
+                raise ValueError("evaluation receipt submit id is stale")
             artifact = next((item for item in task.get("artifacts", [])
                              if item.get("sha256") == binding["artifact_sha256"]), None)
             if artifact is None:
@@ -386,9 +388,9 @@ class VideoBatchExecutor:
                                     and item["attempt_number"] == binding["attempt"]), None)
             if planned_current is None:
                 raise ValueError("evaluation shot attempt is outside quote")
-            probe = receipt["artifact_evidence"]["probe"]
-            design_shot = {**binding, "id": binding["shot_id"], "width": probe.get("width"),
-                           "height": probe.get("height"), "codec": quote.get("output_profile", {}).get("codec", "h264"),
+            profile = quote.get("output_profile", {})
+            design_shot = {**binding, "id": binding["shot_id"], "width": profile.get("width"),
+                           "height": profile.get("height"), "codec": profile.get("codec"),
                            "duration_seconds": planned_current["request"].get("duration_seconds"),
                            "aspect_ratio": planned_current["request"].get("ratio")}
             verification_artifact = {**artifact, **binding}

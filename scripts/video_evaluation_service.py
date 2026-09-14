@@ -18,7 +18,7 @@ MEASURED_GATES = frozenset({"artifact_integrity", "dimensions", "codec", "durati
                             "frame_readability", "start_anchor", "end_anchor"})
 SEMANTIC_GATES = frozenset({"intent", "composition", "identity_continuity", "camera_behavior",
                             "rhythm_function", "temporal_defects", "source_copying", "subtitle_safe_area"})
-BINDING_FIELDS = frozenset({"project_id", "batch_version", "shot_id", "attempt", "artifact_sha256",
+BINDING_FIELDS = frozenset({"project_id", "batch_version", "shot_id", "attempt", "submit_id", "artifact_sha256",
                             "design_version", "design_fingerprint", "quote_fingerprint", "allowance_id"})
 REPAIR_BY_GATE = {"identity_continuity": "identity_consistency", "camera_behavior": "camera_match",
                   "composition": "camera_match", "rhythm_function": "camera_match",
@@ -37,6 +37,8 @@ def _binding(source: Mapping[str, Any]) -> dict[str, Any]:
     for name in ("artifact_sha256", "design_fingerprint", "quote_fingerprint"):
         if not isinstance(result[name], str) or _DIGEST.fullmatch(result[name]) is None:
             raise EvaluationContractError(f"evaluation {name} is invalid")
+    if not isinstance(result["submit_id"], str) or re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", result["submit_id"]) is None:
+        raise EvaluationContractError("evaluation submit_id is invalid")
     return result
 
 
@@ -62,7 +64,7 @@ class VideoEvaluationService:
         self._media_adapter = media_adapter
 
     def measure_clip(self, artifact: Mapping[str, Any], design_shot: Mapping[str, Any], *,
-                     binding: Mapping[str, Any]) -> dict[str, Any]:
+                     binding: Mapping[str, Any], expected_media: Mapping[str, Any] | None = None) -> dict[str, Any]:
         trusted_binding = _binding(binding)
         artifact_conflict = any(name in artifact and artifact.get(name) != trusted_binding[name] for name in BINDING_FIELDS)
         design_conflict = any(name in design_shot and design_shot.get(name) != trusted_binding[name] for name in BINDING_FIELDS)
@@ -84,29 +86,31 @@ class VideoEvaluationService:
             frame_evidence = self._media_adapter.verify_video_frames(Path(str(artifact["path"])), duration)
         except Exception:
             frame_evidence = {}
+        start_frame, end_frame = frame_evidence.get("start_anchor"), frame_evidence.get("end_anchor")
         readable = frame_evidence.get("readable") if isinstance(frame_evidence.get("readable"), bool) else None
 
         def gate(passed: bool | None, evidence: str) -> dict[str, str]:
             return {"status": "skipped" if passed is None else "passed" if passed else "failed",
                     "evidence": evidence}
 
-        expected_width, expected_height = design_shot.get("width"), design_shot.get("height")
+        expected = expected_media if isinstance(expected_media, Mapping) else design_shot
+        expected_width, expected_height = expected.get("width"), expected.get("height")
         ratio = None if not isinstance(width, int) or not isinstance(height, int) or height == 0 else width / height
         expected_ratio = None if not isinstance(expected_width, int) or not isinstance(expected_height, int) or expected_height == 0 else expected_width / expected_height
-        expected_duration = design_shot.get("duration_seconds")
+        expected_duration = expected.get("duration_seconds")
         gates = {
             "artifact_integrity": gate(None if artifact_conflict or digest is None else digest == trusted_binding["artifact_sha256"] == artifact.get("sha256"), "trusted artifact identity conflict" if artifact_conflict else "trusted digest verification"),
             "dimensions": gate(None if design_conflict or None in (width, height, expected_width, expected_height) else (width, height) == (expected_width, expected_height), "trusted design identity conflict" if design_conflict else "trusted probe dimensions"),
-            "codec": gate(None if design_conflict or codec is None or design_shot.get("codec") is None else codec == design_shot["codec"], "trusted design identity conflict" if design_conflict else "trusted probe codec"),
+            "codec": gate(None if design_conflict or codec is None or expected.get("codec") is None else codec == expected["codec"], "trusted design identity conflict" if design_conflict else "trusted probe codec"),
             "duration": gate(None if not isinstance(duration, (int, float)) or not isinstance(expected_duration, (int, float)) else abs(duration - expected_duration) <= 0.1, "trusted probe duration"),
             "aspect_ratio": gate(None if ratio is None or expected_ratio is None else abs(ratio - expected_ratio) <= 0.001, "trusted probe aspect ratio"),
             "frame_readability": gate(readable, "trusted media probe readability"),
-            "start_anchor": gate(frame_evidence.get("start_anchor") if isinstance(frame_evidence.get("start_anchor"), bool) else None, "trusted decoded start anchor"),
-            "end_anchor": gate(frame_evidence.get("end_anchor") if isinstance(frame_evidence.get("end_anchor"), bool) else None, "trusted decoded end anchor"),
+            "start_anchor": gate(True if isinstance(start_frame, Mapping) else None, "trusted decoded start anchor"),
+            "end_anchor": gate(True if isinstance(end_frame, Mapping) else None, "trusted decoded end anchor"),
         }
         evidence = {"width": width, "height": height, "codec": codec, "duration_seconds": duration,
-                    "readable": readable, "start_anchor": frame_evidence.get("start_anchor"),
-                    "end_anchor": frame_evidence.get("end_anchor")}
+                    "readable": readable, "start_anchor": copy.deepcopy(start_frame),
+                    "end_anchor": copy.deepcopy(end_frame)}
         return {"binding": trusted_binding, "gates": gates, "evidence": evidence}
 
     def validate_semantic_evaluation(self, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -157,7 +161,18 @@ class VideoEvaluationService:
                  binding: Mapping[str, Any], allowance: Mapping[str, Any], quote: Mapping[str, Any], evaluation_id: str,
                  evaluator: Mapping[str, Any]) -> dict[str, Any]:
         trusted_binding = _binding(binding)
-        measured = self.measure_clip(artifact, design_shot, binding=trusted_binding)
+        item = next((entry for entry in quote.get("items", [])
+                     if isinstance(entry, Mapping) and entry.get("shot_id") == trusted_binding["shot_id"]), None)
+        attempt = next((entry for entry in item.get("attempts", [])
+                        if isinstance(entry, Mapping) and entry.get("attempt_number") == trusted_binding["attempt"]), None) \
+            if isinstance(item, Mapping) else None
+        request = attempt.get("request", {}) if isinstance(attempt, Mapping) else {}
+        profile = quote.get("output_profile", {}) if isinstance(quote.get("output_profile"), Mapping) else {}
+        expected_media = {"width": profile.get("width"), "height": profile.get("height"),
+                          "codec": profile.get("codec"), "duration_seconds": request.get("duration_seconds"),
+                          "aspect_ratio": request.get("ratio")}
+        measured = self.measure_clip(artifact, design_shot, binding=trusted_binding,
+                                     expected_media=expected_media)
         try:
             semantic = self.validate_semantic_evaluation(semantic_payload)
             if semantic["binding"] != trusted_binding:

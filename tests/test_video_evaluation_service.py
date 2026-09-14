@@ -27,7 +27,9 @@ class SyntheticTrustedMediaAdapter:
                       "codec_name": "h264"}], "format": {"duration": "4.0"}}
     def probe_json(self, path): return copy.deepcopy(self.probe)
     def verify_video_frames(self, path, duration_seconds):
-        return {"readable": True, "start_anchor": True, "end_anchor": True}
+        frame = {"at_seconds": 0.0, "sha256": "7" * 64, "size_bytes": 16}
+        return {"readable": True, "start_anchor": frame,
+                "end_anchor": {**frame, "at_seconds": 3.95}}
 
 
 class VideoEvaluationServiceTests(unittest.TestCase):
@@ -40,7 +42,7 @@ class VideoEvaluationServiceTests(unittest.TestCase):
         digest = hashlib.sha256(self.clip.read_bytes()).hexdigest()
         self.quote = make_quote()
         self.binding = {"project_id": self.quote["project_id"], "batch_version": self.quote["quote_version"],
-                        "shot_id": "S01", "attempt": 1, "artifact_sha256": digest,
+                        "shot_id": "S01", "attempt": 1, "submit_id": "submit_1", "artifact_sha256": digest,
                         "design_version": self.quote["design_version"], "design_fingerprint": self.quote["design_fingerprint"],
                         "quote_fingerprint": self.quote["quote_fingerprint"], "allowance_id": "ba_" + "d" * 32}
         self.artifact = {**self.binding, "path": str(self.clip), "sha256": digest, "verified_sha256": digest,
@@ -114,6 +116,32 @@ class VideoEvaluationServiceTests(unittest.TestCase):
             "evaluated_at": "2026-09-14T02:00:00Z"})
         self.assertEqual(receipt["decision"], {"action": "manual_review"})
 
+    def test_quote_media_contract_overrides_untrusted_receipt_probe_claims(self):
+        self.media.probe["streams"][0].update(width=640, height=360)
+        claimed = copy.deepcopy(self.shot)
+        claimed.update(width=640, height=360, aspect_ratio="16:9")
+        allowance = {"allowance_id": self.binding["allowance_id"], "project_id": self.binding["project_id"],
+                     "quote_version": self.binding["batch_version"], "quote_fingerprint": self.binding["quote_fingerprint"],
+                     "design_version": self.binding["design_version"], "design_fingerprint": self.binding["design_fingerprint"],
+                     "state": "active", "requests": [], "reservations": []}
+        receipt = self.service.evaluate(self.artifact, claimed, semantic(self.binding), binding=self.binding,
+            allowance=allowance, quote=self.quote, evaluation_id="eval_quote_contract",
+            evaluator={"provider": "codex", "model": "test", "evaluated_at": "2026-09-14T02:00:00Z"})
+        self.assertEqual(receipt["measured_gates"]["dimensions"]["status"], "failed")
+        self.assertEqual(receipt["decision"], {"action": "manual_review"})
+
+    def test_empty_frame_output_is_unavailable_and_requires_manual_review(self):
+        self.media.verify_video_frames = lambda path, duration: {}
+        allowance = {"allowance_id": self.binding["allowance_id"], "project_id": self.binding["project_id"],
+                     "quote_version": self.binding["batch_version"], "quote_fingerprint": self.binding["quote_fingerprint"],
+                     "design_version": self.binding["design_version"], "design_fingerprint": self.binding["design_fingerprint"],
+                     "state": "active", "requests": [], "reservations": []}
+        receipt = self.service.evaluate(self.artifact, self.shot, semantic(self.binding), binding=self.binding,
+            allowance=allowance, quote=self.quote, evaluation_id="eval_empty_frames",
+            evaluator={"provider": "codex", "model": "test", "evaluated_at": "2026-09-14T02:00:00Z"})
+        self.assertEqual(receipt["measured_gates"]["start_anchor"]["status"], "skipped")
+        self.assertEqual(receipt["decision"], {"action": "manual_review"})
+
     def test_real_allowance_and_quote_select_only_exact_available_retry(self):
         allowance_service = make_allowances(Path(self.tmp.name) / "allowance-root", Path(self.tmp.name) / "seal.key")
         allowance_id = allowance_service.activate(self.quote, RecordingApprover())
@@ -154,6 +182,7 @@ class VideoEvaluationServiceTests(unittest.TestCase):
         self.assertEqual(set(receipt), {"schema_version", "evaluation_id", "binding", "artifact_evidence",
             "measured_gates", "semantic_gates", "failed_gates", "decision", "evaluator", "evaluation_fingerprint"})
         self.assertEqual(receipt["decision"], {"action": "accepted"})
+        self.assertEqual(receipt["binding"]["submit_id"], "submit_1")
         validate_contract(receipt, "shot_evaluation.schema.json")
 
 

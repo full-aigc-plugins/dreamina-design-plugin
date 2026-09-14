@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,6 +24,7 @@ class _FakeRunner:
         self.argv = []
         self.calls = []
         self.process_group_terminated = False
+        self.frame_bytes = b"\x89PNG\r\n\x1a\n" + b"frame"
 
     def run(self, argv, **kwargs):
         self.argv = list(argv)
@@ -31,6 +33,8 @@ class _FakeRunner:
         if self.raise_timeout:
             self.process_group_terminated = bool(kwargs.get("terminate_process_group"))
             raise TimeoutError("simulated timeout")
+        if "image2pipe" in argv and argv[-1] != "-":
+            Path(argv[-1]).write_bytes(self.frame_bytes)
         return self.exit_code, self.stdout, self.stderr
 
 
@@ -95,9 +99,21 @@ class MediaAdapterTests(unittest.TestCase):
 
     def test_video_frame_verification_decodes_both_anchors(self) -> None:
         result = self.adapter.verify_video_frames(self.source, 4.0)
-        self.assertEqual(result, {"readable": True, "start_anchor": True, "end_anchor": True})
+        digest = hashlib.sha256(self.runner.frame_bytes).hexdigest()
+        self.assertEqual(result["readable"], True)
+        self.assertEqual(result["start_anchor"], {"at_seconds": 0.0, "sha256": digest,
+            "size_bytes": len(self.runner.frame_bytes)})
+        self.assertEqual(result["end_anchor"], {"at_seconds": 3.95, "sha256": digest,
+            "size_bytes": len(self.runner.frame_bytes)})
         self.assertEqual([call[call.index("-ss") + 1] for call in self.runner.calls], ["0.000", "3.950"])
-        self.assertTrue(all(call[-4:] == ["1", "-f", "null", "-"] for call in self.runner.calls))
+        self.assertTrue(all(call[call.index("-frames:v"):call.index("-y")] ==
+                            ["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png"]
+                            for call in self.runner.calls))
+
+    def test_video_frame_verification_rejects_empty_success_output(self) -> None:
+        self.runner.frame_bytes = b""
+        with self.assertRaises(MediaOutputError):
+            self.adapter.verify_video_frames(self.source, 4.0)
 
     def test_probe_rejects_non_object_or_failed_output(self) -> None:
         for stdout, exit_code in (("[]", 0), ("not json", 0), ("{}", 2)):
