@@ -411,14 +411,20 @@ class AudioPlanService:
         music_value = None
         if music is not None:
             raw = dict(music)
-            intent = {"loop": raw.pop("loop", False), "trim_to_seconds": raw.pop("trim_to_seconds", None)}
+            intent = {"loop": raw.pop("loop", False), "trim_to_seconds": raw.pop("trim_to_seconds", None),
+                      "use_full_track": raw.pop("use_full_track", None)}
+            if intent["use_full_track"] is None:
+                intent["use_full_track"] = intent["loop"] is False and intent["trim_to_seconds"] is None
             if not isinstance(intent["loop"], bool) or (
                     intent["trim_to_seconds"] is not None and (
                         isinstance(intent["trim_to_seconds"], bool)
                         or not isinstance(intent["trim_to_seconds"], (int, float))
                         or not math.isfinite(intent["trim_to_seconds"])
                         or intent["trim_to_seconds"] <= 0
-                    )):
+                        or intent["trim_to_seconds"] > target_duration_seconds
+                    )) or not isinstance(intent["use_full_track"], bool) or (
+                        intent["trim_to_seconds"] is None and (intent["loop"] or not intent["use_full_track"])
+                    ) or (intent["trim_to_seconds"] is not None and intent["use_full_track"]):
                 raise ValueError("music loop and trim intent must be closed and bounded")
             music_value = {**_require_artifact(raw, role="music", key_store=self._key_store, required_right="music"), "intent": intent}
         if audio_policy in {"preserve_authorized_audio", "subtitles_only"} and requested:
@@ -517,10 +523,7 @@ class AudioPlanService:
         expected = canonical_fingerprint({key: value for key, value in document.items() if key not in {"version", "plan_fingerprint"}})
         if document["plan_fingerprint"] != expected:
             raise ContractValidationError("audio plan fingerprint is invalid")
-        project = self._project_store.get(document["project_id"])
-        if (project["creative_mode"] != document["creative_mode"]
-                or project["audio_policy"] != document["audio_policy"]):
-            raise ContractValidationError("audio plan no longer matches the current project")
+        document = self.verify_for_use(document)
         if indeterminate_commit is not None:
             expected_path = self._project_store.project_root(document["project_id"]) / "audio_plan" / f"{indeterminate_commit.version}.json"
             if (indeterminate_commit.project_id != document["project_id"]
@@ -540,6 +543,30 @@ class AudioPlanService:
             document["project_id"], "audio_plan", payload,
             schema_name="audio_plan.schema.json",
         )
+
+    def verify_for_use(self, plan: Mapping[str, Any]) -> dict[str, Any]:
+        """Reload current policy/rights and reverify every signed artifact before a side effect."""
+        document = json.loads(json.dumps(dict(plan), ensure_ascii=False, allow_nan=False))
+        validate_contract(document, "audio_plan.schema.json")
+        expected = canonical_fingerprint({key: value for key, value in document.items() if key not in {"version", "plan_fingerprint"}})
+        if document["plan_fingerprint"] != expected:
+            raise ContractValidationError("audio plan fingerprint is invalid")
+        if self._project_store is None:
+            raise ContractValidationError("audio plan use requires the current persisted project")
+        project = self._project_store.get(document["project_id"])
+        if project["creative_mode"] != document["creative_mode"] or project["audio_policy"] != document["audio_policy"]:
+            raise ContractValidationError("audio plan no longer matches the current project")
+        if document["preserve"]:
+            self._verify_current_rights(project_id=document["project_id"], design_fingerprint=document["design_fingerprint"],
+                audio_policy=document["audio_policy"], source_rights=document["source_rights"], requested=set(document["preserve"]))
+        artifacts = ([document["narration"]] if document["narration"] else []) + list(document["effects"]) + list(document["subtitles"])
+        for artifact in artifacts:
+            _require_artifact(artifact, role=artifact["artifact_role"], key_store=self._key_store,
+                              required_right="effects" if artifact["artifact_role"] == "effect" else None)
+        if document["music"]:
+            music = {key: value for key, value in document["music"].items() if key != "intent"}
+            _require_artifact(music, role="music", key_store=self._key_store, required_right="music")
+        return document
 
 
 __all__ = ["AUDIO_POLICIES", "AudioPlanService", "AudioReceiptKeyUnavailableError", "AudioRightsError", "ExistingAudioProvider", "FileAudioReceiptKeyStore", "MacOSSayProvider", "NarrationProviderError"]

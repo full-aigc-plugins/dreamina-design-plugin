@@ -190,7 +190,7 @@ class NarrationServiceTests(unittest.TestCase):
         with self.assertRaises(AudioRightsError):
             service.create_plan(source_rights=source_rights, preserve=["voice", "music"], **base)
         result = service.create_plan(source_rights=source_rights, preserve=["music"], **base)
-        self.assertEqual(result["music"]["intent"], {"loop": True, "trim_to_seconds": 8.0})
+        self.assertEqual(result["music"]["intent"], {"loop": True, "trim_to_seconds": 8.0, "use_full_track": False})
 
     def test_forged_or_incomplete_artifact_receipts_are_rejected(self) -> None:
         service = AudioPlanService()
@@ -484,10 +484,36 @@ class NarrationServiceTests(unittest.TestCase):
         for intent in ({"loop": "yes", "trim_to_seconds": 1}, {"loop": False, "trim_to_seconds": -1}):
             with self.subTest(intent=intent), self.assertRaises(ValueError):
                 service.create_plan(music={**music, **intent}, **base)
+        for intent in (
+            {"loop": False, "trim_to_seconds": 2, "use_full_track": False},
+            {"loop": True, "trim_to_seconds": None, "use_full_track": False},
+            {"loop": True, "trim_to_seconds": 1, "use_full_track": True},
+            {"loop": False, "trim_to_seconds": None, "use_full_track": False},
+        ):
+            with self.subTest(closed_intent=intent), self.assertRaises(ValueError):
+                service.create_plan(music={**music, **intent}, **base)
         with self.assertRaises(AudioRightsError):
             AudioPlanService(key_store=self.keys).create_plan(
                 **{**base, "creative_mode": "original_redesign", "audio_policy": "subtitles_only",
                    "music": None, "preserve": []})
+
+    def test_commit_reverifies_every_artifact_immediately_before_write(self) -> None:
+        store = VideoProjectStore(self.root / "projects")
+        project = store.create(title="audio", creative_mode="original_redesign", audio_policy="full_redesign")
+        narration = MacOSSayProvider(
+            SyntheticNarrationAdapter(), self.root, voices={"Samantha"}, key_store=self.keys
+        ).synthesize([{"start": 0, "end": 1, "text": "new"}], voice="Samantha", output_path=self.root / "commit.aiff")
+        service = AudioPlanService(key_store=self.keys, project_store=store)
+        plan = service.create_plan(
+            project_id=project["project_id"], design_fingerprint="2" * 64,
+            batch_fingerprint="3" * 64, creative_mode="original_redesign", audio_policy="full_redesign",
+            source_rights=None, transcript=None, rewritten_script=[{"start": 0, "end": 1, "text": "new"}],
+            narration=narration, music=None, effects=[], subtitles=[], target_duration_seconds=1,
+        )
+        Path(narration["path"]).write_bytes(b"changed-after-plan")
+        with self.assertRaises(ContractValidationError):
+            service.commit_plan(plan)
+        self.assertFalse((store.project_root(project["project_id"]) / "audio_plan").exists())
 
     def test_full_redesign_is_default_and_silent_allows_optional_subtitles(self) -> None:
         narration = MacOSSayProvider(
