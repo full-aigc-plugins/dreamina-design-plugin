@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from scripts.native_approval import NativeApprovalProvider
+from scripts.bounded_process import BoundedProcessError, BoundedProcessOutput, BoundedProcessTimeout, run_bounded
 
 MEDIA_TOOL_KINDS = frozenset({"ffmpeg", "ffprobe", "whisper", "narration", "node", "browser"})
 _LEGACY_FIELDS = frozenset({"source_path", "owner_uid", "sha256"})
@@ -84,11 +85,11 @@ class BrowserLaunchHandle:
         if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args): raise TrustedMediaToolError("browser arguments must be fixed strings")
         self._used = True
         try:
-            result = subprocess.run(["/usr/bin/python3", "-I", "-c", self._HELPER, str(self._bundle_descriptor), self._relative_executable, *args], shell=False, close_fds=True, pass_fds=(self._bundle_descriptor,), env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"}, capture_output=True, text=True, timeout=timeout_seconds, start_new_session=True)
-            if len(result.stdout or "") > stdout_cap or len(result.stderr or "") > stderr_cap: raise TrustedMediaToolError("browser output exceeded cap")
-            return result
-        except subprocess.TimeoutExpired as exc:
-            raise TrustedMediaToolError("browser launch timed out") from exc
+            result = run_bounded(["/usr/bin/python3", "-I", "-c", self._HELPER, str(self._bundle_descriptor), self._relative_executable, *args], env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"}, timeout_seconds=timeout_seconds, stdout_cap=stdout_cap, stderr_cap=stderr_cap, pass_fds=(self._bundle_descriptor,))
+            if result.returncode != 0: raise TrustedMediaToolError("browser helper failed")
+            return subprocess.CompletedProcess([], result.returncode, result.stdout, result.stderr)
+        except (BoundedProcessError, BoundedProcessTimeout, BoundedProcessOutput) as exc:
+            raise TrustedMediaToolError("browser launch failed") from exc
         finally: self.close()
 
     def close(self) -> None:
@@ -265,8 +266,8 @@ class TrustedMediaToolStore:
         except KeyError as exc: raise TrustedMediaToolError("browser path is not an approved application executable") from exc
         detail = ""
         for index, argv in enumerate(([_CODESIGN, "--verify", "--strict", "--deep", "--verbose=2", path], [_CODESIGN, "-d", "--verbose=4", "-r-", path])):
-            try: result = subprocess.run(argv, check=False, capture_output=True, text=True, shell=False)
-            except OSError as exc: raise TrustedMediaToolError("macOS codesign is unavailable for browser verification") from exc
+            try: result = run_bounded(argv, env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"}, timeout_seconds=10, stdout_cap=65536, stderr_cap=65536)
+            except (OSError, BoundedProcessError) as exc: raise TrustedMediaToolError("macOS codesign is unavailable for browser verification") from exc
             if result.returncode != 0: raise TrustedMediaToolError("browser code signature verification failed")
             if index: detail = (result.stdout or "") + "\n" + (result.stderr or "")
         signature = _parse_codesign_details(detail)

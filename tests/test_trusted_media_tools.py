@@ -96,7 +96,7 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
         with patch(
             "scripts.trusted_media_tools.BROWSER_APPLICATION_POLICIES",
             {str(self.chrome_path.resolve()): self._browser_policy()},
-        ), patch("scripts.trusted_media_tools.subprocess.run", side_effect=self._codesign_success):
+        ), patch("scripts.trusted_media_tools.run_bounded", side_effect=self._codesign_success):
             node = self.store.enroll("node", self.node_path, approval_provider=self.approver)
             browser = self.store.enroll("browser", self.chrome_path, approval_provider=self.approver)
             self.assertEqual(self.store.resolve_verified("node").sha256, node["sha256"])
@@ -115,7 +115,7 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
         with patch(
             "scripts.trusted_media_tools.BROWSER_APPLICATION_POLICIES",
             {str(self.chrome_path.resolve()): self._browser_policy()},
-        ), patch("scripts.trusted_media_tools.subprocess.run", side_effect=self._codesign_success):
+        ), patch("scripts.trusted_media_tools.run_bounded", side_effect=self._codesign_success):
             self.store.enroll("browser", self.chrome_path, approval_provider=self.approver)
             self.chrome_path.chmod(0o700)
             with self.assertRaisesRegex(TrustedMediaToolError, "identity changed"):
@@ -137,7 +137,7 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
             return self._codesign_success(argv, **kwargs)
 
         with patch("scripts.trusted_media_tools.BROWSER_APPLICATION_POLICIES", policy), patch(
-            "scripts.trusted_media_tools.subprocess.run", side_effect=record_codesign
+            "scripts.trusted_media_tools.run_bounded", side_effect=record_codesign
         ):
             self.store.enroll("browser", self.chrome_path, approval_provider=self.approver)
             self.store.reverify_browser_for_launch()
@@ -148,14 +148,14 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
     def test_browser_reverification_rejects_changed_signature(self) -> None:
         policy = {str(self.chrome_path.resolve()): self._browser_policy()}
         with patch("scripts.trusted_media_tools.BROWSER_APPLICATION_POLICIES", policy), patch(
-            "scripts.trusted_media_tools.subprocess.run", side_effect=self._codesign_success
+            "scripts.trusted_media_tools.run_bounded", side_effect=self._codesign_success
         ):
             self.store.enroll("browser", self.chrome_path, approval_provider=self.approver)
         changed_signature = subprocess.CompletedProcess(
             ["/usr/bin/codesign"], 0, stdout="", stderr="Identifier=com.google.Chrome\nTeamIdentifier=FOREIGN\n"
         )
         with patch("scripts.trusted_media_tools.BROWSER_APPLICATION_POLICIES", policy), patch(
-            "scripts.trusted_media_tools.subprocess.run", return_value=changed_signature
+            "scripts.trusted_media_tools.run_bounded", return_value=changed_signature
         ), self.assertRaisesRegex(TrustedMediaToolError, "signature"):
             self.store.reverify_browser_for_launch()
 

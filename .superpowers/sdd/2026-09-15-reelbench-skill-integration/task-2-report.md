@@ -83,3 +83,7 @@ contract, and compatibility tests passed (46 tests).
 The browser handle now launches the allowlisted bundle-relative executable via
 an inherited bundle directory FD and fixed isolated Python helper rather than
 executing `/dev/fd/<n>`. Focused 46-test regression remains green.
+
+Additional Round 3 commit routes codesign and the browser helper through the
+shared argv-only bounded process runner with minimal environment, caps, timeout,
+process-group termination, and descriptor cleanup.
