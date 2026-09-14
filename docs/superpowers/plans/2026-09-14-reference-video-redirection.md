@@ -103,7 +103,7 @@
 - Consumes: current `_tool_definitions()`, current five schema files, and current eleven tool schemas.
 - Produces: `load_schema(name: str) -> dict[str, Any]`, `validate_contract(payload, schema_name) -> None`, `canonical_fingerprint(payload) -> str`, a frozen `LEGACY_TOOL_CONTRACTS` fixture, and reusable deterministic video-project test builders.
 
-- [ ] **Step 1: Write characterization and contract tests**
+- [x] **Step 1: Write characterization and contract tests**
 
 ```python
 LEGACY_TOOLS = {
@@ -126,13 +126,13 @@ def test_contract_rejects_unknown_nested_property():
         }, "generation_request.schema.json")
 ```
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run: `python3 -m unittest tests.test_json_contracts tests.test_reference_video_compatibility -v`
 
 Expected: FAIL because `scripts.json_contracts` and the new schema are absent; existing compatibility tests remain green.
 
-- [ ] **Step 3: Implement the reusable validator and canonical fingerprint**
+- [x] **Step 3: Implement the reusable validator and canonical fingerprint**
 
 ```python
 class ContractValidationError(ValueError):
@@ -172,13 +172,13 @@ def run_mcp_initialize() -> dict[str, Any]:
 
 Later tasks extend these builders with fields introduced by their own schemas; builders never read real account, media, rights, or credential data.
 
-- [ ] **Step 4: Run focused and legacy contract tests**
+- [x] **Step 4: Run focused and legacy contract tests**
 
 Run: `python3 -m unittest tests.test_json_contracts tests.test_contracts tests.test_dreamina_mcp_server tests.test_reference_video_compatibility -v`
 
 Expected: PASS; the legacy tool-schema snapshots are byte-for-byte equal after JSON canonicalization.
 
-- [ ] **Step 5: Commit the contract foundation**
+- [x] **Step 5: Commit the contract foundation**
 
 ```bash
 git add scripts/json_contracts.py tests/test_json_contracts.py tests/test_reference_video_compatibility.py tests/fixtures/legacy_mcp_tools_0_3_0.json tests/video_project_fixtures.py tests/test_contracts.py tests/test_dreamina_mcp_server.py
@@ -199,7 +199,7 @@ git commit -m "test: freeze Dreamina 0.3 compatibility contracts"
 - Consumes: the ownership, permissions, digest, private-copy, timeout, and bounded-output patterns in `TrustedCliStore` and `DreaminaAdapter`.
 - Produces: `TrustedMediaToolStore.enroll(kind, path, approval_provider)`, `TrustedMediaToolStore.load_required(kinds)`, `MediaAdapter.run(kind, argv, timeout_seconds)`, and `MediaAdapter.probe_json(path)`.
 
-- [ ] **Step 1: Write failing trust-boundary tests**
+- [x] **Step 1: Write failing trust-boundary tests**
 
 ```python
 def test_enrollment_rejects_symlink_and_group_writable_binary(self):
@@ -236,13 +236,13 @@ def test_caller_cannot_select_unenrolled_tool_kind(self):
 
 The fake runner must capture `shell`, argv, environment, timeout, stdout cap, stderr cap, and termination behavior.
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run: `python3 -m unittest tests.test_trusted_media_tools tests.test_media_adapter tests.test_native_approval -v`
 
 Expected: FAIL with missing modules and missing `confirm_media_tool_enrollment`.
 
-- [ ] **Step 3: Implement the closed media runtime**
+- [x] **Step 3: Implement the closed media runtime**
 
 ```python
 MEDIA_TOOL_KINDS = frozenset({"ffmpeg", "ffprobe", "whisper", "narration"})
@@ -268,13 +268,13 @@ class MediaAdapter:
 
 Store configuration at `~/.config/codex-dreamina-design/trusted-media-tools.json` with directory mode `0700` and file mode `0600`. Permit only the four fixed kinds; stage and re-hash binaries before every process lifetime; use a minimal environment and `start_new_session=True`.
 
-- [ ] **Step 4: Run focused security tests**
+- [x] **Step 4: Run focused security tests**
 
 Run: `python3 -m unittest tests.test_trusted_media_tools tests.test_media_adapter tests.test_native_approval tests.test_trusted_cli tests.test_dreamina_adapter -v`
 
 Expected: PASS; the original Dreamina CLI trust path remains unchanged.
 
-- [ ] **Step 5: Commit trusted media execution**
+- [x] **Step 5: Commit trusted media execution**
 
 ```bash
 git add scripts/trusted_media_tools.py scripts/media_adapter.py scripts/native_approval.py tests/test_trusted_media_tools.py tests/test_media_adapter.py tests/test_native_approval.py
@@ -296,7 +296,7 @@ git commit -m "feat: add trusted local media runtime"
 - Consumes: `validate_contract`, `canonical_fingerprint`, `MediaAdapter.probe_json`, approved filesystem roots, and `NativeApprovalProvider.confirm`.
 - Produces: `VideoProjectStore.create(title, creative_mode, audio_policy)`, `get(project_id)`, `list_projects(limit)`, `transition(project_id, expected, next_state, evidence)`, `write_version(project_id, family, payload)`, and `MediaIntakeService.intake(project_id, source_path, approved_roots) -> SourceReceipt`.
 
-- [ ] **Step 1: Write failing project/state/intake tests**
+- [x] **Step 1: Write failing project/state/intake tests**
 
 ```python
 PROJECT_STATES = {
@@ -330,13 +330,13 @@ def test_source_over_2_gib_or_1800_seconds_returns_segment_source_action(self):
         self.intake.intake(self.project_id, self.source, [self.approved_root], probed_duration_seconds=1800.01)
 ```
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run: `python3 -m unittest tests.test_video_project_store tests.test_media_intake_service tests.test_contracts -v`
 
 Expected: FAIL because project schemas and services do not exist.
 
-- [ ] **Step 3: Implement private storage and source receipt**
+- [x] **Step 3: Implement private storage and source receipt**
 
 ```python
 PROJECT_ID = re.compile(r"^vp_[a-f0-9]{24}$")
@@ -381,13 +381,13 @@ class VideoProjectStore:
 
 The source receipt requires `source_sha256`, `size_bytes`, `mime_type`, codec, width, height, fps, duration, audio-stream summary, approved-root digest, staged path, and intake timestamp. Native confirmation binds the digest and declared processing purpose before analysis begins.
 
-- [ ] **Step 4: Run project and input-policy regression tests**
+- [x] **Step 4: Run project and input-policy regression tests**
 
 Run: `python3 -m unittest tests.test_video_project_store tests.test_media_intake_service tests.test_reference_policy tests.test_contracts -v`
 
 Expected: PASS, including multi-process locking and atomic-write recovery fixtures.
 
-- [ ] **Step 5: Commit project intake**
+- [x] **Step 5: Commit project intake**
 
 ```bash
 git add schemas/video_project.schema.json schemas/source_receipt.schema.json scripts/video_project_store.py scripts/media_intake_service.py tests/test_video_project_store.py tests/test_media_intake_service.py tests/test_contracts.py
@@ -408,7 +408,7 @@ git commit -m "feat: add private video projects and source intake"
 - Consumes: immutable `SourceReceipt`, trusted `MediaAdapter`, and `VideoProjectStore.write_version`.
 - Produces: `seed(project_id, scene_threshold, min_shot_seconds, track_hz)`, `extract_frames(analysis_id)`, `build_contact_sheets(analysis_id, cols, rows)`, and `recut(analysis_id, splits, merges)`.
 
-- [ ] **Step 1: Generate a deterministic synthetic fixture and write failing measurement tests**
+- [x] **Step 1: Generate a deterministic synthetic fixture and write failing measurement tests**
 
 ```python
 def test_seed_uses_probe_scene_scores_and_contiguous_timeline(self):
@@ -449,13 +449,13 @@ def test_semantic_fields_are_never_carried_across_changed_boundaries(self):
 
 Create the tiny hard-cut/dissolve/no-audio media during the test with trusted fixture argv; do not commit generated video binaries.
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run: `python3 -m unittest tests.test_reference_video_service tests.test_contracts -v`
 
 Expected: FAIL with missing analysis schema and service.
 
-- [ ] **Step 3: Implement Python-native deterministic analysis**
+- [x] **Step 3: Implement Python-native deterministic analysis**
 
 ```python
 @dataclass(frozen=True)
@@ -474,7 +474,7 @@ def normalized_cuts(*, duration: float, candidates: Sequence[float], minimum: fl
 
 Bound `scene_threshold` to `0.05..0.80`, `min_shot_seconds` to `0.10..5.00`, `track_hz` to `1..10`, splits/merges to 200 operations, contact sheets to 25 shots per page, and frame width to 240–960. Persist `track.json` separately and include a `machine_fingerprint` over source receipt, params, cuts, measured shots, and frame checksums.
 
-- [ ] **Step 4: Run focused tests and ReelBench-reference comparison**
+- [x] **Step 4: Run focused tests and ReelBench-reference comparison**
 
 Run: `python3 -m unittest tests.test_reference_video_service tests.test_media_adapter tests.test_media_intake_service -v`
 
@@ -482,7 +482,7 @@ Run: `node /Users/wandl/.agent-reach/repositories/eternityspring/reelbench-skill
 
 Expected: Python tests PASS and the pinned external reference remains at 449 passing assertions. The two systems need equivalent invariants, not byte-identical JSON.
 
-- [ ] **Step 5: Record attribution and commit deterministic analysis**
+- [x] **Step 5: Record attribution and commit deterministic analysis**
 
 ```bash
 git add schemas/shot_analysis.schema.json scripts/reference_video_service.py tests/test_reference_video_service.py tests/fixtures/reference_video/expected-analysis.json THIRD_PARTY_NOTICES.md tests/test_contracts.py
@@ -502,7 +502,7 @@ git commit -m "feat: add deterministic reference video analysis"
 - Consumes: `shot_analysis.schema.json`, immutable `machine_fingerprint`, extracted frames, optional transcript segments, and Codex-supplied annotations.
 - Produces: `ShotAnalysisService.validate_and_persist(project_id, analysis_version, annotations) -> AnalysisValidation` and fifteen named gates with `passed|failed|skipped` status.
 
-- [ ] **Step 1: Write one passing and one defeating test for every gate**
+- [x] **Step 1: Write one passing and one defeating test for every gate**
 
 ```python
 REQUIRED_GATES = {
@@ -532,13 +532,13 @@ def test_blocking_gate_prevents_analysis_review_transition(self):
     self.assertEqual(self.store.get(self.project_id)["state"], "analyzing")
 ```
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run: `python3 -m unittest tests.test_shot_analysis_service tests.test_contracts -v`
 
 Expected: FAIL because the annotation schema and gates are absent.
 
-- [ ] **Step 3: Implement closed taxonomies and immutable evidence binding**
+- [x] **Step 3: Implement closed taxonomies and immutable evidence binding**
 
 ```python
 SHOT_SIZES = frozenset({"extreme_wide", "wide", "full", "medium", "close_up", "extreme_close_up", "none"})
@@ -554,13 +554,13 @@ class GateResult:
 
 Require all semantic fields per shot, a confidence in `0..1`, review notes when confidence is below `0.65`, Chinese descriptions of at least 12 non-space characters or English descriptions of at least 8 words, and full-or-empty rhythm annotation. A skipped required gate blocks redesign; optional ASR may be skipped only for `silent` or user-supplied-script workflows.
 
-- [ ] **Step 4: Run gate, schema, and immutability tests**
+- [x] **Step 4: Run gate, schema, and immutability tests**
 
 Run: `python3 -m unittest tests.test_shot_analysis_service tests.test_reference_video_service tests.test_contracts -v`
 
 Expected: PASS with all fifteen gates exercised in both directions.
 
-- [ ] **Step 5: Commit semantic analysis gates**
+- [x] **Step 5: Commit semantic analysis gates**
 
 ```bash
 git add schemas/shot_annotation.schema.json scripts/shot_analysis_service.py tests/test_shot_analysis_service.py tests/fixtures/reference_video/valid-annotations.json tests/test_contracts.py
@@ -583,7 +583,7 @@ git commit -m "feat: gate semantic shot analysis"
 - Consumes: passed analysis version, source digest, creative mode, user assertion, evidence references, design payload, and native confirmer.
 - Produces: `VideoRedesignService.prepare_candidate(project_id, analysis_version, payload)`, `VideoRightsService.record_assertion(project_id, source_receipt, design_candidate, assertion)`, `assert_scope(receipt, required, binding)`, `VideoRedesignService.commit_version(candidate, rights_receipt_id)`, and `SimilarityAudit`.
 
-- [ ] **Step 1: Write failing rights and originality tests**
+- [x] **Step 1: Write failing rights and originality tests**
 
 ```python
 def test_original_redesign_forbids_source_face_voice_brand_dialogue_music_reuse(self):
@@ -619,13 +619,13 @@ def test_similarity_audit_lists_every_preserved_and_replaced_dimension(self):
     self.assertEqual(covered, REUSE_DIMENSIONS)
 ```
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run: `python3 -m unittest tests.test_video_rights_service tests.test_video_redesign_service tests.test_contracts -v`
 
 Expected: FAIL because rights and redesign contracts are absent.
 
-- [ ] **Step 3: Implement exact scope matching and redesign versions**
+- [x] **Step 3: Implement exact scope matching and redesign versions**
 
 ```python
 REUSE_DIMENSIONS = frozenset({
@@ -641,13 +641,13 @@ class VideoRightsService:
 
 For `original_redesign`, enforce a replacement declaration for likeness, voice, dialogue, music, brands, artwork, settings, costume, and distinctive props. For `authorized_replication`, first compute the design candidate fingerprint, then bind the user assertion and native confirmation to that candidate before committing the version. Persist only user-supplied evidence references and their hashes; never claim independent legal verification.
 
-- [ ] **Step 4: Run rights, approval, and redesign tests**
+- [x] **Step 4: Run rights, approval, and redesign tests**
 
 Run: `python3 -m unittest tests.test_video_rights_service tests.test_video_redesign_service tests.test_native_approval tests.test_shot_analysis_service -v`
 
 Expected: PASS; a rights Boolean without the complete receipt is rejected.
 
-- [ ] **Step 5: Commit rights-aware redesign**
+- [x] **Step 5: Commit rights-aware redesign**
 
 ```bash
 git add schemas/video_rights_receipt.schema.json schemas/video_redesign.schema.json scripts/video_rights_service.py scripts/video_redesign_service.py scripts/native_approval.py tests/test_video_rights_service.py tests/test_video_redesign_service.py tests/test_contracts.py
@@ -668,7 +668,7 @@ git commit -m "feat: add rights-aware video redesign contracts"
 - Consumes: approved redesign, live capability snapshot, validated references, and explicit per-attempt cost ceilings.
 - Produces: `VideoGenerationPlanner.plan(design, snapshot, cost_basis) -> BatchQuote` containing exact base and pre-enumerated retry requests.
 
-- [ ] **Step 1: Write failing mode-selection and quote tests**
+- [x] **Step 1: Write failing mode-selection and quote tests**
 
 ```python
 def test_independent_establishing_shot_selects_text2video(self):
@@ -705,13 +705,13 @@ def test_live_snapshot_rejects_unadvertised_model_resolution_duration_or_ratio(s
         self.planner.plan(self.design_with_unadvertised_4k_model, self.snapshot, self.cost_basis)
 ```
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run: `python3 -m unittest tests.test_video_generation_planner tests.test_video_service tests.test_contracts -v`
 
 Expected: FAIL because the planner and quote schema are absent.
 
-- [ ] **Step 3: Implement deterministic selection and closed retry variants**
+- [x] **Step 3: Implement deterministic selection and closed retry variants**
 
 ```python
 REPAIR_DIRECTIVES = {
@@ -727,13 +727,13 @@ def quote_total(items: Sequence[Mapping[str, Any]]) -> int:
 
 Accept cost only from a live machine-readable provider field or an explicit operator ceiling recorded with source and timestamp. Free-form retry prompts are forbidden; each retry request is materialized before quote approval from one closed directive and receives its own fingerprint.
 
-- [ ] **Step 4: Run planner and direct-mode regression tests**
+- [x] **Step 4: Run planner and direct-mode regression tests**
 
 Run: `python3 -m unittest tests.test_video_generation_planner tests.test_video_service tests.test_dreamina_adapter tests.test_reference_policy -v`
 
 Expected: PASS; the existing direct `VideoService.build_request` behavior is unchanged.
 
-- [ ] **Step 5: Commit request planning and quotes**
+- [x] **Step 5: Commit request planning and quotes**
 
 ```bash
 git add schemas/video_batch_quote.schema.json scripts/video_generation_planner.py scripts/video_service.py tests/test_video_generation_planner.py tests/test_video_service.py tests/test_contracts.py
@@ -754,7 +754,7 @@ git commit -m "feat: quote exact Dreamina video batches"
 - Consumes: quote fingerprint, rights receipt fingerprint, source/design versions, exact request fingerprints, per-attempt credit ceilings, and native confirmation.
 - Produces: `activate(quote, approver) -> allowance_id`, `reserve(allowance_id, shot_id, attempt, request_fingerprint)`, `commit(reservation_id, submit_id)`, and `mark_ambiguous(reservation_id, error_code)`.
 
-- [ ] **Step 1: Write failing envelope and concurrency tests**
+- [x] **Step 1: Write failing envelope and concurrency tests**
 
 ```python
 def test_activation_dialog_contains_total_credits_shots_attempts_resolution_and_destination(self):
@@ -799,13 +799,13 @@ def test_allowance_survives_process_restart_but_cannot_be_reactivated(self):
         restarted.activate(self.quote, self.approver)
 ```
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run: `python3 -m unittest tests.test_video_batch_allowance tests.test_native_approval tests.test_contracts -v`
 
 Expected: FAIL with missing allowance schema/service.
 
-- [ ] **Step 3: Implement activation and atomic reservation accounting**
+- [x] **Step 3: Implement activation and atomic reservation accounting**
 
 ```python
 class VideoBatchAllowance:
@@ -820,13 +820,13 @@ class VideoBatchAllowance:
 
 Use private `0700` directories, `0600` atomic JSON, `flock`, random opaque IDs, canonical hashes, and append-only histories. Activation is single-use; request reservations are irreversible after the Dreamina invocation boundary is crossed.
 
-- [ ] **Step 4: Run allowance, approval, and ledger tests**
+- [x] **Step 4: Run allowance, approval, and ledger tests**
 
 Run: `python3 -m unittest tests.test_video_batch_allowance tests.test_native_approval tests.test_approval_guard tests.test_operation_ledger -v`
 
 Expected: PASS under parallel-process reservation tests and crash-recovery fixtures.
 
-- [ ] **Step 5: Commit whole-batch authorization**
+- [x] **Step 5: Commit whole-batch authorization**
 
 ```bash
 git add schemas/video_batch_allowance.schema.json scripts/video_batch_allowance.py scripts/native_approval.py tests/test_video_batch_allowance.py tests/test_native_approval.py tests/test_contracts.py
@@ -849,7 +849,7 @@ git commit -m "feat: enforce whole-batch Dreamina allowances"
 - Consumes: activated `VideoBatchAllowance`, exact planned requests, existing `VideoService`, trusted Dreamina adapter, task query/download, and project store.
 - Produces: `VideoBatchExecutor.run_next(project_id, batch_version, max_new_submissions)`, `reconcile(project_id, batch_version)`, and `resume(project_id, batch_version)`.
 
-- [ ] **Step 1: Write failing execution and recovery tests**
+- [x] **Step 1: Write failing execution and recovery tests**
 
 ```python
 def test_run_next_submits_only_the_next_reserved_request(self):
@@ -870,13 +870,13 @@ def test_resume_queries_known_submit_id_before_any_new_submission(self):
 
 Also cover failed tasks, unknown external task status, verified download, missing artifact, retryable evaluation state, restart, and a `max_new_submissions` bound of `1..4`.
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run: `python3 -m unittest tests.test_video_batch_executor tests.test_video_service tests.test_task_service tests.test_operation_ledger -v`
 
 Expected: FAIL because the batch executor and allowance-aware submit path are absent.
 
-- [ ] **Step 3: Add an allowance-aware path without changing direct submission**
+- [x] **Step 3: Add an allowance-aware path without changing direct submission**
 
 ```python
 class VideoService:
@@ -895,13 +895,13 @@ class VideoService:
 
 Factor the current Dreamina invocation and intent recording into `_invoke_once` while preserving the current `VideoService.submit` signature and behavior. The executor processes deterministic ordering `(shot_index, attempt)`, persists every state before the next side effect, and never treats a missing `submit_id` as safe to retry.
 
-- [ ] **Step 4: Run focused and existing generation tests**
+- [x] **Step 4: Run focused and existing generation tests**
 
 Run: `python3 -m unittest tests.test_video_batch_executor tests.test_video_batch_allowance tests.test_video_service tests.test_task_service tests.test_operation_ledger tests.test_dreamina_adapter -v`
 
 Expected: PASS; direct single-request approvals and the new batch allowance both reach the same one-shot invocation seam.
 
-- [ ] **Step 5: Commit durable batch execution**
+- [x] **Step 5: Commit durable batch execution**
 
 ```bash
 git add scripts/video_batch_executor.py scripts/video_service.py scripts/task_service.py scripts/operation_ledger.py tests/test_video_batch_executor.py tests/test_video_service.py tests/test_task_service.py tests/test_operation_ledger.py
@@ -923,7 +923,7 @@ git commit -m "feat: execute resumable approved video batches"
 - Consumes: design shot, generated artifact receipt, trusted probe/frame evidence, Codex semantic evaluation, and remaining allowance requests.
 - Produces: `measure_clip(artifact, design_shot)`, `validate_semantic_evaluation(payload)`, and `decide(measured, semantic, allowance) -> accepted|retry|rejected|manual_review`.
 
-- [ ] **Step 1: Write failing deterministic, semantic, and retry-decision tests**
+- [x] **Step 1: Write failing deterministic, semantic, and retry-decision tests**
 
 ```python
 def test_duration_dimension_codec_and_anchor_gates_use_measured_media(self):
@@ -946,13 +946,13 @@ def test_retry_uses_only_next_prequoted_fingerprint(self):
 
 Cover identity drift, source copying, watermark/text, camera mismatch, temporal defects, composition, rhythm, subtitle-safe area, unavailable evidence, exhausted retries, and semantic disagreement.
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run: `python3 -m unittest tests.test_video_evaluation_service tests.test_video_batch_executor tests.test_contracts -v`
 
 Expected: FAIL because evaluation contracts and decisions do not exist.
 
-- [ ] **Step 3: Implement two-source gates and fail-closed decisions**
+- [x] **Step 3: Implement two-source gates and fail-closed decisions**
 
 ```python
 SEMANTIC_GATES = frozenset({
@@ -974,13 +974,13 @@ def decide(measured: Mapping[str, Any], semantic: Mapping[str, Any], allowance: 
 
 If evidence is missing, evaluator output conflicts with measured facts, no closed repair maps to the failures, or the planned retry is unavailable, return `manual_review`; never synthesize a new prompt or approval.
 
-- [ ] **Step 4: Run evaluation and generation-loop tests**
+- [x] **Step 4: Run evaluation and generation-loop tests**
 
 Run: `python3 -m unittest tests.test_video_evaluation_service tests.test_video_batch_executor tests.test_video_generation_planner tests.test_video_batch_allowance -v`
 
 Expected: PASS; a failed clip can trigger only a fingerprint already present in the approved quote.
 
-- [ ] **Step 5: Commit shot evaluation**
+- [x] **Step 5: Commit shot evaluation**
 
 ```bash
 git add schemas/shot_evaluation.schema.json scripts/video_evaluation_service.py scripts/video_batch_executor.py tests/test_video_evaluation_service.py tests/test_video_batch_executor.py tests/fixtures/reference_video/valid-evaluation.json tests/test_contracts.py
@@ -1003,7 +1003,7 @@ git commit -m "feat: evaluate and gate generated video shots"
 - Consumes: trusted media tools, source audio, creative/audio policy, rights receipt, rewritten script, narration provider, and user-supplied licensed music/effects.
 - Produces: transcript segments, `audio_plan.schema.json`, narration artifact receipt, and deterministic UTF-8 SRT/ASS files.
 
-- [ ] **Step 1: Write failing provider, rights, timing, and injection tests**
+- [x] **Step 1: Write failing provider, rights, timing, and injection tests**
 
 ```python
 def test_whisper_provider_uses_fixed_model_language_and_json_output_flags(self):
@@ -1026,13 +1026,13 @@ def test_srt_escapes_content_and_rejects_overlapping_or_negative_cues(self):
 
 Also test `full_redesign`, `preserve_authorized_audio`, `subtitles_only`, and `silent`; missing ASR; `/usr/bin/say` voice allowlist; narration conversion; music loop/trim intent; and attribution fields.
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run: `python3 -m unittest tests.test_transcription_service tests.test_narration_service tests.test_subtitle_service tests.test_contracts -v`
 
 Expected: FAIL because the three services and audio schema are absent.
 
-- [ ] **Step 3: Implement explicit local provider contracts**
+- [x] **Step 3: Implement explicit local provider contracts**
 
 ```python
 class WhisperCliProvider:
@@ -1054,13 +1054,13 @@ AUDIO_POLICIES = frozenset({"full_redesign", "preserve_authorized_audio", "subti
 
 The production ASR adapter accepts only enrolled `whisper`, a fixed configured model path, optional BCP-47 language, JSON output, and a private output directory. The initial narration adapters are `MacOSSayProvider` and `ExistingAudioProvider`; source voice cloning and undisclosed remote calls have no interface.
 
-- [ ] **Step 4: Run audio, rights, and media-runtime tests**
+- [x] **Step 4: Run audio, rights, and media-runtime tests**
 
 Run: `python3 -m unittest tests.test_transcription_service tests.test_narration_service tests.test_subtitle_service tests.test_video_rights_service tests.test_trusted_media_tools tests.test_media_adapter -v`
 
 Expected: PASS; absent optional providers yield typed `blocked` or `degraded` results rather than fabricated output.
 
-- [ ] **Step 5: Commit local audio and subtitle planning**
+- [x] **Step 5: Commit local audio and subtitle planning**
 
 ```bash
 git add schemas/audio_plan.schema.json scripts/transcription_service.py scripts/narration_service.py scripts/subtitle_service.py tests/test_transcription_service.py tests/test_narration_service.py tests/test_subtitle_service.py tests/test_contracts.py
@@ -1080,7 +1080,7 @@ git commit -m "feat: add local audio and subtitle workflow"
 - Consumes: accepted shot artifacts in order, validated transition enum, audio plan, SRT/ASS artifact, target dimensions/fps, trusted ffmpeg, and private render directory.
 - Produces: `CompositionPlan`, `build_ffmpeg_argv(plan) -> list[str]`, and `compose(plan) -> Path`.
 
-- [ ] **Step 1: Write failing timeline and exact-argv tests**
+- [x] **Step 1: Write failing timeline and exact-argv tests**
 
 ```python
 def test_timeline_requires_each_required_shot_exactly_once_in_order(self):
@@ -1100,13 +1100,13 @@ def test_raw_filter_codec_and_extra_argv_fields_are_rejected(self):
 
 Cover cuts, crossfades, dip-to-black, normalization, scale/pad/crop, 24/25/30 CFR, narration, music, effects, ducking, fades, loudness, subtitle mux, subtitle burn-in, silence, and even-dimension validation.
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run: `python3 -m unittest tests.test_video_composition_service tests.test_media_adapter -v`
 
 Expected: FAIL because composition service and expected argv fixture are absent.
 
-- [ ] **Step 3: Implement the closed composition graph**
+- [x] **Step 3: Implement the closed composition graph**
 
 ```python
 TRANSITIONS = frozenset({"cut", "crossfade", "dip_to_black"})
@@ -1126,13 +1126,13 @@ class CompositionPlan:
 
 Stage every input under a private render root with generated simple filenames. Build filter labels, offsets, and durations internally; accept numeric values only through bounded typed fields. Emit H.264 `yuv420p`, `+faststart`, and a temporary output renamed atomically after ffmpeg exits successfully. Emit AAC-LC 48 kHz for every policy except `silent`; `silent` must contain no audio stream.
 
-- [ ] **Step 4: Run composition, audio, and adapter tests**
+- [x] **Step 4: Run composition, audio, and adapter tests**
 
 Run: `python3 -m unittest tests.test_video_composition_service tests.test_transcription_service tests.test_narration_service tests.test_subtitle_service tests.test_media_adapter -v`
 
 Expected: PASS; exact argv remains stable and no caller-originated filter string reaches ffmpeg.
 
-- [ ] **Step 5: Commit deterministic final composition**
+- [x] **Step 5: Commit deterministic final composition**
 
 ```bash
 git add scripts/video_composition_service.py scripts/media_adapter.py tests/test_video_composition_service.py tests/test_media_adapter.py tests/fixtures/reference_video/expected-ffmpeg-argv.json
@@ -1155,7 +1155,7 @@ git commit -m "feat: compose approved shots into final MP4"
 - Consumes: temporary final MP4, composition plan, source analysis, redesign, evaluations, audio/subtitle provenance, approved destination, and native export confirmation.
 - Produces: `verify_final(final_mp4, expected_plan) -> CompositionReceipt`, `export_verified(receipt, source, destination)`, `comparison-report.html`, and `comparison-report.json`.
 
-- [ ] **Step 1: Write failing final-gate, export, redaction, and responsive-report tests**
+- [x] **Step 1: Write failing final-gate, export, redaction, and responsive-report tests**
 
 ```python
 def test_final_gate_requires_h264_yuv420p_aac_48k_faststart_and_av_sync(self):
@@ -1179,13 +1179,13 @@ def test_report_has_required_viewport_breakpoints_and_no_private_source_path(sel
 
 Also cover checksum, nonzero streams, target duration tolerance, loudness `-16 ± 1 LUFS`, true peak at or below `-1 dBTP`, subtitle cue count/timing, source/design/output fingerprints, destination escape, symlink, overwrite denial, and interrupted copy.
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run: `python3 -m unittest tests.test_final_media_service tests.test_video_comparison_report tests.test_native_approval tests.test_contracts -v`
 
 Expected: FAIL because final verification, receipt schema, and report generator are absent.
 
-- [ ] **Step 3: Implement verification-first atomic export and self-contained report**
+- [x] **Step 3: Implement verification-first atomic export and self-contained report**
 
 ```python
 BASE_FINAL_GATES = frozenset({
@@ -1205,13 +1205,13 @@ def export_verified(self, receipt: Mapping[str, Any], *, source: Path, destinati
 
 Report sections are source facts, preserved structural dimensions, redesigned expressive content, per-shot generation/evaluation, audio/subtitle provenance, final media gates, and rights assertion disclaimer. Embed only redacted JSON and local relative artifact names; do not embed source or generated media bytes.
 
-- [ ] **Step 4: Run final-media and composition tests**
+- [x] **Step 4: Run final-media and composition tests**
 
 Run: `python3 -m unittest tests.test_final_media_service tests.test_video_comparison_report tests.test_video_composition_service tests.test_native_approval tests.test_contracts -v`
 
 Expected: PASS; test report contains layout rules covering 390×884, 768×1024, and 1280×1024.
 
-- [ ] **Step 5: Commit final verification and reporting**
+- [x] **Step 5: Commit final verification and reporting**
 
 ```bash
 git add schemas/composition_receipt.schema.json scripts/final_media_service.py scripts/video_comparison_report.py scripts/native_approval.py tests/test_final_media_service.py tests/test_video_comparison_report.py tests/test_native_approval.py tests/test_contracts.py
@@ -1251,7 +1251,7 @@ All ten inputs use `type: object`, `additionalProperties: false`, closed enums, 
 - Consumes: all project services from Tasks 2–13 and the existing stdio server.
 - Produces: ten closed MCP definitions/handlers while preserving the existing eleven definitions and `_tool_definitions()` compatibility import.
 
-- [ ] **Step 1: Write failing inventory, schema, annotation, dispatch, and error tests**
+- [x] **Step 1: Write failing inventory, schema, annotation, dispatch, and error tests**
 
 ```python
 PROJECT_TOOLS = {
@@ -1275,13 +1275,13 @@ def test_all_project_schemas_are_closed_and_reject_shell_argv_filter_fields(self
 
 Assert MCP approval metadata: quote is `approve`; all local writes, rights, approval, paid execution, composition, and export are `prompt`; native enforcement is still exercised in handler tests.
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run: `python3 -m unittest tests.test_video_project_mcp tests.test_dreamina_mcp_server tests.test_distribution -v`
 
 Expected: FAIL because project MCP definitions and `.mcp.json` entries are absent.
 
-- [ ] **Step 3: Implement a thin project handler registry**
+- [x] **Step 3: Implement a thin project handler registry**
 
 ```python
 class VideoProjectMcpTools:
@@ -1298,7 +1298,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
 
 Keep stdio message parsing, response formatting, error redaction, and current `DreaminaMcpTools.call` behavior stable. Add project dependencies through constructor injection so tests never require real ffmpeg, Dreamina, ASR, narration, or native dialogs.
 
-- [ ] **Step 4: Run MCP and complete legacy regression tests**
+- [x] **Step 4: Run MCP and complete legacy regression tests**
 
 Run: `python3 -m unittest tests.test_video_project_mcp tests.test_dreamina_mcp_server tests.test_reference_video_compatibility tests.test_distribution tests.test_contracts -v`
 
@@ -1306,7 +1306,7 @@ Run: `printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
 
 Expected: tests PASS; stdio output lists exactly 21 unique tools and server version remains unchanged until Task 16.
 
-- [ ] **Step 5: Commit the additive MCP surface**
+- [x] **Step 5: Commit the additive MCP surface**
 
 ```bash
 git add scripts/video_project_mcp.py scripts/dreamina_mcp_server.py tests/test_video_project_mcp.py tests/test_dreamina_mcp_server.py .mcp.json tests/test_distribution.py
@@ -1330,7 +1330,7 @@ git commit -m "feat: expose Dreamina video project automation"
 - Consumes: the ten project tools, contact sheets, schemas, state machine, and existing thirteen upstream Skills.
 - Produces: one orchestrator Skill, one analysis-only Skill, one evaluation-only Skill, and additive router intent `video_project`.
 
-- [ ] **Step 1: Write failing discovery, routing, separation, and safety tests**
+- [x] **Step 1: Write failing discovery, routing, separation, and safety tests**
 
 ```python
 PLUGIN_OWNED_SKILLS = {
@@ -1355,13 +1355,13 @@ def test_upstream_parity_still_counts_exactly_thirteen_canonical_skills(self):
 
 Also reject instructions for arbitrary ffmpeg, silent rights assertion, blind resubmission, automatic source copying, hidden remote ASR/TTS, or claiming that skipped gates passed.
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run: `python3 -m unittest tests.test_video_project_skills tests.test_router_skill tests.test_verify_skill_snapshot -v`
 
 Expected: FAIL because the three Skills and new verifier report fields are absent.
 
-- [ ] **Step 3: Write progressively disclosed Skill workflows**
+- [x] **Step 3: Write progressively disclosed Skill workflows**
 
 ```yaml
 ---
@@ -1372,7 +1372,7 @@ description: Use when creating a complete Dreamina video project from a local re
 
 The orchestrator must read project status first, call only the next legal state transition, pause for native gates, delegate contact-sheet semantics to the annotator instructions, use the evaluator only after artifact measurement, and never let the same semantic payload serve as both design and acceptance verdict. The two specialist Skills contain their complete closed input/output procedure and escalation conditions.
 
-- [ ] **Step 4: Run Skill routing, snapshot, and TRACE checks**
+- [x] **Step 4: Run Skill routing, snapshot, and TRACE checks**
 
 Run: `python3 -m unittest tests.test_video_project_skills tests.test_router_skill tests.test_verify_skill_snapshot tests.test_run_strict_trace -v`
 
@@ -1380,7 +1380,7 @@ Run: `python3 scripts/verify_skill_snapshot.py --upstream-root /Users/wandl/work
 
 Expected: PASS with thirteen upstream Skills byte-identical and four plugin-owned Skills reported separately.
 
-- [ ] **Step 5: Commit the additive Skills**
+- [x] **Step 5: Commit the additive Skills**
 
 ```bash
 git add skills/codex-dreamina-video-production skills/codex-dreamina-shot-annotator skills/codex-dreamina-video-evaluator skills/codex-dreamina-design-use/SKILL.md scripts/router_skill.py scripts/verify_skill_snapshot.py tests/test_video_project_skills.py tests/test_router_skill.py tests/test_verify_skill_snapshot.py
@@ -1412,7 +1412,7 @@ git commit -m "feat: add Dreamina video production skills"
 - Consumes: completed runtime, 21-tool inventory, 17-Skill inventory, ReelBench disposition, media prerequisites, and all offline evidence.
 - Produces: distributable `0.4.0` metadata plus explicit offline/runtime/paid/install/release gate states.
 
-- [ ] **Step 1: Write failing release-metadata and gate tests**
+- [x] **Step 1: Write failing release-metadata and gate tests**
 
 ```python
 def test_release_version_and_server_version_are_040(self):
@@ -1441,7 +1441,7 @@ Run: `python3 -m unittest tests.test_distribution tests.test_distribution_v7 tes
 
 Expected: FAIL because metadata is still `0.3.0` and the new evidence fields are absent.
 
-- [ ] **Step 3: Update public documentation and deterministic gates**
+- [x] **Step 3: Update public documentation and deterministic gates**
 
 ```json
 {
@@ -1453,7 +1453,7 @@ Expected: FAIL because metadata is still `0.3.0` and the new evidence fields are
 
 Document the preserved direct workflow first, then the optional project workflow. Include Mermaid component and state diagrams, all ten new tools, all seventeen Skills grouped by ownership, media/ASR/narration prerequisites, the four audio policies, rights limitations, recovery procedure, no-runtime-dependency ReelBench attribution, and exact evidence commands. Do not label runtime, canary, installation, or publication complete until its evidence exists.
 
-- [ ] **Step 4: Run distribution, contract, secret, link, and full offline gates**
+- [x] **Step 4: Run distribution, contract, secret, link, and full offline gates**
 
 Run: `python3 scripts/validate_distribution.py .`
 
@@ -1463,7 +1463,7 @@ Run: `python3 -m unittest discover -s tests`
 
 Expected: all commands PASS; paid canary and Marketplace install may remain explicitly `NOT_RUN` before Task 17.
 
-- [ ] **Step 5: Commit the `0.4.0` release candidate**
+- [x] **Step 5: Commit the `0.4.0` release candidate**
 
 ```bash
 git add .codex-plugin/plugin.json scripts/dreamina_mcp_server.py README.md README.zh-CN.md PRIVACY.md TERMS.md THIRD_PARTY_NOTICES.md docs/Codex-Dreamina-Design-Plugin-Architecture.md docs/Codex-Dreamina-Design-Plugin-Architecture.zh_CN.md docs/Codex-Dreamina-Design-Plugin-Technical-Solution.md docs/Codex-Dreamina-Design-Plugin-Technical-Solution.zh_CN.md docs/verification/reference-video-offline.md scripts/validate_distribution.py scripts/validate_distribution_v7.py tests/test_distribution.py tests/test_distribution_v7.py tests/test_contracts.py
@@ -1624,3 +1624,48 @@ flowchart LR
 - [x] Original redesign and authorized replication each have passing and failing rights fixtures.
 - [x] Audio, subtitle, final media, report, installation, runtime, paid, CI, and SHA gates remain distinct.
 - [x] No private media, transcript, rights evidence, account snapshot, or credential is staged for commit.
+
+## Execution Evidence (verified 2026-09-14)
+
+Tasks 1–16 are marked complete from the evidence below, not from assumption.
+Three independent kinds of evidence were collected per task:
+
+1. **Artifacts present** — every module and test file named by the task exists.
+2. **RED reproduced** — the task's test modules were extracted at the parent of
+   the commit that introduced the task's primary module (`git archive`, no
+   working-tree mutation) and run there. A non-zero result proves the tests
+   genuinely failed before the implementation existed.
+3. **GREEN on the current tree** — the same test modules were run against
+   `main` and all pass.
+
+| Task | modules | test files | introducing commit | RED | GREEN |
+|---|---|---|---|---|---|
+| Task 1 | 1 | 5 | `db66608` | yes | all pass |
+| Task 2 | 3 | 3 | `78c40bc` | yes | all pass |
+| Task 3 | 2 | 3 | `457b7a5` | yes | all pass |
+| Task 4 | 1 | 2 | `9784cb7` | yes | all pass |
+| Task 5 | 1 | 2 | `4a14170` | yes | all pass |
+| Task 6 | 3 | 3 | `39040f7` | yes | all pass |
+| Task 7 | 2 | 3 | `9cad4b9` | yes | all pass |
+| Task 8 | 2 | 3 | `39040f7` | yes | all pass |
+| Task 9 | 4 | 4 | `da3877d` | yes | all pass |
+| Task 10 | 2 | 3 | `94e4f63` | yes | all pass |
+| Task 11 | 3 | 4 | `ceb2454` | yes | all pass |
+| Task 12 | 2 | 2 | `78c40bc` | yes | all pass |
+| Task 13 | 3 | 4 | `e7e8ae9` | yes | all pass |
+| Task 14 | 2 | 3 | `36316f5` | yes | all pass |
+| Task 15 | 2 | 3 | `43cb21e` | yes | all pass |
+| Task 16 | 3 | 3 | `36316f5` | not reproducible | all pass |
+
+Notes:
+
+* **Task 16 Step 2 is left unchecked.** Its release-metadata assertions were
+  written and satisfied in the same commit as the version change
+  (`05b6718`), so the parent tree is already green and "verify RED" cannot be
+  reproduced retrospectively. Marking it done would assert something no
+  evidence supports.
+* **Task 17 is intentionally untouched.** Its seven steps are the acceptance
+  run itself; the runner reports `offline_suite` and `sha_equality` PASS and
+  the remaining gates `NOT_RUN` with distinct, recorded reasons. Those steps
+  close only from observed output, so they cannot be marked from a desk
+  review.
