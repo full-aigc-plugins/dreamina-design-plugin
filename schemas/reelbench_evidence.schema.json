@@ -36,6 +36,7 @@
       "pattern": "^v[0-9]{3,}$"
     },
     "parent_version": {
+      "description": "Exact preceding evidence version. Initial seed uses null; a reseed binds the latest parent but starts a fresh analysis artifact lineage.",
       "type": [
         "string",
         "null"

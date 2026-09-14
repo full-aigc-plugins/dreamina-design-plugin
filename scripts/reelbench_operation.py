@@ -9,6 +9,8 @@ import os
 import re
 import secrets
 import stat
+import sys
+from contextlib import ExitStack
 
 from scripts import reelbench_workspace as ws
 from scripts.json_contracts import canonical_fingerprint
@@ -18,6 +20,7 @@ MARKER = ".reelbench-operation.json"
 KEY = ".reelbench-operation-key"
 _NAME = re.compile(r"\.reelbench-work-[a-f0-9]{24}")
 _VERSION = re.compile(r"v[0-9]{3,}")
+_CLEANUP = '.reelbench-cleanup-'
 
 
 class ReelBenchRecoveryRequiredError(ValueError):
@@ -65,10 +68,13 @@ class OperationJournal:
             os.replace(temporary, MARKER, src_dir_fd=work, dst_dir_fd=work)
             os.fsync(work)
         finally:
+            primary = sys.exc_info()[1]
             try:
                 os.unlink(temporary, dir_fd=work)
             except FileNotFoundError:
                 pass
+            except BaseException as exc:
+                ws.cleanup_failure(primary, exc)
 
     def bind_output(self, work, marker, output_fd):
         marker["output_identity"] = _identity(output_fd)
@@ -78,9 +84,9 @@ class OperationJournal:
         marker["receipt_fingerprint"] = canonical_fingerprint(receipt)
         self.write(work, marker)
 
-    def _read(self, work, name):
+    def _read(self, work, name, payload=None):
         try:
-            marker = json.loads(ws.read(work, MARKER, 16384))
+            marker = json.loads(ws.read(work, MARKER, 16384)) if payload is None else payload
             required = {"marker_version", "operation", "project_id", "project_identity", "workspace_identity",
                 "action", "version", "parent_version", "parent_fingerprint", "source_receipt_version",
                 "source_fingerprint", "output_identity", "receipt_fingerprint", "seal"}
@@ -92,13 +98,125 @@ class OperationJournal:
                 raise ValueError("marker seal mismatch")
             if marker["marker_version"] != "1" or marker["operation"] != name or marker["project_id"] != self.project_id:
                 raise ValueError("marker operation identity mismatch")
-            if marker["project_identity"] != _identity(self.project_fd) or marker["workspace_identity"] != _identity(work):
+            if marker["project_identity"] != _identity(self.project_fd) or (work is not None and marker["workspace_identity"] != _identity(work)):
                 raise ValueError("marker directory identity mismatch")
             if marker["action"] not in {"seed", "evidence", "validate", "render"} or not _VERSION.fullmatch(marker["version"]):
                 raise ValueError("marker action/version invalid")
             return marker
         except (OSError, ValueError, TypeError, KeyError, RecursionError) as exc:
             raise ReelBenchRecoveryRequiredError("operation marker requires manual recovery") from exc
+
+    def _save_cleanup(self, record):
+        body = {key: value for key, value in record.items() if key != 'seal'}
+        record = {**body, 'seal': hmac.new(self.key, canonical_fingerprint(body).encode(), hashlib.sha256).hexdigest()}
+        name = _CLEANUP + record['marker']['operation'][len('.reelbench-work-'):] + '.json'
+        temporary = '.cleanup-tmp-' + secrets.token_hex(12)
+        try:
+            ws.write(self.project_fd, temporary, json.dumps(record, sort_keys=True).encode())
+            os.replace(temporary, name, src_dir_fd=self.project_fd, dst_dir_fd=self.project_fd)
+            os.fsync(self.project_fd)
+        finally:
+            primary = sys.exc_info()[1]
+            try:
+                os.unlink(temporary, dir_fd=self.project_fd)
+            except FileNotFoundError:
+                pass
+            except BaseException as exc:
+                ws.cleanup_failure(primary, exc)
+        return name
+
+    def _finish_cleanup(self, record, guard):
+        """A sealed external intent survives partial deletion of the workspace."""
+        marker = record['marker']
+        name = _CLEANUP + marker['operation'][len('.reelbench-work-'):] + '.json'
+        if record['phase'] == 'output':
+            if marker['output_identity'] is not None:
+                guard()
+                with ws.directory(self.project_fd, 'reelbench') as family:
+                    self._remove_if_present(family, marker['version'], marker['output_identity'])
+            record['phase'] = 'workspace'
+            self._save_cleanup(record)
+        if record['phase'] == 'workspace':
+            guard()
+            self._remove_if_present(self.project_fd, marker['operation'], marker['workspace_identity'])
+            record['phase'] = 'complete'
+            self._save_cleanup(record)
+        guard()
+        os.unlink(name, dir_fd=self.project_fd)
+        os.fsync(self.project_fd)
+
+    @staticmethod
+    def _remove_if_present(fd, name, identity):
+        try:
+            os.stat(name, dir_fd=fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        ws.remove_tree(fd, name, expected=identity)
+
+    def cleanup(self, work, name, *, published, guard):
+        marker = self._read(work, name)
+        if not published:
+            try:
+                with ws.directory(self.project_fd, 'reelbench/' + marker['version']) as output:
+                    if _identity(output) != marker['output_identity']:
+                        raise ReelBenchRecoveryRequiredError('cleanup output identity changed')
+            except FileNotFoundError:
+                if marker['output_identity'] is not None:
+                    raise ReelBenchRecoveryRequiredError('cleanup output is missing before sealed intent')
+        record = {'marker': marker, 'phase': 'workspace' if published else 'output', 'published': published}
+        self._save_cleanup(record)
+        self._finish_cleanup(record, guard)
+
+    def _resume_cleanups(self, service, guard):
+        for name in os.listdir(self.project_fd):
+            if not name.startswith(_CLEANUP):
+                continue
+            record = json.loads(ws.read(self.project_fd, name, 32768))
+            if set(record) != {'marker', 'phase', 'seal', 'published'} or type(record['published']) is not bool or record['phase'] not in {'output', 'workspace', 'complete'}:
+                raise ReelBenchRecoveryRequiredError('invalid cleanup phase')
+            body = {k: v for k, v in record.items() if k != 'seal'}
+            expected = hmac.new(self.key, canonical_fingerprint(body).encode(), hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(expected, record['seal']):
+                raise ReelBenchRecoveryRequiredError('cleanup seal mismatch')
+            marker = self._read(None, record['marker']['operation'], record['marker'])
+            if name != _CLEANUP + marker['operation'][len('.reelbench-work-'):] + '.json':
+                raise ReelBenchRecoveryRequiredError('cleanup name mismatch')
+            source = service._read_version(self.project_fd, 'source_receipt', marker['source_receipt_version'])
+            if canonical_fingerprint(source) != marker['source_fingerprint']:
+                raise ReelBenchRecoveryRequiredError('cleanup source changed')
+            latest = marker['version'] if record['published'] else marker['parent_version']
+            if service._latest(self.project_fd) != latest:
+                raise ReelBenchRecoveryRequiredError('cleanup parent changed')
+            if record['published']:
+                if record['phase'] == 'output':
+                    raise ReelBenchRecoveryRequiredError('published cleanup cannot delete output')
+                receipt = service._read_version(self.project_fd, 'reelbench_evidence', marker['version'])
+                if canonical_fingerprint(receipt) != marker['receipt_fingerprint']:
+                    raise ReelBenchRecoveryRequiredError('cleanup visible receipt fingerprint changed')
+                service._lineage(self.project_fd, self.project_id, marker['version'], source)
+            if marker['parent_version'] is not None:
+                parent = service._read_version(self.project_fd, 'reelbench_evidence', marker['parent_version'])
+                if parent['evidence_fingerprint'] != marker['parent_fingerprint']:
+                    raise ReelBenchRecoveryRequiredError('cleanup parent fingerprint changed')
+            with ExitStack() as stack:
+                try:
+                    work = stack.enter_context(ws.directory(self.project_fd, marker['operation']))
+                except FileNotFoundError:
+                    work = None
+                    if record['phase'] == 'output':
+                        raise ReelBenchRecoveryRequiredError('cleanup workspace disappeared before output cleanup')
+                if work is not None:
+                    if _identity(work) != marker['workspace_identity']:
+                        raise ReelBenchRecoveryRequiredError('cleanup workspace identity changed')
+                    try:
+                        fcntl.flock(work, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError as exc:
+                        raise ReelBenchRecoveryRequiredError('cleanup has live owner') from exc
+                self._finish_cleanup(record, guard)
+            if record['published']:
+                raise VersionCommitIndeterminateError(project_id=self.project_id, family='reelbench_evidence',
+                    version=marker['version'], path=self.project_path / 'reelbench_evidence' / (marker['version'] + '.json'),
+                    payload_fingerprint=marker['receipt_fingerprint'])
 
     def recover(self, service, guard):
         """Only a sealed exact operation with no live directory-lock owner is eligible."""
@@ -110,6 +228,7 @@ class OperationJournal:
             raise ReelBenchRecoveryRequiredError("operation state requires manual recovery") from exc
 
     def _recover(self, service, guard):
+        self._resume_cleanups(service, guard)
         work_names = []
         with os.scandir(self.project_fd) as entries:
             for entry in entries:
@@ -139,7 +258,7 @@ class OperationJournal:
                         raise ReelBenchRecoveryRequiredError("visible operation receipt differs from sealed marker")
                     service._lineage(self.project_fd, self.project_id, version, source)
                     guard()
-                    ws.remove_tree(self.project_fd, name, expected=marker["workspace_identity"])
+                    self.cleanup(work, name, published=True, guard=guard)
                     raise VersionCommitIndeterminateError(project_id=self.project_id, family="reelbench_evidence",
                         version=version, path=self.project_path / "reelbench_evidence" / f"{version}.json",
                         payload_fingerprint=marker["receipt_fingerprint"])
@@ -156,13 +275,13 @@ class OperationJournal:
                         if marker["output_identity"] != _identity(output):
                             raise ReelBenchRecoveryRequiredError("orphan output identity is unknown")
                     guard()
-                    with ws.directory(self.project_fd, "reelbench") as family:
-                        ws.remove_tree(family, version, expected=marker["output_identity"])
                 except FileNotFoundError:
                     if marker["output_identity"] is not None:
                         raise ReelBenchRecoveryRequiredError("sealed orphan output is missing")
                 guard()
-                ws.remove_tree(self.project_fd, name, expected=marker["workspace_identity"])
+                record = {'marker': marker, 'phase': 'output', 'published': False}
+                self._save_cleanup(record)
+                self._finish_cleanup(record, guard)
         # A directory without its exact marker is not attributed to this service.
         try:
             with ws.directory(self.project_fd, "reelbench") as family:

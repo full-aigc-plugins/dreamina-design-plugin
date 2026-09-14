@@ -8,6 +8,7 @@ import re
 import json
 import hashlib
 import stat
+import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from scripts.bounded_process import BoundedProcessError, BoundedProcessResult, run_bounded
-from scripts.reelbench_contracts import REELBENCH_VALIDATE_GATES
+from scripts.reelbench_contracts import REELBENCH_VALIDATE_GATES, _PINNED_SHOTS_SCRIPTS
 from scripts.trusted_media_tools import TrustedExecutable, TrustedMediaToolStore
 from scripts import reelbench_workspace as workspace
 from scripts.reelbench_exec_helper import HELPER_CODE
@@ -106,7 +107,7 @@ class ReelBenchAdapter:
                     record, info = workspace.copy(parent, path.name, descriptor, target,
                         maximum=256 * 1024 * 1024, expected={"sha256": tool.sha256, "size_bytes": path.stat().st_size}, mode=0o500, quota=True)
                 finally:
-                    os.close(parent)
+                    workspace._close_owned([parent])
                 identities.append({"kind": kind, "source_path": target, "owner_uid": info.st_uid,
                     "mode": stat.S_IMODE(info.st_mode), "device": info.st_dev, "inode": info.st_ino, **record})
                 manifest[target] = {**record, "inode": info.st_ino, "device": info.st_dev, "mode": stat.S_IMODE(info.st_mode)}
@@ -114,15 +115,17 @@ class ReelBenchAdapter:
             try:
                 script = workspace.read(script_parent, self._shots_script.name)
             finally:
-                os.close(script_parent)
+                workspace._close_owned([script_parent])
             lock_parent = workspace.open_absolute(self._shots_script.parents[3] / "upstream")
             try:
                 lock = json.loads(workspace.read(lock_parent, "reelbench.lock.json"))
             finally:
-                os.close(lock_parent)
+                workspace._close_owned([lock_parent])
             expected = lock["files"]["video-shots/scripts/video-shots.mjs"]["packaged_sha256"]
             if hashlib.sha256(script).hexdigest() != expected:
                 raise ReelBenchAdapterError("packaged ReelBench script differs from its lock")
+            if (hashlib.sha256(script).hexdigest(), len(script)) != _PINNED_SHOTS_SCRIPTS['script/video-shots.mjs']:
+                raise ValueError('packaged script differs from independent pinned digest')
             workspace.write(descriptor, "script/video-shots.mjs", script, mode=0o400, quota=True)
             manifest["script/video-shots.mjs"] = {"size_bytes": len(script), "sha256": hashlib.sha256(script).hexdigest()}
             for filename in ("report.css", "report.js"):
@@ -130,15 +133,18 @@ class ReelBenchAdapter:
                 try:
                     content = workspace.read(asset_parent, filename)
                 finally:
-                    os.close(asset_parent)
+                    workspace._close_owned([asset_parent])
                 expected = lock["files"][f"video-shots/scripts/{filename}"]["packaged_sha256"]
                 if hashlib.sha256(content).hexdigest() != expected:
                     raise ReelBenchAdapterError("packaged report asset differs from its lock")
+                if (hashlib.sha256(content).hexdigest(), len(content)) != _PINNED_SHOTS_SCRIPTS['script/' + filename]:
+                    raise ValueError('packaged report asset differs from independent pinned digest')
                 workspace.write(descriptor, "script/" + filename, content, mode=0o400, quota=True)
                 manifest["script/" + filename] = {"size_bytes": len(content), "sha256": expected}
             token = self._workspace.set((descriptor, identities, manifest))
             yield
         finally:
+            primary = sys.exc_info()[1]
             if token is not None:
                 self._workspace.reset(token)
             cleanup_error = None
@@ -149,7 +155,7 @@ class ReelBenchAdapter:
                     if cleanup_error is None:
                         cleanup_error = exc
             if cleanup_error is not None:
-                raise cleanup_error
+                workspace.cleanup_failure(primary, cleanup_error)
 
     @property
     def tool_identities(self) -> list[dict[str, str | int]]:
@@ -217,7 +223,7 @@ class ReelBenchAdapter:
         try:
             result = self._runner(argv, env=environment, timeout_seconds=MAX_ACTION_SECONDS,
                 stdout_cap=MAX_STDOUT_BYTES, stderr_cap=MAX_STDERR_BYTES,
-                pass_fds=(active[0],), monitor=lambda: workspace.check_quota(active[0]))
+                pass_fds=(active[0],), monitor=lambda: workspace.check_action_quota(active[0]))
         except (BoundedProcessError, OSError) as exc:
             raise ReelBenchAdapterError(f"{action} did not complete safely") from exc
         if not isinstance(result, BoundedProcessResult):

@@ -49,8 +49,9 @@ class ReelBenchRoundTwoTests(unittest.TestCase):
     def test_new_seed_cannot_reuse_old_seed_frame_lineage(self):
         seed = self.action('seed')
         evidence = self.action('evidence', seed['version'])
-        with self.assertRaisesRegex(ValueError, 'seed'):
-            self.action('seed', evidence['version'])
+        reseed = self.action('seed', evidence['version'])
+        with self.assertRaisesRegex(ValueError, 'no frame evidence'):
+            self.action('validate', reseed['version'])
 
     def test_missing_tail_frame_rejects_partial_evidence(self):
         seed = self.action('seed')

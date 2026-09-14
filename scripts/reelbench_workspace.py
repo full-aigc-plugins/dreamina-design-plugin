@@ -19,11 +19,12 @@ class WorkspaceQuotaError(ValueError):
     """The private workspace exhausted its aggregate byte or entry budget."""
 
 
-def check_quota(root, reserve=0, reserve_files=0):
+def check_quota(root, reserve=0, reserve_files=0, *, max_bytes=None):
     """Measure current entries without loading file contents into memory."""
     count = 0
     total = reserve
     directories = 0
+    budget = MAX_TREE_BYTES if max_bytes is None else max_bytes
     def visit(fd, depth):
         nonlocal count, total, directories
         if depth > 5:
@@ -40,15 +41,51 @@ def check_quota(root, reserve=0, reserve_files=0):
                 elif stat.S_ISREG(info.st_mode):
                     count += 1
                     total += info.st_size
-                    if count > MAX_WORKSPACE_FILES or total > MAX_TREE_BYTES:
+                    if count > MAX_WORKSPACE_FILES or total > budget:
                         raise WorkspaceQuotaError('workspace aggregate quota exceeded')
                 else:
                     raise WorkspaceQuotaError('workspace contains unsafe entry')
     with directory(root) as fd:
         visit(fd, 0)
-    if total > MAX_TREE_BYTES or count + reserve_files > MAX_WORKSPACE_FILES:
+    if total > budget or count + reserve_files > MAX_WORKSPACE_FILES:
         raise WorkspaceQuotaError('workspace aggregate quota exceeded')
     return total, count
+
+
+def check_action_quota(root, target=None, reserve=0, reserve_files=0):
+    """Generated output and read-only inputs/tools have independent budgets."""
+    budgets = {'source': 2 * 1024**3, 'inputs': 2 * 1024**3,
+               'tools': 3 * 256 * 1024**2, 'script': 3 * MAX_FILE_BYTES,
+               'output': MAX_TREE_BYTES}
+    selected = components(target)[0] if target is not None else None
+    for name, budget in budgets.items():
+        amount = reserve if selected == name else 0
+        count = reserve_files if selected == name else 0
+        try:
+            with directory(root, name) as child:
+                check_quota(child, amount, count, max_bytes=budget)
+        except FileNotFoundError:
+            if amount > budget:
+                raise WorkspaceQuotaError('workspace aggregate quota exceeded')
+    # Journal metadata is small and cannot consume the output allowance.
+    metadata_bytes = reserve if selected not in budgets else 0
+    metadata_count = reserve_files if selected not in budgets else 0
+    for name in os.listdir(root):
+        if name not in budgets:
+            info = os.stat(name, dir_fd=root, follow_symlinks=False)
+            metadata_bytes += info.st_size
+            metadata_count += 1
+            if not stat.S_ISREG(info.st_mode) or metadata_bytes > 65536 or metadata_count > 32:
+                raise WorkspaceQuotaError('workspace metadata quota exceeded')
+
+
+def cleanup_failure(primary, failure):
+    """Retain the original failure and make secondary cleanup failures visible."""
+    if primary is None:
+        raise failure
+    primary.__dict__.setdefault('cleanup_errors', []).append(failure)
+    if callable(getattr(primary, 'add_note', None)):
+        primary.add_note(f'cleanup failure: {type(failure).__name__}: {failure}')
 
 
 def components(value):
@@ -78,6 +115,37 @@ def _close_owned(owned):
     owned.clear()
     if primary is None and first is not None:
         raise first
+    if primary is not None and first is not None:
+        cleanup_failure(primary, first)
+
+
+@contextmanager
+def absolute_chain(path):
+    """Keep the complete root-to-store chain open until the action ends."""
+    path = Path(path)
+    if not path.is_absolute():
+        raise ValueError('absolute root required')
+    owned = [os.open('/', DIRECTORY)]
+    links = []
+    try:
+        for part in path.parts[1:]:
+            parent = owned[-1]
+            child = os.open(part, DIRECTORY, dir_fd=parent)
+            owned.append(child)
+            links.append((parent, part, child))
+        def verify():
+            for parent, name, child in links:
+                try:
+                    entry = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    opened = os.fstat(child)
+                    if (entry.st_dev, entry.st_ino, stat.S_IFMT(entry.st_mode)) != (opened.st_dev, opened.st_ino, stat.S_IFMT(opened.st_mode)):
+                        raise ValueError('store ancestry identity changed')
+                except OSError as exc:
+                    raise ValueError('store ancestry identity changed') from exc
+        verify()
+        yield owned[-1], owned[0], verify
+    finally:
+        _close_owned(owned)
 
 
 @contextmanager
@@ -172,7 +240,7 @@ def read(root, name, maximum=MAX_FILE_BYTES):
 
 def write(root, name, payload, mode=0o600, *, quota=False):
     if quota:
-        check_quota(root, reserve=len(payload), reserve_files=1)
+        check_action_quota(root, name, reserve=len(payload), reserve_files=1)
     parts = components(name)
     if len(parts) > 1:
         mkdir(root, '/'.join(parts[:-1]))
@@ -201,7 +269,7 @@ def copy(root, name, destination, target, *, maximum, expected=None, mode=0o600,
         if before.st_size < 1 or before.st_size > maximum:
             raise ValueError('input file size exceeds preventive bound')
         if quota:
-            check_quota(destination, reserve=before.st_size, reserve_files=1)
+            check_action_quota(destination, target, reserve=before.st_size, reserve_files=1)
         out = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=parent)
         digest = hashlib.sha256()
         total = 0
