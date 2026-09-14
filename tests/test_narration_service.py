@@ -76,7 +76,7 @@ class NarrationServiceTests(unittest.TestCase):
 
     def _authorized_service(self, bindings, requested, *, expires_at="2027-09-14T00:00:00Z",
                             audio_policy="preserve_authorized_audio"):
-        allowed_reuse = sorted(set(requested).difference({"effects"})) or ["audio_beats"]
+        allowed_reuse = sorted(set(requested))
         receipt = {
             "schema_version": "1.0", "version": "v001", "receipt_id": "rr_" + "5" * 24,
             "project_id": "vp_" + "1" * 24, "source_sha256": "a" * 64,
@@ -367,6 +367,7 @@ class NarrationServiceTests(unittest.TestCase):
             ({"voice": True, "dialogue": True}, "existing_voice_dialogue", ["dialogue", "voice"]),
             ({"music": True}, "music", ["music"]),
             ({"effects": True}, "effect", ["effects"]),
+            ({"ambience": True}, "ambience", ["ambience"]),
         ]
         for index, (rights, role, exact_rights) in enumerate(cases):
             path = self.root / f"role-{index}.wav"

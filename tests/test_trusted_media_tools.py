@@ -71,6 +71,16 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
             with self.assertRaises(TrustedMediaToolError):
                 self.store.enroll("ffmpeg", self.ffmpeg, approval_provider=self.approver)
 
+    @unittest.skipUnless(Path("/usr/bin/say").is_file(), "macOS say is unavailable")
+    def test_narration_allows_only_exact_root_owned_apple_say_binary(self) -> None:
+        record = self.store.enroll("narration", Path("/usr/bin/say"), approval_provider=self.approver)
+        self.assertEqual(record["source_path"], "/usr/bin/say")
+        self.assertEqual(record["owner_uid"], 0)
+        loaded = self.store.load_required({"narration"})["narration"]
+        self.assertEqual(loaded.source_path, "/usr/bin/say")
+        with self.assertRaises(TrustedMediaToolError):
+            self.store.enroll("ffmpeg", Path("/usr/bin/say"), approval_provider=self.approver)
+
     def test_enrollment_is_approved_and_config_is_private(self) -> None:
         result = self.store.enroll("ffmpeg", self.ffmpeg, approval_provider=self.approver)
         digest = hashlib.sha256(b"trusted ffmpeg").hexdigest()

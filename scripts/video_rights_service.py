@@ -17,7 +17,8 @@ from scripts.video_project_store import (
 
 REUSE_DIMENSIONS = frozenset({
     "timing", "shot_sizes", "camera_moves", "rhythm", "transitions", "audio_beats",
-    "likeness", "voice", "dialogue", "music", "brand", "artwork", "distinctive_props",
+        "likeness", "voice", "dialogue", "music", "brand", "artwork", "distinctive_props",
+        "effects", "ambience",
 })
 DISCLAIMER = (
     "User-supplied assertion recorded as engineering authorization evidence; "

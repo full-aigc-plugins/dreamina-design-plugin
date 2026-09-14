@@ -19,7 +19,7 @@ from scripts.json_contracts import ContractValidationError, canonical_fingerprin
 
 
 AUDIO_POLICIES = frozenset({"full_redesign", "preserve_authorized_audio", "subtitles_only", "silent"})
-AUDIO_CLASSES = frozenset({"voice", "dialogue", "music", "effects"})
+AUDIO_CLASSES = frozenset({"voice", "dialogue", "music", "effects", "ambience"})
 _DIGEST = re.compile(r"^[a-f0-9]{64}$")
 _ATTESTATION_DOMAIN = b"codex-dreamina-design/audio-artifact/v1\x00"
 
@@ -242,12 +242,12 @@ def _require_artifact(value: Mapping[str, Any], *, role: str, key_store: Any, re
     rights = provenance.get("rights_declared")
     role_rights = {"new_narration": ["voice"], "existing_voice": ["voice"],
                    "existing_dialogue": ["dialogue"], "existing_voice_dialogue": ["dialogue", "voice"],
-                   "music": ["music"], "effect": ["effects"],
+                   "music": ["music"], "effect": ["effects"], "ambience": ["ambience"],
                    "subtitle_srt": ["subtitles"], "subtitle_ass": ["subtitles"]}
     common_existing = value.get("provider") == "existing-audio" and value.get("mime_type") == "audio/wav" and provenance.get("kind") == "user_supplied" and provenance.get("source") == "user_supplied" and provenance.get("voice") is None and provenance.get("model") is None
     valid_role = artifact_role == role and rights == role_rights.get(role) and (
         (role == "new_narration" and value.get("provider") == "macos-say" and value.get("mime_type") == "audio/aiff" and provenance.get("kind") == "new_narration" and provenance.get("source") == "rewritten_script" and isinstance(provenance.get("voice"), str) and bool(provenance.get("voice")) and provenance.get("model") == "macos-say") or
-        (role in {"existing_voice", "existing_dialogue", "existing_voice_dialogue", "music", "effect"} and common_existing) or
+        (role in {"existing_voice", "existing_dialogue", "existing_voice_dialogue", "music", "effect", "ambience"} and common_existing) or
         (role == "subtitle_srt" and value.get("provider") == "subtitle-service" and value.get("mime_type") == "application/x-subrip" and provenance.get("kind") == "generated_subtitle" and provenance.get("source") in {"rewritten_script", "narration_timing"} and provenance.get("voice") is None and provenance.get("model") is None) or
         (role == "subtitle_ass" and value.get("provider") == "subtitle-service" and value.get("mime_type") == "text/x-ssa" and provenance.get("kind") == "generated_subtitle" and provenance.get("source") in {"rewritten_script", "narration_timing"} and provenance.get("voice") is None and provenance.get("model") is None)
     )
@@ -341,7 +341,7 @@ class ExistingAudioProvider:
         declared = sorted(key for key, value in rights.items() if key in AUDIO_CLASSES and value is True)
         artifact_roles = {("voice",): "existing_voice", ("dialogue",): "existing_dialogue",
                           ("dialogue", "voice"): "existing_voice_dialogue", ("music",): "music",
-                          ("effects",): "effect"}
+                          ("effects",): "effect", ("ambience",): "ambience"}
         artifact_role = artifact_roles.get(tuple(declared))
         if set(rights).difference(AUDIO_CLASSES) or artifact_role is None or _DIGEST.fullmatch(expected_sha256) is None or _digest(resolved) != expected_sha256:
             raise AudioRightsError("audio digest, provenance, or rights declaration is invalid")
@@ -366,7 +366,7 @@ class AudioPlanService:
                     narration: Mapping[str, Any] | None, music: Mapping[str, Any] | None,
                     effects: Sequence[Mapping[str, Any]], subtitles: Sequence[Mapping[str, Any]],
                     target_duration_seconds: float, audio_policy: str = "full_redesign",
-                    preserve: Sequence[str] = ()) -> dict[str, Any]:
+                    preserve: Sequence[str] = (), ambience: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
         if audio_policy not in AUDIO_POLICIES or creative_mode not in {"authorized_replication", "original_redesign"}:
             raise ValueError("creative mode or audio policy is unsupported")
         if isinstance(target_duration_seconds, bool) or not isinstance(target_duration_seconds, (int, float)) or target_duration_seconds <= 0:
@@ -393,9 +393,9 @@ class AudioPlanService:
             raise AudioRightsError("source audio reuse requires an authorized audio policy")
         if audio_policy == "full_redesign" and (not rewritten_script or narration is None):
             raise ValueError("full redesign requires a rewritten script and new narration")
-        if audio_policy == "silent" and (narration is not None or music is not None or effects):
+        if audio_policy == "silent" and (narration is not None or music is not None or effects or ambience):
             raise ValueError("subtitle-only or silent plans cannot invent audio")
-        if audio_policy == "subtitles_only" and not requested and (narration is not None or music is not None or effects):
+        if audio_policy == "subtitles_only" and not requested and (narration is not None or music is not None or effects or ambience):
             raise ValueError("subtitle-only audio must be an explicitly authorized preserved source")
         narration_value = None
         if narration is not None:
@@ -407,6 +407,7 @@ class AudioPlanService:
             if audio_policy == "subtitles_only" and narration_value["provider"] != "existing-audio":
                 raise AudioRightsError("subtitle-only mode cannot synthesize new narration")
         effects_value = [_require_artifact(item, role="effect", key_store=self._key_store, required_right="effects") for item in effects]
+        ambience_value = [_require_artifact(item, role="ambience", key_store=self._key_store, required_right="ambience") for item in ambience]
         subtitles_value = [_require_artifact(item, role=str(item.get("artifact_role", "")), key_store=self._key_store) for item in subtitles]
         music_value = None
         if music is not None:
@@ -437,6 +438,8 @@ class AudioPlanService:
                 concrete["music"] = music_value
             if effects_value:
                 concrete["effects"] = effects_value
+            if ambience_value:
+                concrete["ambience"] = ambience_value
             if set(concrete) != requested:
                 raise AudioRightsError("preserved classes and concrete source artifacts must match exactly")
             bindings = source_rights.get("artifact_bindings", {}) if source_rights else {}
@@ -457,7 +460,7 @@ class AudioPlanService:
             "target_duration_seconds": float(target_duration_seconds), "source_rights": dict(source_rights) if source_rights else None,
             "preserve": sorted(requested), "transcript": dict(transcript) if transcript else None,
             "rewritten_script": list(rewritten_script), "narration": narration_value,
-            "music": music_value, "effects": effects_value, "subtitles": subtitles_value,
+            "music": music_value, "effects": effects_value, "ambience": ambience_value, "subtitles": subtitles_value,
             "provenance": {"remote_services_used": False, "source_voice_cloned": False},
         }
         result = {**core, "plan_fingerprint": canonical_fingerprint({key: value for key, value in core.items() if key != "version"})}
@@ -493,11 +496,9 @@ class AudioPlanService:
             rights = (VideoRightsService(self._project_store, native_confirmer=None, now=self._now)
                       if self._now is not None
                       else VideoRightsService(self._project_store, native_confirmer=None))
-            # Effects are governed by the receipt's audio media scope and the exact
-            # signed artifact binding; the shared rights vocabulary has no effects token.
             rights.assert_scope(
                 receipt,
-                required=requested.difference({"effects"}),
+                required=requested,
                 binding={
                     "project_id": project_id,
                     "source_sha256": design["source_sha256"],
@@ -559,10 +560,11 @@ class AudioPlanService:
         if document["preserve"]:
             self._verify_current_rights(project_id=document["project_id"], design_fingerprint=document["design_fingerprint"],
                 audio_policy=document["audio_policy"], source_rights=document["source_rights"], requested=set(document["preserve"]))
-        artifacts = ([document["narration"]] if document["narration"] else []) + list(document["effects"]) + list(document["subtitles"])
+        artifacts = (([document["narration"]] if document["narration"] else [])
+                     + list(document["effects"]) + list(document["ambience"]) + list(document["subtitles"]))
         for artifact in artifacts:
             _require_artifact(artifact, role=artifact["artifact_role"], key_store=self._key_store,
-                              required_right="effects" if artifact["artifact_role"] == "effect" else None)
+                              required_right={"effect": "effects", "ambience": "ambience"}.get(artifact["artifact_role"]))
         if document["music"]:
             music = {key: value for key, value in document["music"].items() if key != "intent"}
             _require_artifact(music, role="music", key_store=self._key_store, required_right="music")

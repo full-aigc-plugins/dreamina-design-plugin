@@ -49,7 +49,7 @@ class TrustedMediaToolStore:
         """Approve and persist the identity of one fixed-purpose media tool."""
         self._validate_kinds({kind})
         source = Path(path)
-        canonical, owner_uid, digest = self._inspect_source(source)
+        canonical, owner_uid, digest = self._inspect_source(kind, source)
         provider = approval_provider or NativeApprovalProvider()
         provider.confirm_media_tool_enrollment(
             kind=kind,
@@ -101,7 +101,7 @@ class TrustedMediaToolStore:
             raise TrustedMediaToolError("unsupported media tool kind: " + ", ".join(sorted(unknown)))
 
     @staticmethod
-    def _inspect_source(source: Path) -> tuple[str, int, str]:
+    def _inspect_source(kind: str, source: Path) -> tuple[str, int, str]:
         if not source.is_absolute() or source.is_symlink():
             raise TrustedMediaToolError(
                 "media tool enrollment requires an absolute regular non-symlink file"
@@ -112,9 +112,10 @@ class TrustedMediaToolStore:
             raise TrustedMediaToolError("media tool does not exist") from exc
         if not stat.S_ISREG(source_stat.st_mode) or not source_stat.st_mode & 0o111:
             raise TrustedMediaToolError("media tool must be a regular executable file")
-        if source_stat.st_uid != os.getuid() or source_stat.st_mode & 0o022:
-            raise TrustedMediaToolError("media tool owner or write permissions are not trusted")
         canonical = source.resolve(strict=True)
+        system_say = kind == "narration" and str(canonical) == "/usr/bin/say" and source_stat.st_uid == 0
+        if (source_stat.st_uid != os.getuid() and not system_say) or source_stat.st_mode & 0o022:
+            raise TrustedMediaToolError("media tool owner or write permissions are not trusted")
         for parent in canonical.parents:
             if parent.stat().st_mode & 0o022:
                 raise TrustedMediaToolError(f"group/world-writable media tool parent: {parent}")
@@ -169,7 +170,8 @@ class TrustedMediaToolStore:
                 raise TrustedMediaToolError("trusted media tool digest is invalid")
             if not isinstance(owner_uid, int) or isinstance(owner_uid, bool):
                 raise TrustedMediaToolError("trusted media tool owner UID is invalid")
-            if owner_uid != os.getuid():
+            if owner_uid != os.getuid() and not (
+                    kind == "narration" and source_path == "/usr/bin/say" and owner_uid == 0):
                 raise TrustedMediaToolError("trusted media tool recorded owner does not match user")
             tools[kind] = {
                 "source_path": source_path,
@@ -182,10 +184,11 @@ class TrustedMediaToolStore:
         self, kind: str, source_path: str, expected_owner_uid: int, expected_sha256: str
     ) -> TrustedMediaTool:
         source = Path(source_path)
-        canonical, current_owner_uid, current_sha256 = self._inspect_source(source)
+        canonical, current_owner_uid, current_sha256 = self._inspect_source(kind, source)
         if (
             canonical != source_path
-            or expected_owner_uid != os.getuid()
+            or (expected_owner_uid != os.getuid() and not (
+                kind == "narration" and source_path == "/usr/bin/say" and expected_owner_uid == 0))
             or current_owner_uid != expected_owner_uid
             or not hmac.compare_digest(current_sha256, expected_sha256)
         ):

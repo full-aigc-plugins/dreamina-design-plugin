@@ -126,7 +126,7 @@ class ClosedSchemaTests(unittest.TestCase):
         expected = [
             "timing", "shot_sizes", "camera_moves", "rhythm", "transitions",
             "audio_beats", "likeness", "voice", "dialogue", "music", "brand",
-            "artwork", "distinctive_props",
+            "artwork", "distinctive_props", "effects", "ambience",
         ]
         rights = load_json(SCHEMAS_DIR / "video_rights_receipt.schema.json")
         redesign = load_json(SCHEMAS_DIR / "video_redesign.schema.json")
@@ -187,7 +187,7 @@ class ClosedSchemaTests(unittest.TestCase):
             "design_fingerprint":"2"*64,"batch_fingerprint":"3"*64,
             "creative_mode":"original_redesign","audio_policy":"subtitles_only",
             "target_duration_seconds":1,"source_rights":None,"preserve":[],"transcript":None,
-            "rewritten_script":[],"narration":None,"music":None,"effects":[],"subtitles":[],
+            "rewritten_script":[],"narration":None,"music":None,"effects":[],"ambience":[],"subtitles":[],
             "provenance":{"remote_services_used":False,"source_voice_cloned":False},
             "plan_fingerprint":"4"*64}
         invalid = [
@@ -205,7 +205,7 @@ class ClosedSchemaTests(unittest.TestCase):
             "design_fingerprint":"2"*64,"batch_fingerprint":"3"*64,
             "creative_mode":"original_redesign","audio_policy":"silent",
             "target_duration_seconds":1,"source_rights":None,"preserve":[],"transcript":None,
-            "rewritten_script":[],"narration":None,"music":None,"effects":[],"subtitles":[],
+            "rewritten_script":[],"narration":None,"music":None,"effects":[],"ambience":[],"subtitles":[],
             "provenance":{"remote_services_used":False,"source_voice_cloned":False},
             "plan_fingerprint":"4"*64}
         validate_contract(base, "audio_plan.schema.json")

@@ -16,7 +16,7 @@ from scripts.video_project_store import (
 from scripts.video_rights_service import REUSE_DIMENSIONS, RightsScopeError, VideoRightsService
 
 
-FORBIDDEN_ORIGINAL_REUSE = frozenset({"likeness", "voice", "dialogue", "music", "brand", "artwork", "distinctive_props"})
+FORBIDDEN_ORIGINAL_REUSE = frozenset({"likeness", "voice", "dialogue", "music", "effects", "ambience", "brand", "artwork", "distinctive_props"})
 REQUIRED_REPLACEMENTS = frozenset({"likeness", "voice", "dialogue", "music", "brand", "artwork", "settings", "costume", "distinctive_props"})
 
 

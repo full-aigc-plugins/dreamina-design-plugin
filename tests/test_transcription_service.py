@@ -143,7 +143,7 @@ class TranscriptionServiceTests(unittest.TestCase):
     @staticmethod
     def _minimal_plan(transcript):
         from scripts.json_contracts import canonical_fingerprint
-        core = {"schema_version":"1.0","version":"v001","project_id":"vp_"+"1"*24,"design_fingerprint":"2"*64,"batch_fingerprint":"3"*64,"creative_mode":"original_redesign","audio_policy":"subtitles_only","target_duration_seconds":1.0,"source_rights":None,"preserve":[],"transcript":transcript,"rewritten_script":[],"narration":None,"music":None,"effects":[],"subtitles":[],"provenance":{"remote_services_used":False,"source_voice_cloned":False}}
+        core = {"schema_version":"1.0","version":"v001","project_id":"vp_"+"1"*24,"design_fingerprint":"2"*64,"batch_fingerprint":"3"*64,"creative_mode":"original_redesign","audio_policy":"subtitles_only","target_duration_seconds":1.0,"source_rights":None,"preserve":[],"transcript":transcript,"rewritten_script":[],"narration":None,"music":None,"effects":[],"ambience":[],"subtitles":[],"provenance":{"remote_services_used":False,"source_voice_cloned":False}}
         return {**core,"plan_fingerprint":canonical_fingerprint(core)}
 
 

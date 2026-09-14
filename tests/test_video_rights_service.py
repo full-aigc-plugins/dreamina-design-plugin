@@ -143,6 +143,20 @@ class VideoRightsServiceTests(unittest.TestCase):
         with self.assertRaises(RightsScopeError):
             self.rights.assert_scope(narrow_receipt, required={"dialogue", "voice", "music"}, binding=self.binding)
 
+    def test_effects_and_ambience_require_explicit_native_confirmed_scope(self):
+        assertion = {**self.valid_assertion,
+                     "allowed_reuse": ["voice", "dialogue", "music", "effects", "ambience"]}
+        receipt = self.rights.record_assertion(
+            self.project_id, self.source_receipt, self.design_candidate, assertion)
+        self.rights.assert_scope(
+            receipt, required={"effects", "ambience"},
+            binding={**self.binding, "required_media": ["audio"]})
+        narrow = {**receipt, "allowed_reuse": ["voice", "dialogue", "music"]}
+        with self.assertRaises(RightsScopeError):
+            self.rights.assert_scope(
+                narrow, required={"effects"},
+                binding={**self.binding, "required_media": ["audio"]})
+
     def test_expiry_must_be_strict_rfc3339_and_later_than_assertion(self):
         for expires_at in (
             "2026-09-14T00:00:00Z",

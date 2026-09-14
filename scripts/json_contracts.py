@@ -195,6 +195,10 @@ def _validate(
             raise ContractValidationError(f"{path} is below the minimum")
         if "maximum" in schema and value > schema["maximum"]:
             raise ContractValidationError(f"{path} is above the maximum")
+        if "exclusiveMinimum" in schema and value <= schema["exclusiveMinimum"]:
+            raise ContractValidationError(f"{path} is not above the exclusive minimum")
+        if "exclusiveMaximum" in schema and value >= schema["exclusiveMaximum"]:
+            raise ContractValidationError(f"{path} is not below the exclusive maximum")
 
 
 def _resolve_ref(

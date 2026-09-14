@@ -165,6 +165,19 @@ class JsonContractTests(unittest.TestCase):
                     ):
                         validate_contract([value], "unique.schema.json")
 
+    def test_contract_enforces_exclusive_numeric_keywords(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            (root / "exclusive.schema.json").write_text(
+                json.dumps({"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1}),
+                encoding="utf-8",
+            )
+            with mock.patch("scripts.json_contracts.SCHEMAS_ROOT", root):
+                validate_contract(0.5, "exclusive.schema.json")
+                for value in (0, -0.1, 1, 1.1):
+                    with self.subTest(value=value), self.assertRaises(ContractValidationError):
+                        validate_contract(value, "exclusive.schema.json")
+
 
 if __name__ == "__main__":
     unittest.main()
