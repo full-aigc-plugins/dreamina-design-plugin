@@ -9,6 +9,7 @@ import json
 import shutil
 import tempfile
 import hashlib
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -129,6 +130,7 @@ class ReelBenchAdapter:
     def _run(self, action: str, rest: Sequence[str], *, allow_failure: bool = False) -> ReelBenchAdapterResult:
         staged_root: Path | None = None
         staged_tools = None
+        workspace_fd: int | None = None
         tools = self._tools
         script = self._shots_script
         environment = self._environment()
@@ -144,7 +146,15 @@ class ReelBenchAdapter:
                 os.chmod(bin_dir / kind, 0o500)
             environment = {"PATH": str(bin_dir), "LANG": "C", "LC_ALL": "C"}
             tools = {kind: self._identity_from_path(kind, Path(staged_tools[kind].source_path)) for kind in staged_tools}
-        argv = [str(staged_tools["node"].staged_path) if staged_tools else tools["node"].source_path, str(script), action, *rest]
+            source_index = 0 if action == "seed" else (rest.index("--video") + 1 if "--video" in rest else None)
+            if source_index is not None:
+                private_source = self._private_source_copy(Path(rest[source_index]), staged_root)
+                rest = [str(private_source) if index == source_index else value for index, value in enumerate(rest)]
+            workspace_fd = os.open(staged_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+            helper = Path(__file__).with_name("reelbench_exec_helper.py")
+            argv = [sys.executable, str(helper), str(workspace_fd), str(staged_tools["node"].staged_path), str(script), action, *rest]
+        else:
+            argv = [tools["node"].source_path, str(script), action, *rest]
         try:
             result = self._runner(
                 argv,
@@ -152,6 +162,7 @@ class ReelBenchAdapter:
                 timeout_seconds=MAX_ACTION_SECONDS,
                 stdout_cap=MAX_STDOUT_BYTES,
                 stderr_cap=MAX_STDERR_BYTES,
+                pass_fds=(workspace_fd,) if workspace_fd is not None else (),
             )
         except (BoundedProcessError, OSError) as exc:
             raise ReelBenchAdapterError(f"{action} did not complete safely") from exc
@@ -161,6 +172,8 @@ class ReelBenchAdapter:
                     self._tool_store.release(tool)
             if staged_root is not None:
                 shutil.rmtree(staged_root, ignore_errors=True)
+            if workspace_fd is not None:
+                os.close(workspace_fd)
         if not isinstance(result, BoundedProcessResult):
             raise ReelBenchAdapterError("bounded runner returned an invalid result")
         if result.returncode != 0 and not allow_failure:
@@ -197,6 +210,30 @@ class ReelBenchAdapter:
         info = path.stat()
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         return TrustedExecutable(kind, str(path), info.st_uid, info.st_mode & 0o777, info.st_dev, info.st_ino, info.st_size, digest)
+
+    @staticmethod
+    def _private_source_copy(source: Path, workspace: Path) -> Path:
+        """Publish source bytes under the pinned workspace; Node children use no caller pathname."""
+        descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            digest = hashlib.sha256(); chunks: list[bytes] = []
+            while chunk := os.read(descriptor, 1024 * 1024):
+                digest.update(chunk); chunks.append(chunk)
+        finally:
+            os.close(descriptor)
+        source_root = workspace / "source"; source_root.mkdir(mode=0o700)
+        target = source_root / digest.hexdigest()
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o400)
+        try:
+            for chunk in chunks:
+                os.write(fd, chunk)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        directory = os.open(source_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try: os.fsync(directory)
+        finally: os.close(directory)
+        return target
 
     def _environment(self) -> dict[str, str]:
         executable_dirs = [str(Path(self._tools[kind].source_path).parent) for kind in ("ffmpeg", "ffprobe")]
