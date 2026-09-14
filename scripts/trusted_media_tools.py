@@ -69,6 +69,28 @@ class BrowserLaunchContext:
     verified_at: str
 
 
+class BrowserLaunchHandle:
+    """One-shot descriptor-owned browser launcher; it never exposes a pathname."""
+    def __init__(self, descriptor: int, context: BrowserLaunchContext) -> None:
+        self._descriptor = descriptor; self.context = context; self._used = False
+
+    def spawn(self, args: list[str], *, timeout_seconds: int = 30, stdout_cap: int = 1024 * 1024, stderr_cap: int = 1024 * 1024) -> subprocess.CompletedProcess[str]:
+        if self._used: raise TrustedMediaToolError("browser launch handle has already been used")
+        if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args): raise TrustedMediaToolError("browser arguments must be fixed strings")
+        self._used = True
+        try:
+            result = subprocess.run([f"/dev/fd/{self._descriptor}", *args], shell=False, close_fds=True, pass_fds=(self._descriptor,), env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"}, capture_output=True, text=True, timeout=timeout_seconds, start_new_session=True)
+            if len(result.stdout or "") > stdout_cap or len(result.stderr or "") > stderr_cap: raise TrustedMediaToolError("browser output exceeded cap")
+            return result
+        except subprocess.TimeoutExpired as exc:
+            raise TrustedMediaToolError("browser launch timed out") from exc
+        finally: self.close()
+
+    def close(self) -> None:
+        if self._descriptor >= 0:
+            os.close(self._descriptor); self._descriptor = -1
+
+
 BROWSER_APPLICATION_POLICIES: Mapping[str, BrowserApplicationPolicy] = {
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome": BrowserApplicationPolicy(
         "com.google.Chrome", "EQHXZ8M8AV",
@@ -116,6 +138,18 @@ class TrustedMediaToolStore:
             self._assert_final_path_identity(Path(executable.source_path), os.fstat(descriptor))
         finally: os.close(descriptor)
         return BrowserLaunchContext(executable, signature, datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"))
+
+    def reverify_browser_for_launch_handle(self) -> BrowserLaunchHandle:
+        """Create the one-shot, descriptor-bound browser launch handle for the sync service."""
+        enrolled = self._record_identity("browser", self._required_record("browser"))
+        descriptor, executable = self._open_verified_fd("browser", enrolled)
+        try:
+            signature = self._verify_browser_signature(executable.source_path)
+            self._assert_final_path_identity(Path(executable.source_path), os.fstat(descriptor))
+            context = BrowserLaunchContext(executable, signature, datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"))
+            return BrowserLaunchHandle(descriptor, context)
+        except Exception:
+            os.close(descriptor); raise
 
     def load_required(self, kinds: Iterable[str]) -> dict[str, TrustedMediaTool]:
         """Stage non-browser executables from the very descriptor verified and hashed."""
@@ -199,11 +233,14 @@ class TrustedMediaToolStore:
         os.chmod(root, 0o700); staged = root / executable.kind
         try:
             os.lseek(descriptor, 0, os.SEEK_SET)
+            copied_digest = hashlib.sha256(); copied_size = 0
             with os.fdopen(os.dup(descriptor), "rb") as reader, staged.open("xb") as writer:
-                while chunk := reader.read(1024 * 1024): writer.write(chunk)
+                while chunk := reader.read(1024 * 1024):
+                    copied_digest.update(chunk); copied_size += len(chunk); writer.write(chunk)
                 writer.flush(); os.fsync(writer.fileno())
             after = os.fstat(descriptor)
             if not _same_stat_identity(before, after): raise TrustedMediaToolError(f"trusted {executable.kind} changed while being staged")
+            if copied_size != executable.size_bytes or not hmac.compare_digest(copied_digest.hexdigest(), executable.sha256): raise TrustedMediaToolError(f"trusted {executable.kind} copied bytes do not match the verified digest")
             self._assert_final_path_identity(Path(executable.source_path), after)
             os.chmod(staged, 0o500)
             return TrustedMediaTool(executable.kind, executable.source_path, executable.sha256, str(staged))
@@ -299,7 +336,7 @@ class TrustedMediaToolStore:
 
 
 def _same_stat_identity(first: os.stat_result, second: os.stat_result) -> bool:
-    return (first.st_dev, first.st_ino, first.st_uid, stat.S_IMODE(first.st_mode), first.st_size) == (second.st_dev, second.st_ino, second.st_uid, stat.S_IMODE(second.st_mode), second.st_size)
+    return (first.st_dev, first.st_ino, first.st_uid, stat.S_IMODE(first.st_mode), first.st_size, first.st_mtime_ns, first.st_ctime_ns) == (second.st_dev, second.st_ino, second.st_uid, stat.S_IMODE(second.st_mode), second.st_size, second.st_mtime_ns, second.st_ctime_ns)
 
 def _digest_descriptor(fd: int) -> str:
     digest = hashlib.sha256(); os.lseek(fd, 0, os.SEEK_SET)
@@ -317,4 +354,4 @@ def _parse_codesign_details(details: str) -> BrowserSignature:
     if identifier is None or team is None or requirement is None: raise TrustedMediaToolError("browser code signature details are incomplete")
     return BrowserSignature(identifier.group(1).strip(), team.group(1).strip(), requirement.group(1).strip())
 
-__all__ = ["BROWSER_APPLICATION_POLICIES", "BrowserApplicationPolicy", "BrowserLaunchContext", "BrowserSignature", "MEDIA_TOOL_KINDS", "TrustedExecutable", "TrustedMediaTool", "TrustedMediaToolError", "TrustedMediaToolStore"]
+__all__ = ["BROWSER_APPLICATION_POLICIES", "BrowserApplicationPolicy", "BrowserLaunchContext", "BrowserLaunchHandle", "BrowserSignature", "MEDIA_TOOL_KINDS", "TrustedExecutable", "TrustedMediaTool", "TrustedMediaToolError", "TrustedMediaToolStore"]

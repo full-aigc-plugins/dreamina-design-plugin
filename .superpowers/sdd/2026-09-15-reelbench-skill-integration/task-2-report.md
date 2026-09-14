@@ -70,3 +70,10 @@ tests.test_media_adapter tests.test_reference_video_service -v` passed 96 tests.
 - Added semantic fingerprint, RFC3339, artifact-path, gate-set, and comparison
   contradiction checks. A `manual_review` domain requires overall
   `manual_review`.
+
+## Fix round 2
+
+Added copied-byte SHA-256/size checks and mtime/ctime FD identity checks during
+Node staging. Added the one-shot descriptor-owned `BrowserLaunchHandle`, strict
+sync/shot gate semantics, and canonical artifact-path rejection. Focused trust,
+contract, and compatibility tests passed (46 tests).

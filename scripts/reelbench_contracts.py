@@ -10,7 +10,8 @@ REELBENCH_VALIDATE_GATES = (
     "timeline", "duration", "numbering", "size", "category", "camera", "transition",
     "frame-text", "dedup", "subjects", "category-evidence", "motion", "boundary", "frames", "rhythm",
 )
-_EARLY_ACTIONS = frozenset({"seed", "evidence", "render", "plan", "panels", "export", "verify"})
+_SYNC_VERIFY_GATES = frozenset({"duration", "dimensions", "codec", "audio_policy", "cut_alignment", "highlight_alignment"})
+_EARLY_ACTIONS = frozenset({"seed", "evidence", "render", "plan", "panels", "export"})
 
 
 def validate_reelbench_evidence(receipt: Mapping[str, Any]) -> None:
@@ -26,6 +27,11 @@ def validate_reelbench_evidence(receipt: Mapping[str, Any]) -> None:
     action = receipt["action"]
     if action == "validate":
         if set(names) != set(REELBENCH_VALIDATE_GATES) or len(names) != len(REELBENCH_VALIDATE_GATES): raise ContractValidationError("validate action requires exactly all 15 upstream gates once")
+        if any(gate["status"] == "SKIPPED" and gate["name"] not in {"subjects", "motion", "boundary", "frames"} for gate in gates):
+            raise ContractValidationError("only upstream optional validation gates may be SKIPPED")
+    elif action == "verify":
+        if set(names) != _SYNC_VERIFY_GATES or len(names) != len(_SYNC_VERIFY_GATES): raise ContractValidationError("sync verify action requires exactly six gates")
+        if any(gate["status"] == "SKIPPED" for gate in gates): raise ContractValidationError("sync verify gates may not be SKIPPED")
     elif action in _EARLY_ACTIONS and names:
         raise ContractValidationError("this ReelBench action must not claim validation gates")
 
@@ -46,10 +52,10 @@ def _assert_fingerprint(receipt: Mapping[str, Any], key: str) -> None:
 
 
 def _assert_relative_artifact_path(value: Any) -> None:
-    if not isinstance(value, str) or not value or value.startswith("/") or "\\" in value:
+    if not isinstance(value, str) or not value or value.startswith("/") or "\\" in value or value.endswith("/"):
         raise ContractValidationError("artifact path must be canonical project-relative")
     path = PurePosixPath(value)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+    if path.is_absolute() or str(path) != value or any(part in {"", ".", ".."} for part in path.parts):
         raise ContractValidationError("artifact path must be canonical project-relative")
 
 
