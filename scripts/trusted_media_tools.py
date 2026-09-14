@@ -71,15 +71,20 @@ class BrowserLaunchContext:
 
 class BrowserLaunchHandle:
     """One-shot descriptor-owned browser launcher; it never exposes a pathname."""
-    def __init__(self, descriptor: int, context: BrowserLaunchContext) -> None:
-        self._descriptor = descriptor; self.context = context; self._used = False
+    _HELPER = "import os,sys; os.fchdir(int(sys.argv[1])); os.execve(sys.argv[2], sys.argv[2:], {'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})"
+    def __init__(self, descriptor: int, bundle_descriptor: int, context: BrowserLaunchContext, relative_executable: str) -> None:
+        self._descriptor = descriptor; self._bundle_descriptor = bundle_descriptor; self.context = context; self._relative_executable = relative_executable; self._used = False
+
+    def __enter__(self): return self
+    def __exit__(self, *_): self.close()
+    def __del__(self): self.close()
 
     def spawn(self, args: list[str], *, timeout_seconds: int = 30, stdout_cap: int = 1024 * 1024, stderr_cap: int = 1024 * 1024) -> subprocess.CompletedProcess[str]:
         if self._used: raise TrustedMediaToolError("browser launch handle has already been used")
         if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args): raise TrustedMediaToolError("browser arguments must be fixed strings")
         self._used = True
         try:
-            result = subprocess.run([f"/dev/fd/{self._descriptor}", *args], shell=False, close_fds=True, pass_fds=(self._descriptor,), env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"}, capture_output=True, text=True, timeout=timeout_seconds, start_new_session=True)
+            result = subprocess.run(["/usr/bin/python3", "-I", "-c", self._HELPER, str(self._bundle_descriptor), self._relative_executable, *args], shell=False, close_fds=True, pass_fds=(self._bundle_descriptor,), env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"}, capture_output=True, text=True, timeout=timeout_seconds, start_new_session=True)
             if len(result.stdout or "") > stdout_cap or len(result.stderr or "") > stderr_cap: raise TrustedMediaToolError("browser output exceeded cap")
             return result
         except subprocess.TimeoutExpired as exc:
@@ -89,6 +94,8 @@ class BrowserLaunchHandle:
     def close(self) -> None:
         if self._descriptor >= 0:
             os.close(self._descriptor); self._descriptor = -1
+        if self._bundle_descriptor >= 0:
+            os.close(self._bundle_descriptor); self._bundle_descriptor = -1
 
 
 BROWSER_APPLICATION_POLICIES: Mapping[str, BrowserApplicationPolicy] = {
@@ -146,8 +153,10 @@ class TrustedMediaToolStore:
         try:
             signature = self._verify_browser_signature(executable.source_path)
             self._assert_final_path_identity(Path(executable.source_path), os.fstat(descriptor))
+            bundle = Path(executable.source_path).parents[2]
+            bundle_fd = os.open(bundle, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
             context = BrowserLaunchContext(executable, signature, datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"))
-            return BrowserLaunchHandle(descriptor, context)
+            return BrowserLaunchHandle(descriptor, bundle_fd, context, f"Contents/MacOS/{Path(executable.source_path).name}")
         except Exception:
             os.close(descriptor); raise
 

@@ -10,7 +10,7 @@ REELBENCH_VALIDATE_GATES = (
     "timeline", "duration", "numbering", "size", "category", "camera", "transition",
     "frame-text", "dedup", "subjects", "category-evidence", "motion", "boundary", "frames", "rhythm",
 )
-_SYNC_VERIFY_GATES = frozenset({"duration", "dimensions", "codec", "audio_policy", "cut_alignment", "highlight_alignment"})
+_SYNC_VERIFY_GATES = frozenset({"duration", "dimensions", "codec", "audio_policy", "cut_alignment", "sampled_correspondence"})
 _EARLY_ACTIONS = frozenset({"seed", "evidence", "render", "plan", "panels", "export"})
 
 

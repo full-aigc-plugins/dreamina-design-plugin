@@ -77,3 +77,9 @@ Added copied-byte SHA-256/size checks and mtime/ctime FD identity checks during
 Node staging. Added the one-shot descriptor-owned `BrowserLaunchHandle`, strict
 sync/shot gate semantics, and canonical artifact-path rejection. Focused trust,
 contract, and compatibility tests passed (46 tests).
+
+## Fix round 3
+
+The browser handle now launches the allowlisted bundle-relative executable via
+an inherited bundle directory FD and fixed isolated Python helper rather than
+executing `/dev/fd/<n>`. Focused 46-test regression remains green.
