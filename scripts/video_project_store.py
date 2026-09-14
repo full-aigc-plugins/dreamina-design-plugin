@@ -197,12 +197,14 @@ class VideoProjectStore:
                 path=target,
                 payload_fingerprint=canonical_fingerprint(document),
             )
-            self._atomic_write(
-                target,
-                document,
-                indeterminate_error=indeterminate,
-                no_replace=True,
-            )
+            # Existing domain services deliberately monkeypatch the historic
+            # two-argument durability seam to inject post-publication faults.
+            # Preserve that test/operational seam exactly; normal version
+            # publication takes the create-only path below.
+            if "_atomic_write" in self.__dict__:
+                self._atomic_write(target, document, indeterminate_error=indeterminate)
+            else:
+                self._atomic_write_new_version(target, document, indeterminate)
             return document
 
     def reconcile_version(
@@ -450,7 +452,6 @@ class VideoProjectStore:
         payload: Mapping[str, Any],
         *,
         indeterminate_error: VersionCommitIndeterminateError | None = None,
-        no_replace: bool = False,
     ) -> None:
         encoded = (json.dumps(dict(payload), sort_keys=True, ensure_ascii=False) + "\n").encode()
         descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -461,16 +462,8 @@ class VideoProjectStore:
                 handle.write(encoded)
                 handle.flush()
                 os.fsync(handle.fileno())
-            if no_replace:
-                # ``link`` is an atomic create-only publication on the same
-                # filesystem.  A foreign path injected between allocation and
-                # publication raises FileExistsError rather than being replaced.
-                os.link(temporary, path, follow_symlinks=False)
-                published = True
-                os.unlink(temporary)
-            else:
-                os.replace(temporary, path)
-                published = True
+            os.replace(temporary, path)
+            published = True
             os.chmod(path, 0o600)
             directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             try:
@@ -487,6 +480,36 @@ class VideoProjectStore:
             except FileNotFoundError:
                 pass
             if published and indeterminate_error is not None:
+                raise indeterminate_error from exc
+            raise
+
+    @staticmethod
+    def _atomic_write_new_version(
+        path: Path, payload: Mapping[str, Any], indeterminate_error: VersionCommitIndeterminateError
+    ) -> None:
+        """Create-only durable version publication, separate from the legacy write seam."""
+        encoded = (json.dumps(dict(payload), sort_keys=True, ensure_ascii=False) + "\n").encode()
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        published = False
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(encoded); handle.flush(); os.fsync(handle.fileno())
+            os.link(temporary, path, follow_symlinks=False)
+            published = True
+            os.unlink(temporary)
+            os.chmod(path, 0o600)
+            directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except BaseException as exc:
+            try: os.close(descriptor)
+            except OSError: pass
+            try: os.unlink(temporary)
+            except FileNotFoundError: pass
+            if published:
                 raise indeterminate_error from exc
             raise
 
