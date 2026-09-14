@@ -19,7 +19,53 @@ from scripts.json_contracts import ContractValidationError, canonical_fingerprin
 AUDIO_POLICIES = frozenset({"full_redesign", "preserve_authorized_audio", "subtitles_only", "silent"})
 AUDIO_CLASSES = frozenset({"voice", "dialogue", "music", "effects"})
 _DIGEST = re.compile(r"^[a-f0-9]{64}$")
-_ATTESTATION_KEY = secrets.token_bytes(32)
+_ATTESTATION_DOMAIN = b"codex-dreamina-design/audio-artifact/v1\x00"
+
+
+class AudioReceiptKeyUnavailableError(PermissionError):
+    """The durable audio receipt key is missing, replaced, or unsafe."""
+
+
+class FileAudioReceiptKeyStore:
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = Path(path) if path else Path.home() / ".config/codex-dreamina-design/audio-receipt.key"
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.path.parent, 0o700)
+
+    def load(self, *, allow_create: bool) -> bytes:
+        parent = self.path.parent
+        pstat = parent.lstat()
+        if parent.is_symlink() or pstat.st_uid != os.getuid() or stat.S_IMODE(pstat.st_mode) != 0o700:
+            raise AudioReceiptKeyUnavailableError("audio key directory is unsafe")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(self.path, flags)
+        except FileNotFoundError:
+            if not allow_create:
+                raise AudioReceiptKeyUnavailableError("audio receipt key is missing")
+            key = secrets.token_bytes(32)
+            try:
+                fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                try:
+                    os.write(fd, key); os.fsync(fd)
+                finally:
+                    os.close(fd)
+            except FileExistsError:
+                return self.load(allow_create=False)
+            return key
+        except OSError as exc:
+            raise AudioReceiptKeyUnavailableError("audio receipt key cannot be opened") from exc
+        try:
+            before = os.fstat(fd); key = os.read(fd, 33); after = os.fstat(fd)
+        finally:
+            os.close(fd)
+        current = self.path.lstat()
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or
+                stat.S_IMODE(before.st_mode) != 0o600 or len(key) != 32 or
+                (before.st_dev, before.st_ino, before.st_size) != (after.st_dev, after.st_ino, after.st_size) or
+                (current.st_dev, current.st_ino) != (after.st_dev, after.st_ino)):
+            raise AudioReceiptKeyUnavailableError("audio receipt key identity or permissions are unsafe")
+        return key
 
 
 class AudioRightsError(PermissionError):
@@ -40,26 +86,39 @@ def _digest(path: Path) -> str:
 
 def _artifact_receipt(*, provider: str, path: Path, mime_type: str, kind: str,
                       rights_declared: Sequence[str], approved_root: str | None,
-                      source: str, voice: str | None, model: str | None) -> dict[str, Any]:
+                      source: str, voice: str | None, model: str | None, key_store: Any) -> dict[str, Any]:
     core = {"provider": provider, "path": str(path), "sha256": _digest(path),
             "size_bytes": path.stat().st_size, "mime_type": mime_type,
             "provenance": {"kind": kind, "rights_declared": list(rights_declared),
                            "approved_root": approved_root, "source": source,
                            "voice": voice, "model": model, "source_voice_cloned": False}}
-    signature = hmac.new(_ATTESTATION_KEY, json.dumps(core, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()
-    return {**core, "attestation": signature}
+    key = key_store.load(allow_create=True)
+    key_id = hashlib.sha256(key).hexdigest()
+    signed = {**core, "attestation_version": 1, "attestation_key_id": key_id}
+    signature = hmac.new(key, _ATTESTATION_DOMAIN + json.dumps(signed, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()
+    return {**signed, "attestation": signature}
 
 
-def _require_artifact(value: Mapping[str, Any], *, allowed_providers: set[str], required_right: str | None = None) -> dict[str, Any]:
-    expected = {"provider", "path", "sha256", "size_bytes", "mime_type", "provenance", "attestation"}
-    if not isinstance(value, Mapping) or set(value) != expected or value.get("provider") not in allowed_providers:
+def _require_artifact(value: Mapping[str, Any], *, role: str, key_store: Any, required_right: str | None = None) -> dict[str, Any]:
+    expected = {"provider", "path", "sha256", "size_bytes", "mime_type", "provenance", "attestation", "attestation_version", "attestation_key_id"}
+    if not isinstance(value, Mapping) or set(value) != expected:
         raise ContractValidationError("audio artifact receipt is incomplete or provider is forbidden")
     provenance = value.get("provenance")
     pfields = {"kind", "rights_declared", "approved_root", "source", "voice", "model", "source_voice_cloned"}
     if not isinstance(provenance, Mapping) or set(provenance) != pfields or provenance.get("source_voice_cloned") is not False:
         raise ContractValidationError("audio artifact provenance is incomplete")
+    valid_role = {
+        "new_narration": value.get("provider") == "macos-say" and value.get("mime_type") == "audio/aiff" and provenance.get("kind") == "new_narration" and provenance.get("source") == "rewritten_script" and isinstance(provenance.get("voice"), str) and bool(provenance.get("voice")) and provenance.get("model") == "macos-say" and "voice" in provenance.get("rights_declared", []),
+        "existing_audio": value.get("provider") == "existing-audio" and value.get("mime_type") == "audio/wav" and provenance.get("kind") == "user_supplied" and provenance.get("source") == "user_supplied" and provenance.get("voice") is None and provenance.get("model") is None,
+        "subtitle": value.get("provider") == "subtitle-service" and value.get("mime_type") in {"application/x-subrip", "text/x-ssa"} and provenance.get("kind") == "generated_subtitle" and provenance.get("voice") is None and provenance.get("model") is None,
+    }.get(role, False)
+    if not valid_role:
+        raise ContractValidationError("audio artifact role fields are inconsistent")
     core = {key: value[key] for key in expected if key != "attestation"}
-    wanted = hmac.new(_ATTESTATION_KEY, json.dumps(core, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()
+    key = key_store.load(allow_create=False)
+    if value.get("attestation_version") != 1 or value.get("attestation_key_id") != hashlib.sha256(key).hexdigest():
+        raise AudioReceiptKeyUnavailableError("audio receipt was signed by another key")
+    wanted = hmac.new(key, _ATTESTATION_DOMAIN + json.dumps(core, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()
     if not isinstance(value.get("attestation"), str) or not hmac.compare_digest(value["attestation"], wanted):
         raise ContractValidationError("audio artifact attestation is invalid")
     if required_right and required_right not in provenance.get("rights_declared", []):
@@ -77,10 +136,11 @@ def _require_artifact(value: Mapping[str, Any], *, allowed_providers: set[str], 
 class MacOSSayProvider:
     """Synthesize new narration with an enrolled /usr/bin/say-compatible tool."""
 
-    def __init__(self, adapter: Any, private_root: Path, *, voices: Iterable[str]) -> None:
+    def __init__(self, adapter: Any, private_root: Path, *, voices: Iterable[str], key_store: Any | None = None) -> None:
         self._adapter = adapter
         self._root = Path(private_root)
         self._voices = frozenset(voices)
+        self._key_store = key_store or FileAudioReceiptKeyStore()
         if not self._root.is_absolute() or self._root.is_symlink() or not self._root.is_dir():
             raise NarrationProviderError("narration root must be an absolute private directory")
         os.chmod(self._root, 0o700)
@@ -112,7 +172,7 @@ class MacOSSayProvider:
             os.chmod(output, 0o600)
             return _artifact_receipt(provider="macos-say", path=output, mime_type="audio/aiff",
                 kind="new_narration", rights_declared=["voice"], approved_root=None,
-                source="rewritten_script", voice=voice, model="macos-say")
+                source="rewritten_script", voice=voice, model="macos-say", key_store=self._key_store)
         finally:
             script.unlink(missing_ok=True)
 
@@ -120,7 +180,7 @@ class MacOSSayProvider:
 class ExistingAudioProvider:
     """Accept an immutable, rights-declared user track from approved roots."""
 
-    def __init__(self, approved_roots: Iterable[Path]) -> None:
+    def __init__(self, approved_roots: Iterable[Path], *, key_store: Any | None = None) -> None:
         roots = []
         for root in approved_roots:
             candidate = Path(root)
@@ -130,6 +190,7 @@ class ExistingAudioProvider:
         if not roots:
             raise AudioRightsError("at least one approved audio root is required")
         self._roots = tuple(roots)
+        self._key_store = key_store or FileAudioReceiptKeyStore()
 
     def accept(self, path: Path, *, expected_sha256: str, rights: Mapping[str, bool]) -> dict[str, Any]:
         source = Path(path)
@@ -144,11 +205,14 @@ class ExistingAudioProvider:
         return _artifact_receipt(provider="existing-audio", path=resolved, mime_type="audio/wav",
             kind="user_supplied", rights_declared=declared,
             approved_root=str(next(root for root in self._roots if resolved.is_relative_to(root))),
-            source="user_supplied", voice=None, model=None)
+            source="user_supplied", voice=None, model=None, key_store=self._key_store)
 
 
 class AudioPlanService:
     """Build a closed, fingerprinted handoff for Task 12 composition."""
+
+    def __init__(self, *, key_store: Any | None = None) -> None:
+        self._key_store = key_store or FileAudioReceiptKeyStore()
 
     def create_plan(self, *, project_id: str, design_fingerprint: str, batch_fingerprint: str,
                     creative_mode: str, audio_policy: str, source_rights: Mapping[str, Any] | None,
@@ -179,17 +243,18 @@ class AudioPlanService:
             raise ValueError("silent plans cannot contain narration or subtitles")
         narration_value = None
         if narration is not None:
-            narration_value = _require_artifact(narration, allowed_providers={"macos-say", "existing-audio"})
+            role = "new_narration" if narration.get("provider") == "macos-say" else "existing_audio"
+            narration_value = _require_artifact(narration, role=role, key_store=self._key_store)
             if audio_policy == "full_redesign" and not (narration_value["provider"] == "macos-say" or
                     (narration_value["provenance"]["source"] == "user_new_narration" and "voice" in narration_value["provenance"]["rights_declared"])):
                 raise AudioRightsError("full redesign narration must be trusted new narration")
-        effects_value = [_require_artifact(item, allowed_providers={"existing-audio"}, required_right="effects") for item in effects]
-        subtitles_value = [_require_artifact(item, allowed_providers={"subtitle-service"}) for item in subtitles]
+        effects_value = [_require_artifact(item, role="existing_audio", key_store=self._key_store, required_right="effects") for item in effects]
+        subtitles_value = [_require_artifact(item, role="subtitle", key_store=self._key_store) for item in subtitles]
         music_value = None
         if music is not None:
             raw = dict(music)
             intent = {"loop": raw.pop("loop", False), "trim_to_seconds": raw.pop("trim_to_seconds", None)}
-            music_value = {**_require_artifact(raw, allowed_providers={"existing-audio"}, required_right="music"), "intent": intent}
+            music_value = {**_require_artifact(raw, role="existing_audio", key_store=self._key_store, required_right="music"), "intent": intent}
         if audio_policy == "preserve_authorized_audio":
             concrete = {}
             if narration_value is not None and narration_value["provider"] == "existing-audio":
@@ -199,11 +264,19 @@ class AudioPlanService:
             if music_value is not None:
                 concrete["music"] = music_value
             if effects_value:
-                concrete["effects"] = effects_value[0]
+                concrete["effects"] = effects_value
             if set(concrete) != requested:
                 raise AudioRightsError("preserved classes and concrete source artifacts must match exactly")
             bindings = source_rights.get("artifact_bindings", {}) if source_rights else {}
-            if set(bindings) != requested or any(bindings[name] != {"path": concrete[name]["path"], "sha256": concrete[name]["sha256"]} for name in requested):
+            actual_bindings = {}
+            for name, value in concrete.items():
+                values = value if isinstance(value, list) else [value]
+                members = [{"path": item["path"], "sha256": item["sha256"]} for item in values]
+                if len({(item["path"], item["sha256"]) for item in members}) != len(members):
+                    raise AudioRightsError("duplicate preserved audio artifact")
+                actual_bindings[name] = sorted(members, key=lambda item: (item["path"], item["sha256"]))
+            normalized_bindings = {name: sorted(value if isinstance(value, list) else [value], key=lambda item: (item.get("path", ""), item.get("sha256", ""))) for name, value in bindings.items()}
+            if set(bindings) != requested or normalized_bindings != actual_bindings:
                 raise AudioRightsError("rights receipt artifact bindings do not match preserved sources")
         core = {
             "schema_version": "1.0", "version": "v001", "project_id": project_id,
@@ -220,4 +293,4 @@ class AudioPlanService:
         return result
 
 
-__all__ = ["AUDIO_POLICIES", "AudioPlanService", "AudioRightsError", "ExistingAudioProvider", "MacOSSayProvider", "NarrationProviderError"]
+__all__ = ["AUDIO_POLICIES", "AudioPlanService", "AudioReceiptKeyUnavailableError", "AudioRightsError", "ExistingAudioProvider", "FileAudioReceiptKeyStore", "MacOSSayProvider", "NarrationProviderError"]

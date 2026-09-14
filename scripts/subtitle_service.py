@@ -88,11 +88,12 @@ class SubtitleService:
             os.replace(temporary, output); os.chmod(output, 0o600)
         finally:
             Path(temporary).unlink(missing_ok=True)
-        from scripts.narration_service import _artifact_receipt
+        from scripts.narration_service import FileAudioReceiptKeyStore, _artifact_receipt
         return _artifact_receipt(provider="subtitle-service", path=output,
             mime_type="application/x-subrip" if format_name == "srt" else "text/x-ssa",
             kind="generated_subtitle", rights_declared=["subtitles"], approved_root=None,
-            source="rewritten_script_or_narration_timing", voice=None, model=None)
+            source="rewritten_script_or_narration_timing", voice=None, model=None,
+            key_store=FileAudioReceiptKeyStore())
 
 
 __all__ = ["SubtitleService", "SubtitleTimelineError"]

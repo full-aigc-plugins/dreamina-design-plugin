@@ -11,6 +11,7 @@ from scripts.narration_service import (
     AudioPlanService,
     AudioRightsError,
     ExistingAudioProvider,
+    FileAudioReceiptKeyStore,
     MacOSSayProvider,
     NarrationProviderError,
 )
@@ -25,6 +26,11 @@ class SyntheticNarrationAdapter:
         self.calls.append((kind, list(argv), timeout_seconds))
         Path(argv[argv.index("-o") + 1]).write_bytes(b"synthetic-aiff")
         return MediaResult(0, "", "")
+
+
+class FixedKeyStore:
+    def __init__(self, key=b"k" * 32): self.key = key
+    def load(self, *, allow_create): return self.key
 
 
 class NarrationServiceTests(unittest.TestCase):
@@ -124,6 +130,38 @@ class NarrationServiceTests(unittest.TestCase):
         forged = {"provider":"macos-say","path":str(fake),"sha256":hashlib.sha256(fake.read_bytes()).hexdigest(),"size_bytes":fake.stat().st_size,"mime_type":"audio/aiff","provenance":{"kind":"new_narration","rights_declared":["voice"],"approved_root":None,"source":"rewritten_script","voice":"Samantha","model":"macos-say","source_voice_cloned":False},"attestation":"0"*64}
         with self.assertRaises(ContractValidationError):
             AudioPlanService().create_plan(project_id="vp_"+"1"*24,design_fingerprint="2"*64,batch_fingerprint="3"*64,creative_mode="original_redesign",audio_policy="full_redesign",source_rights=None,transcript=None,rewritten_script=[{"start":0,"end":1,"text":"new"}],narration=forged,music=None,effects=[],subtitles=[],target_duration_seconds=1)
+
+    def test_receipt_survives_service_restart_with_same_durable_key(self) -> None:
+        keys = FixedKeyStore()
+        receipt = MacOSSayProvider(SyntheticNarrationAdapter(), self.root, voices={"Samantha"}, key_store=keys).synthesize(
+            [{"start":0,"end":1,"text":"new"}], voice="Samantha", output_path=self.root/"restart.aiff")
+        plan = AudioPlanService(key_store=FixedKeyStore()).create_plan(project_id="vp_"+"1"*24,design_fingerprint="2"*64,batch_fingerprint="3"*64,creative_mode="original_redesign",audio_policy="full_redesign",source_rights=None,transcript=None,rewritten_script=[{"start":0,"end":1,"text":"new"}],narration=receipt,music=None,effects=[],subtitles=[],target_duration_seconds=1)
+        self.assertEqual(plan["narration"]["attestation_key_id"], hashlib.sha256(b"k"*32).hexdigest())
+        with self.assertRaises(PermissionError):
+            AudioPlanService(key_store=FixedKeyStore(b"x"*32)).create_plan(project_id="vp_"+"1"*24,design_fingerprint="2"*64,batch_fingerprint="3"*64,creative_mode="original_redesign",audio_policy="full_redesign",source_rights=None,transcript=None,rewritten_script=[{"start":0,"end":1,"text":"new"}],narration=receipt,music=None,effects=[],subtitles=[],target_duration_seconds=1)
+
+    def test_file_key_store_is_private_durable_and_never_rotates_when_missing(self) -> None:
+        key_path = self.root / "keys" / "audio.key"
+        first = FileAudioReceiptKeyStore(key_path).load(allow_create=True)
+        second = FileAudioReceiptKeyStore(key_path).load(allow_create=False)
+        self.assertEqual(first, second)
+        self.assertEqual(key_path.stat().st_mode & 0o777, 0o600)
+        key_path.unlink()
+        with self.assertRaises(PermissionError):
+            FileAudioReceiptKeyStore(key_path).load(allow_create=False)
+
+    def test_preserved_effects_require_exact_order_independent_member_set(self) -> None:
+        keys = FixedKeyStore(); provider = ExistingAudioProvider([self.root], key_store=keys)
+        receipts = []
+        for name in ("one.wav", "two.wav"):
+            path = self.root/name; path.write_bytes(name.encode())
+            receipts.append(provider.accept(path, expected_sha256=hashlib.sha256(path.read_bytes()).hexdigest(), rights={"effects":True}))
+        bindings = [{"path": item["path"], "sha256": item["sha256"]} for item in reversed(receipts)]
+        base = dict(project_id="vp_"+"1"*24,design_fingerprint="2"*64,batch_fingerprint="3"*64,creative_mode="authorized_replication",audio_policy="preserve_authorized_audio",transcript=None,rewritten_script=[],narration=None,music=None,effects=receipts,subtitles=[],target_duration_seconds=1,preserve=["effects"])
+        plan = AudioPlanService(key_store=keys).create_plan(source_rights={"receipt_id":"rr_"+"5"*24,"receipt_fingerprint":"6"*64,"allowed_reuse":["effects"],"artifact_bindings":{"effects":bindings}}, **base)
+        self.assertEqual(len(plan["effects"]), 2)
+        with self.assertRaises(AudioRightsError):
+            AudioPlanService(key_store=keys).create_plan(source_rights={"receipt_id":"rr_"+"5"*24,"receipt_fingerprint":"6"*64,"allowed_reuse":["effects"],"artifact_bindings":{"effects":bindings[:1]}}, **base)
 
 
 if __name__ == "__main__":
