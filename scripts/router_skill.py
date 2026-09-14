@@ -10,6 +10,9 @@ enforces the anti-patterns called out in the plan:
 * require web-prerequisite acknowledgement for the first video;
 * require submit-ID query before any blind resubmission.
 
+The additive ``video_project`` intent routes to the project orchestrator Skill.
+It is a separate intent so it cannot change any existing image or video route.
+
 The router deliberately defers to ``scripts/verify_skill_snapshot`` to
 prove every packaged Skill is byte-identical to the verified upstream
 commit before any routing decision is allowed.
@@ -62,6 +65,13 @@ ROUTING_TABLE = _RoutingTable(
     },
 )
 
+# Additive project intent. Kept out of the direct-mode tables so no existing
+# route can be shadowed by the project workflow.
+PROJECT_INTENT = "video_project"
+PROJECT_INTENTS = {
+    "reference": "codex-dreamina-video-production",
+}
+
 
 class Router:
     """Pure router that selects a packaged Skill for a given intent."""
@@ -71,6 +81,8 @@ class Router:
             target = ROUTING_TABLE.image_mode_to_skill.get(mode)
         elif intent == "video":
             target = ROUTING_TABLE.video_mode_to_skill.get(mode)
+        elif intent == PROJECT_INTENT:
+            target = PROJECT_INTENTS.get(mode)
         else:
             raise AmbiguousRoutingError(f"unknown intent: {intent}")
         if target is None:
@@ -102,6 +114,8 @@ __all__ = [
     "AmbiguousRoutingError",
     "ApprovalMismatchError",
     "HardCodedCatalogError",
+    "PROJECT_INTENT",
+    "PROJECT_INTENTS",
     "Router",
     "RouterError",
     "WebPrerequisiteRequired",
