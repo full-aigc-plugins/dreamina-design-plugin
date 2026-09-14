@@ -21,8 +21,6 @@ class SubtitleService:
         self._max_text_length = max_text_length
         from scripts.narration_service import FileAudioReceiptKeyStore
         self._key_store = key_store or FileAudioReceiptKeyStore()
-        if hasattr(self._key_store, "initialize"):
-            self._key_store.initialize()
 
     def from_source(self, cues: Sequence[Mapping[str, Any]], *, source: str) -> list[dict[str, Any]]:
         if source not in {"rewritten_script", "narration_timing"}:
@@ -33,6 +31,8 @@ class SubtitleService:
         normalized = self._validate(cues, target_duration_seconds)
         lines = []
         for index, cue in enumerate(normalized, 1):
+            if round(cue["start"] * 1000) >= round(cue["end"] * 1000):
+                raise SubtitleTimelineError("cue collapses after SRT timestamp rounding")
             text = cue["text"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             lines.extend([str(index), f"{self._srt_time(cue['start'])} --> {self._srt_time(cue['end'])}", text, ""])
         return "\n".join(lines)
@@ -42,6 +42,8 @@ class SubtitleService:
         header = "[Script Info]\nScriptType: v4.00+\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,Alignment\nStyle: Default,Arial,48,&H00FFFFFF,2\n[Events]\nFormat: Layer,Start,End,Style,Text\n"
         lines = []
         for cue in normalized:
+            if round(cue["start"] * 100) >= round(cue["end"] * 100):
+                raise SubtitleTimelineError("cue collapses after ASS timestamp rounding")
             safe = cue["text"].replace("\\", "＼").replace("{", "｛").replace("}", "｝")
             lines.append(f"Dialogue: 0,{self._ass_time(cue['start'])},{self._ass_time(cue['end'])},Default,{safe}")
         return header + "\n".join(lines) + ("\n" if lines else "")
@@ -96,6 +98,7 @@ class SubtitleService:
         from scripts.narration_service import _artifact_receipt
         return _artifact_receipt(provider="subtitle-service", path=output,
             mime_type="application/x-subrip" if format_name == "srt" else "text/x-ssa",
+            artifact_role="subtitle_srt" if format_name == "srt" else "subtitle_ass",
             kind="generated_subtitle", rights_declared=["subtitles"], approved_root=None,
             source=source, voice=None, model=None, key_store=self._key_store)
 

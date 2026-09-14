@@ -16,6 +16,9 @@ from scripts.trusted_media_tools import TrustedMediaToolError
 
 
 _LANGUAGE = re.compile(r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")
+_MAX_SEGMENTS = 10_000
+_MAX_SEGMENT_TEXT_LENGTH = 500
+_MAX_TRANSCRIPT_SECONDS = 21_600
 
 
 class TranscriptionUnavailableError(RuntimeError):
@@ -34,10 +37,12 @@ class WhisperCliProvider:
         self._output_root = Path(output_root)
         if not self._output_root.is_absolute() or self._output_root.is_symlink():
             raise ValueError("Whisper output root must be an absolute non-symlink directory")
-        self._output_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(self._output_root, 0o700)
+        if not self._output_root.exists():
+            self._output_root.mkdir(mode=0o700, parents=True)
         self._output_root = self._output_root.resolve(strict=True)
-        if stat.S_IMODE(self._output_root.stat().st_mode) != 0o700:
+        metadata = self._output_root.stat()
+        if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o700):
             raise ValueError("Whisper output root must be private mode 0700")
 
     def transcribe(self, audio_path: Path, *, language: str | None) -> list[dict[str, Any]]:
@@ -64,6 +69,8 @@ class WhisperCliProvider:
         return self._normalize(payload["segments"], effective_language, digest)
 
     def _normalize(self, segments: Sequence[Mapping[str, Any]], language: str, digest: str) -> list[dict[str, Any]]:
+        if len(segments) > _MAX_SEGMENTS:
+            raise ValueError("whisper segment count exceeds the local evidence limit")
         normalized: list[dict[str, Any]] = []
         previous_end = 0.0
         for item in segments:
@@ -73,7 +80,9 @@ class WhisperCliProvider:
             text = item.get("text")
             if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) for value in (start, end, confidence)):
                 raise ValueError("segment times and confidence must be finite numbers")
-            if start < 0 or end <= start or start < previous_end or not isinstance(text, str) or not text.strip() or not -1 <= confidence <= 1:
+            if (start < 0 or end <= start or start < previous_end or end > _MAX_TRANSCRIPT_SECONDS
+                    or not isinstance(text, str) or not text.strip()
+                    or len(text) > _MAX_SEGMENT_TEXT_LENGTH or not -1 <= confidence <= 1):
                 raise ValueError("segment timeline, text, or confidence is invalid")
             normalized.append({
                 "start": float(start), "end": float(end), "language": language,
@@ -89,7 +98,11 @@ class WhisperCliProvider:
         candidate = Path(path)
         if not candidate.is_absolute() or candidate.is_symlink() or not candidate.is_file():
             raise ValueError(f"{label} path must be an absolute regular non-symlink file")
-        return candidate.resolve(strict=True)
+        resolved = candidate.resolve(strict=True)
+        metadata = resolved.stat()
+        if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise ValueError(f"{label} path must be an owner-only private file")
+        return resolved
 
 
 class TranscriptionService:

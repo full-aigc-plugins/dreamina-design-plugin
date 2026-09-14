@@ -167,12 +167,14 @@ class ClosedSchemaTests(unittest.TestCase):
 
     def test_audio_plan_artifact_roles_are_closed_and_not_interchangeable(self) -> None:
         schema = load_json(SCHEMAS_DIR / "audio_plan.schema.json")
-        self.assertEqual(schema["properties"]["narration"]["anyOf"][1]["$ref"], "#/$defs/newNarrationArtifact")
-        self.assertEqual(schema["properties"]["narration"]["anyOf"][2]["$ref"], "#/$defs/existingVoiceArtifact")
+        self.assertEqual(schema["properties"]["narration"]["oneOf"][1]["$ref"], "#/$defs/newNarrationArtifact")
+        self.assertEqual(schema["properties"]["narration"]["oneOf"][2]["$ref"], "#/$defs/existingVoiceArtifact")
+        self.assertEqual(schema["properties"]["narration"]["oneOf"][4]["$ref"], "#/$defs/existingVoiceDialogueArtifact")
         self.assertEqual(schema["properties"]["music"]["anyOf"][1]["$ref"], "#/$defs/musicArtifact")
         self.assertEqual(schema["properties"]["effects"]["items"]["$ref"], "#/$defs/effectArtifact")
         self.assertEqual(schema["properties"]["subtitles"]["items"]["oneOf"][0]["$ref"], "#/$defs/subtitleSrtArtifact")
         self.assertEqual(schema["properties"]["subtitles"]["items"]["oneOf"][1]["$ref"], "#/$defs/subtitleAssArtifact")
+        self.assertEqual(schema["$defs"]["subtitleProvenance"]["properties"]["rights_declared"]["const"], ["subtitles"])
 
     def test_audio_plan_schema_rejects_cross_role_artifact_fields(self) -> None:
         def artifact(provider, mime, kind, source, rights, voice=None, model=None):

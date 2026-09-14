@@ -37,8 +37,10 @@ class TranscriptionServiceTests(unittest.TestCase):
         os.chmod(self.root, 0o700)
         self.model = self.root / "model.bin"
         self.model.write_bytes(b"fixed-model")
+        os.chmod(self.model, 0o600)
         self.source = self.root / "source.wav"
         self.source.write_bytes(b"RIFFsynthetic")
+        os.chmod(self.source, 0o600)
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -104,6 +106,39 @@ class TranscriptionServiceTests(unittest.TestCase):
                 self.assertEqual(result["reason"], "asr_output_invalid")
                 self.assertEqual(result["segments"], [])
                 self.assertNotIn("provider", result)
+
+    def test_private_model_source_and_output_root_are_required_without_permission_mutation(self) -> None:
+        public_root = self.root / "public-output"
+        public_root.mkdir(mode=0o755)
+        before = public_root.stat().st_mode & 0o777
+        with self.assertRaises(ValueError):
+            WhisperCliProvider(RecordingAdapter(), self.model, public_root)
+        self.assertEqual(public_root.stat().st_mode & 0o777, before)
+
+        public_source = self.root / "public.wav"
+        public_source.write_bytes(b"RIFFpublic")
+        os.chmod(public_source, 0o644)
+        provider = WhisperCliProvider(RecordingAdapter(), self.model, self.root)
+        with self.assertRaises(ValueError):
+            provider.transcribe(public_source, language="en")
+
+    def test_segments_are_strictly_bounded_before_becoming_evidence(self) -> None:
+        oversized = "x" * 501
+        cases = [
+            {"language": "en", "segments": [{"start": 0, "end": 1, "text": oversized, "confidence": .8}]},
+            {"language": "en", "segments": [
+                {"start": index, "end": index + .5, "text": "x", "confidence": .8}
+                for index in range(10_001)
+            ]},
+            {"language": "en", "segments": [{"start": 0, "end": 21_601, "text": "x", "confidence": .8}]},
+        ]
+        for payload in cases:
+            with self.subTest(segment_count=len(payload["segments"])):
+                result = TranscriptionService(
+                    WhisperCliProvider(RecordingAdapter(payload), self.model, self.root)
+                ).transcribe(self.source, language="en")
+                self.assertEqual(result["status"], "degraded")
+                self.assertEqual(result["segments"], [])
 
     @staticmethod
     def _minimal_plan(transcript):

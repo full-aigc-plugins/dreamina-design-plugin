@@ -69,6 +69,23 @@ class NativeApprovalProviderTests(unittest.TestCase):
         self.assertNotIn("submission", message)
         self.assertIn("guarded action", message)
 
+    def test_audio_key_bootstrap_confirmation_binds_identity_path_action_and_impact(self) -> None:
+        provider = NativeApprovalProvider()
+        with patch.object(provider, "_confirm_dialog") as confirm:
+            token = provider.confirm_audio_receipt_key_initialization(
+                key_store_path="/private/keys/audio.key", action="rebootstrap",
+                new_key_id="a" * 64, purpose="recover receipt signing",
+                impact="previous signed receipts become unverifiable",
+            )
+        self.assertEqual(token, "native-audio-receipt-key-confirmed")
+        message, button = confirm.call_args.args
+        self.assertEqual(button, "确认重新生成密钥")
+        payload = json.loads(message.split("\n\n", 1)[1])
+        self.assertEqual(payload["action"], "rebootstrap")
+        self.assertEqual(payload["new_key_id"], "a" * 64)
+        self.assertEqual(payload["key_store_path"], "/private/keys/audio.key")
+        self.assertIn("unverifiable", payload["impact"])
+
 
 if __name__ == "__main__":
     unittest.main()

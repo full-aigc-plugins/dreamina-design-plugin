@@ -69,6 +69,25 @@ class NativeApprovalProvider:
         )
         return "native-video-batch-confirmed"
 
+    def confirm_audio_receipt_key_initialization(
+        self, *, key_store_path: str, action: str, new_key_id: str, purpose: str, impact: str
+    ) -> str:
+        """Confirm one exact first bootstrap or destructive identity replacement."""
+        if action not in {"first_bootstrap", "rebootstrap"}:
+            raise ApprovalDeniedError("audio receipt key action is invalid")
+        request = {
+            "action": action,
+            "impact": impact,
+            "key_store_path": key_store_path,
+            "new_key_id": new_key_id,
+            "purpose": purpose,
+        }
+        summary = json.dumps(request, ensure_ascii=False, sort_keys=True, indent=2)
+        title = "重新生成音频凭据签名密钥" if action == "rebootstrap" else "初始化音频凭据签名密钥"
+        button = "确认重新生成密钥" if action == "rebootstrap" else "确认初始化密钥"
+        self._confirm_dialog(title + "\n\n" + summary, button)
+        return "native-audio-receipt-key-confirmed"
+
     @staticmethod
     def _confirm_dialog(message: str, approve_button: str) -> None:
         if platform.system() != "Darwin":
