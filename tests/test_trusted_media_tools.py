@@ -65,11 +65,7 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
                 Path,
                 "stat",
                 autospec=True,
-                # Path.lstat() calls self.stat(follow_symlinks=False), so the
-                # stub has to accept and forward that keyword argument.
-                side_effect=lambda path, **kwargs: (
-                    root_stat if path == self.ffmpeg else original_stat(path, **kwargs)
-                ),
+                side_effect=lambda path, **kw: root_stat if path == self.ffmpeg else original_stat(path, **kw),
             ),
         ):
             with self.assertRaises(TrustedMediaToolError):
@@ -147,8 +143,8 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
             Path,
             "lstat",
             autospec=True,
-            side_effect=lambda path: (
-                foreign_stat if path == self.store.path.parent else original_lstat(path)
+            side_effect=lambda path, **kw: (
+                foreign_stat if path == self.store.path.parent else original_lstat(path, **kw)
             ),
         ):
             with self.assertRaisesRegex(TrustedMediaToolError, "directory"):
