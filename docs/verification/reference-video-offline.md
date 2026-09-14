@@ -90,3 +90,8 @@ Not run in this environment, and deliberately not claimed:
 
 Each remains its own action-time authorization. This document must not be read
 as evidence that any of them passed.
+
+The acceptance runner and the observed gate output for this release are in
+[`reference-video-runtime-2026-09-14.md`](./reference-video-runtime-2026-09-14.md).
+It records two of thirteen gates passing (`offline_suite`, `sha_equality`) and the
+remaining eleven `NOT_RUN` with reasons.
