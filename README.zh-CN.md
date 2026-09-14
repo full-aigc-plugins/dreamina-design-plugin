@@ -33,7 +33,7 @@ read_only_runtime_contract = observed or explicitly blocked
 paid_canary = separately approved or NOT_RUN
 ```
 
-只读 runtime 契约为 `observed`；经授权的 canary 已达到 `success`，产物与消费证据均已记录。
+只读 runtime 契约为 `observed`；经授权的 canary 状态为 `APPROVED` 并已达到 `success`，产物与消费证据均已记录。
 基线门禁与严格 runtime 门禁均通过：
 
 ```text
