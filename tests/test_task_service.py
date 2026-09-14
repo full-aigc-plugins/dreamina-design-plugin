@@ -1,4 +1,5 @@
 import os
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -93,3 +94,30 @@ class TaskServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "0700"):
                 TaskService(Adapter()).query("external-1", download_dir=str(target))
             self.assertEqual(target.stat().st_mode & 0o777, 0o755)
+
+    def test_same_size_wrong_canonical_collision_is_rejected_without_mutation(self):
+        media = b"\0\0\0\x18ftypisom" + b"x" * 20
+        digest = hashlib.sha256(media).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "download-001"; target.mkdir(mode=0o700)
+            collision = target / f"artifact-{digest}.mp4"
+            collision.write_bytes(b"\0\0\0\x18ftypisom" + b"y" * 20); collision.chmod(0o400)
+            before = collision.read_bytes()
+            class Downloading(Adapter):
+                def run(self, args):
+                    (target / "clip.mp4").write_bytes(media)
+                    return super().run(args)
+            with self.assertRaisesRegex(ValueError, "collision"):
+                TaskService(Downloading()).query("external-1", download_dir=str(target))
+            self.assertEqual(collision.read_bytes(), before)
+
+    def test_recovery_returns_one_verified_canonical_and_ignores_temp(self):
+        media = b"\0\0\0\x18ftypisom" + b"x" * 20
+        digest = hashlib.sha256(media).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "download-001"; target.mkdir(mode=0o700)
+            canonical = target / f"artifact-{digest}.mp4"; canonical.write_bytes(media); canonical.chmod(0o400)
+            (target / ".verified-stale.tmp").write_bytes(b"partial")
+            receipts = TaskService(Adapter()).verify_download_dir(str(target))
+            self.assertEqual([item["sha256"] for item in receipts], [digest])
+            self.assertFalse((target / ".verified-stale.tmp").exists())

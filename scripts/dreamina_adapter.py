@@ -277,6 +277,23 @@ class DreaminaAdapter:
             env=self.env,
             start_new_session=True,
         )
+        try:
+            return self._communicate_bounded(process)
+        except DreaminaAdapterError:
+            raise
+        except (OSError, subprocess.SubprocessError) as exc:
+            if process.poll() is None:
+                try: self._terminate_process_group(process)
+                except (OSError, subprocess.SubprocessError): pass
+            for stream in (process.stdout, process.stderr):
+                if stream is not None and not stream.closed:
+                    stream.close()
+            raise DreaminaAdapterError(
+                "dreamina CLI failed after process start",
+                invocation_started=True, outcome_ambiguous=True) from exc
+
+    def _communicate_bounded(self, process: subprocess.Popen) -> tuple[int, str, str]:
+        """Read one already-started process; every failure is post-spawn."""
         selector = selectors.DefaultSelector()
         buffers = {"stdout": bytearray(), "stderr": bytearray()}
         assert process.stdout is not None and process.stderr is not None

@@ -24,6 +24,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +33,7 @@ sys.path.insert(0, str(ROOT))
 from scripts.dreamina_adapter import (  # noqa: E402  (path injection above)
     CLINotFoundError,
     DreaminaAdapter,
+    DreaminaAdapterError,
     DreaminaResult,
     InvalidJSONError,
     PermissionDeniedError,
@@ -160,6 +162,15 @@ class DreaminaAdapterRunTests(unittest.TestCase):
         adapter.timeout_seconds = 0.2
         with self.assertRaises(AdapterTimeoutError) as caught:
             adapter.run(["slow"])
+        self.assertTrue(caught.exception.invocation_started)
+        self.assertTrue(caught.exception.outcome_ambiguous)
+
+    def test_selector_failure_after_popen_is_typed_ambiguous(self) -> None:
+        adapter = self._make_adapter("#!/bin/sh\necho '{\"ok\": true}'")
+        with patch("scripts.dreamina_adapter.selectors.DefaultSelector.register",
+                   side_effect=OSError("injected selector failure")):
+            with self.assertRaises(DreaminaAdapterError) as caught:
+                adapter.run(["anything"])
         self.assertTrue(caught.exception.invocation_started)
         self.assertTrue(caught.exception.outcome_ambiguous)
 

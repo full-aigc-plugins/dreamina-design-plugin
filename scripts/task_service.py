@@ -85,35 +85,29 @@ class TaskService:
         TaskService._assert_directory_entry(parent_fd, directory_name, directory_fd)
         for name in names:
             if "/" in name or name in {".", ".."}: raise ValueError("unsafe downloaded artifact name")
+            if name.startswith(".verified-") or name.endswith(".tmp"):
+                try: os.unlink(name, dir_fd=directory_fd); os.fsync(directory_fd)
+                except FileNotFoundError: pass
+                continue
+            canonical = re.fullmatch(r"artifact-([a-f0-9]{64})(\.(?:mp4|png|jpg))", name)
+            if canonical:
+                receipt = TaskService._verify_canonical(directory_fd, name, canonical.group(1), target)
+                if receipt["sha256"] not in seen_digests:
+                    artifacts.append(receipt); seen_digests.add(str(receipt["sha256"]))
+                continue
             descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
             try:
                 metadata = os.fstat(descriptor)
                 if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_nlink != 1: raise ValueError("downloaded artifact must be a private regular file")
-                digest = hashlib.sha256(); prefix = b""; size = 0
-                while True:
-                    chunk = os.read(descriptor, 1024 * 1024)
-                    if not chunk: break
-                    prefix += chunk[:max(0, 16-len(prefix))]; size += len(chunk)
-                    if size > MAX_ARTIFACT_BYTES: raise ValueError("downloaded artifact size is invalid")
-                    digest.update(chunk)
-                after_read = os.fstat(descriptor)
-                stable_fields = ("st_dev", "st_ino", "st_size", "st_uid", "st_nlink", "st_mtime_ns", "st_ctime_ns")
-                if any(getattr(metadata, field) != getattr(after_read, field) for field in stable_fields):
-                    raise ValueError("downloaded artifact changed during verification")
-                if size == 0: raise ValueError("downloaded artifact size is invalid")
-                mime = "image/png" if prefix.startswith(b"\x89PNG\r\n\x1a\n") else "image/jpeg" if prefix.startswith(b"\xff\xd8\xff") else "video/mp4" if len(prefix) >= 12 and prefix[4:8] == b"ftyp" else None
-                if mime is None: raise ValueError("downloaded artifact type is unsupported")
+                published_name, digest_value, size, mime = TaskService._publish_verified_copy(
+                    directory_fd, descriptor, metadata)
+                after = os.fstat(descriptor)
                 current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-                final = os.fstat(descriptor)
-                if ((final.st_dev, final.st_ino, final.st_size) != (current.st_dev, current.st_ino, current.st_size)
-                        or final.st_size != size or final.st_uid != os.getuid() or final.st_nlink != 1):
-                    raise ValueError("downloaded artifact changed during verification")
-                extension = {"video/mp4": ".mp4", "image/png": ".png", "image/jpeg": ".jpg"}[mime]
-                digest_value = digest.hexdigest()
+                stable = ("st_dev", "st_ino", "st_size", "st_uid", "st_nlink", "st_mtime_ns", "st_ctime_ns")
+                if any(getattr(metadata, field) != getattr(after, field) or getattr(after, field) != getattr(current, field) for field in stable):
+                    raise ValueError("downloaded artifact changed while staging")
                 if digest_value in seen_digests:
                     continue
-                published_name = TaskService._publish_verified_copy(
-                    directory_fd, descriptor, digest_value, size, extension)
                 artifacts.append({"path": str(target / published_name), "mime_type": mime, "size_bytes": size,
                                   "sha256": digest_value, "provenance": "externally-queried"})
                 seen_digests.add(digest_value)
@@ -122,47 +116,78 @@ class TaskService:
         return artifacts
 
     @staticmethod
-    def _publish_verified_copy(directory_fd: int, source_fd: int, digest: str,
-                               size: int, extension: str) -> str:
+    def _publish_verified_copy(directory_fd: int, source_fd: int,
+                               source_before: os.stat_result) -> tuple[str, str, int, str]:
         """Copy verified bytes to an exclusive temp and no-replace digest name."""
         temporary = f".verified-{secrets.token_hex(16)}.tmp"
-        final_name = f"artifact-{digest}{extension}"
         output_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=directory_fd)
         try:
             os.lseek(source_fd, 0, os.SEEK_SET)
-            copied = 0
+            copied = 0; digest = hashlib.sha256(); prefix = b""
             while True:
                 chunk = os.read(source_fd, 1024 * 1024)
                 if not chunk: break
+                prefix += chunk[:max(0, 16-len(prefix))]
+                digest.update(chunk)
                 view = memoryview(chunk)
                 while view:
                     written = os.write(output_fd, view)
                     if written <= 0: raise OSError("short artifact write")
                     view = view[written:]
                 copied += len(chunk)
-            if copied != size: raise ValueError("artifact changed while staging")
+                if copied > MAX_ARTIFACT_BYTES: raise ValueError("downloaded artifact size is invalid")
+            source_after = os.fstat(source_fd)
+            stable = ("st_dev", "st_ino", "st_size", "st_uid", "st_nlink", "st_mtime_ns", "st_ctime_ns")
+            if copied == 0 or any(getattr(source_before, field) != getattr(source_after, field) for field in stable):
+                raise ValueError("artifact changed while staging")
+            mime = "image/png" if prefix.startswith(b"\x89PNG\r\n\x1a\n") else "image/jpeg" if prefix.startswith(b"\xff\xd8\xff") else "video/mp4" if len(prefix) >= 12 and prefix[4:8] == b"ftyp" else None
+            if mime is None: raise ValueError("downloaded artifact type is unsupported")
+            digest_value = digest.hexdigest()
+            extension = {"video/mp4": ".mp4", "image/png": ".png", "image/jpeg": ".jpg"}[mime]
+            final_name = f"artifact-{digest_value}{extension}"
             os.fsync(output_fd)
             os.fchmod(output_fd, 0o400)
             staged = os.fstat(output_fd)
-            if staged.st_size != size or stat.S_IMODE(staged.st_mode) != 0o400:
+            if staged.st_size != copied or stat.S_IMODE(staged.st_mode) != 0o400:
                 raise ValueError("staged artifact verification failed")
             linked = True
             try:
                 os.link(temporary, final_name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd, follow_symlinks=False)
             except FileExistsError:
                 linked = False
-                existing = os.stat(final_name, dir_fd=directory_fd, follow_symlinks=False)
-                if not stat.S_ISREG(existing.st_mode) or existing.st_size != size or stat.S_IMODE(existing.st_mode) != 0o400:
-                    raise ValueError("content-addressed artifact collision")
+                TaskService._verify_canonical(directory_fd, final_name, digest_value, Path("."))
             os.fsync(directory_fd)
             final = os.stat(final_name, dir_fd=directory_fd, follow_symlinks=False)
-            if linked and (final.st_dev, final.st_ino, final.st_size) != (staged.st_dev, staged.st_ino, size):
+            if linked and (final.st_dev, final.st_ino, final.st_size) != (staged.st_dev, staged.st_ino, copied):
                 raise ValueError("published artifact identity mismatch")
-            return final_name
+            return final_name, digest_value, copied, mime
         finally:
             os.close(output_fd)
-            try: os.unlink(temporary, dir_fd=directory_fd)
+            try: os.unlink(temporary, dir_fd=directory_fd); os.fsync(directory_fd)
             except FileNotFoundError: pass
+
+    @staticmethod
+    def _verify_canonical(directory_fd: int, name: str, expected_digest: str,
+                          target: Path) -> dict[str, object]:
+        descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o400:
+                raise ValueError("content-addressed artifact collision")
+            digest = hashlib.sha256(); size = 0; prefix = b""
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk: break
+                prefix += chunk[:max(0, 16-len(prefix))]; digest.update(chunk); size += len(chunk)
+                if size > MAX_ARTIFACT_BYTES: raise ValueError("content-addressed artifact collision")
+            after = os.fstat(descriptor); current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if digest.hexdigest() != expected_digest or size == 0 or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) or (after.st_dev, after.st_ino) != (current.st_dev, current.st_ino):
+                raise ValueError("content-addressed artifact collision")
+            mime = "image/png" if prefix.startswith(b"\x89PNG") else "image/jpeg" if prefix.startswith(b"\xff\xd8\xff") else "video/mp4" if len(prefix) >= 12 and prefix[4:8] == b"ftyp" else None
+            if mime is None: raise ValueError("content-addressed artifact collision")
+            return {"path": str(target / name), "mime_type": mime, "size_bytes": size,
+                    "sha256": expected_digest, "provenance": "externally-queried"}
+        finally: os.close(descriptor)
 
     def verify_download_dir(self, download_dir: str) -> list[dict[str, object]]:
         """Reconcile artifacts left after a crash at the download boundary."""
