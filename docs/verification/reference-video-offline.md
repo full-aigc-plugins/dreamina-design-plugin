@@ -14,13 +14,19 @@ asserts every legacy tool's `inputSchema` is byte-identical to
 `tests/fixtures/legacy_mcp_tools_0_3_0.json`, and the stdio inventory test now
 asserts the legacy set plus the ten additive tools.
 
-The one deliberate behavioural change is in the **error envelope**: `retryable`
-is now always `false` and `next_action` no longer carries
-`query_same_submit_id`. This is narrower than the plan's Global Constraint
-("structured error fields remain backward compatible") and is recorded here
-rather than hidden: a 0.3.0 consumer that branched on those two fields would
-now be told `correct_request`. Consumers that read only `isError`, `message`,
-and `requires_user_action` are unaffected.
+The error envelope is **unchanged**. An intermediate revision of this branch
+briefly dropped `query_same_submit_id` from `next_action` and pinned
+`retryable` to `false`, which was narrower than the plan's Global Constraint
+("structured error fields remain backward compatible"). The current tip
+carries the original behaviour again:
+
+```python
+query_retryable = str(params.get("name", "")) == "dreamina_query_task" and isinstance(exc, DreaminaAdapterError)
+structured = {..., "retryable": query_retryable, ..., "next_action": "request_user_action" if requires_user_action else "query_same_submit_id" if query_retryable else "correct_request"}
+```
+
+so `DreaminaAdapterError` remains imported and used, and a 0.3.0 consumer that
+branches on `retryable` or `next_action` keeps working.
 
 ## Additive surface
 
