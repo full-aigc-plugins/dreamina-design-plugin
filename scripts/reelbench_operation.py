@@ -10,7 +10,7 @@ import re
 import secrets
 import stat
 import sys
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager, nullcontext
 
 from scripts import reelbench_workspace as ws
 from scripts.json_contracts import canonical_fingerprint
@@ -150,8 +150,23 @@ class OperationJournal:
         try:
             os.stat(name, dir_fd=fd, follow_symlinks=False)
         except FileNotFoundError:
+            # A previous rmdir may have succeeded before its parent fsync failed.
+            # Absence is durable only after this retry crosses the same barrier.
+            os.fsync(fd)
             return
         ws.remove_tree(fd, name, expected=identity)
+
+    @contextmanager
+    def _verified_publication(self, marker):
+        """Keep the verified receipt's exact identity through all later cleanup."""
+        error = VersionCommitIndeterminateError(project_id=self.project_id, family='reelbench_evidence',
+            version=marker['version'], path=self.project_path / 'reelbench_evidence' / (marker['version'] + '.json'),
+            payload_fingerprint=marker['receipt_fingerprint'])
+        try:
+            yield
+        except BaseException as exc:
+            raise error from exc
+        raise error
 
     def cleanup(self, work, name, *, published, guard):
         marker = self._read(work, name)
@@ -187,6 +202,10 @@ class OperationJournal:
             latest = marker['version'] if record['published'] else marker['parent_version']
             if service._latest(self.project_fd) != latest:
                 raise ReelBenchRecoveryRequiredError('cleanup parent changed')
+            if marker['parent_version'] is not None:
+                parent = service._read_version(self.project_fd, 'reelbench_evidence', marker['parent_version'])
+                if parent['evidence_fingerprint'] != marker['parent_fingerprint']:
+                    raise ReelBenchRecoveryRequiredError('cleanup parent fingerprint changed')
             if record['published']:
                 if record['phase'] == 'output':
                     raise ReelBenchRecoveryRequiredError('published cleanup cannot delete output')
@@ -194,11 +213,8 @@ class OperationJournal:
                 if canonical_fingerprint(receipt) != marker['receipt_fingerprint']:
                     raise ReelBenchRecoveryRequiredError('cleanup visible receipt fingerprint changed')
                 service._lineage(self.project_fd, self.project_id, marker['version'], source)
-            if marker['parent_version'] is not None:
-                parent = service._read_version(self.project_fd, 'reelbench_evidence', marker['parent_version'])
-                if parent['evidence_fingerprint'] != marker['parent_fingerprint']:
-                    raise ReelBenchRecoveryRequiredError('cleanup parent fingerprint changed')
-            with ExitStack() as stack:
+            publication = self._verified_publication(marker) if record['published'] else nullcontext()
+            with publication, ExitStack() as stack:
                 try:
                     work = stack.enter_context(ws.directory(self.project_fd, marker['operation']))
                 except FileNotFoundError:
@@ -213,10 +229,6 @@ class OperationJournal:
                     except BlockingIOError as exc:
                         raise ReelBenchRecoveryRequiredError('cleanup has live owner') from exc
                 self._finish_cleanup(record, guard)
-            if record['published']:
-                raise VersionCommitIndeterminateError(project_id=self.project_id, family='reelbench_evidence',
-                    version=marker['version'], path=self.project_path / 'reelbench_evidence' / (marker['version'] + '.json'),
-                    payload_fingerprint=marker['receipt_fingerprint'])
 
     def recover(self, service, guard):
         """Only a sealed exact operation with no live directory-lock owner is eligible."""
@@ -257,11 +269,9 @@ class OperationJournal:
                     if marker["receipt_fingerprint"] is None or canonical_fingerprint(receipt) != marker["receipt_fingerprint"]:
                         raise ReelBenchRecoveryRequiredError("visible operation receipt differs from sealed marker")
                     service._lineage(self.project_fd, self.project_id, version, source)
-                    guard()
-                    self.cleanup(work, name, published=True, guard=guard)
-                    raise VersionCommitIndeterminateError(project_id=self.project_id, family="reelbench_evidence",
-                        version=version, path=self.project_path / "reelbench_evidence" / f"{version}.json",
-                        payload_fingerprint=marker["receipt_fingerprint"])
+                    with self._verified_publication(marker):
+                        guard()
+                        self.cleanup(work, name, published=True, guard=guard)
                 latest = service._latest(self.project_fd)
                 expected = f"v{int(latest[1:]) + 1 if latest else 1:03d}"
                 if version != expected or marker["parent_version"] != latest:

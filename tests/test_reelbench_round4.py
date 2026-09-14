@@ -237,8 +237,9 @@ class ReelBenchRoundFourTests(unittest.TestCase):
             if name == '.reelbench-operation.json':
                 raise RuntimeError('crash after operation marker deletion')
         with patch('os.unlink', side_effect=crash):
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(VersionCommitIndeterminateError) as initial:
                 self.action()
+        self.assertIsInstance(initial.exception.__cause__, RuntimeError)
         with self.assertRaises(VersionCommitIndeterminateError) as caught:
             self.action()
         self.assertEqual(self.service.reconcile_indeterminate(caught.exception)['version'], 'v001')
