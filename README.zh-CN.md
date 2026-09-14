@@ -1,5 +1,7 @@
 # Codex Dreamina Design 插件
 
+![Codex × Dreamina Design — 可控地创作图片与视频](assets/dreamina-design-hero.png)
+
 <img src="assets/logo.png" alt="Dreamina Design Logo" width="128">
 
 > 面向 Dreamina CLI 图片与视频工作流的 Codex 兼容基础。

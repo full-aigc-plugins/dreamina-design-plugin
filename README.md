@@ -1,5 +1,7 @@
 # Codex Dreamina Design Plugin
 
+![Codex × Dreamina Design — Create images and videos with control](assets/dreamina-design-hero.png)
+
 <img src="assets/logo.png" alt="Dreamina Design logo" width="128">
 
 > Compatibility foundation for Dreamina CLI image and video workflows.
