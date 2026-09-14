@@ -27,7 +27,7 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self._temp = tempfile.TemporaryDirectory()
         self.addCleanup(self._temp.cleanup)
-        self.root = Path(self._temp.name)
+        self.root = Path(self._temp.name).resolve()
         self.ffmpeg = self.root / "ffmpeg"
         self.ffmpeg.write_bytes(b"trusted ffmpeg")
         self.ffmpeg.chmod(0o755)
@@ -92,6 +92,16 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(TrustedMediaToolError, "identity changed"):
             self.store.load_required({"node"})
 
+    def test_node_staging_rejects_in_place_bytes_changed_after_verified_open(self):
+        self.store.enroll("node", self.node_path, approval_provider=self.approver)
+        original = self.store._stage_from_verified_fd
+        def change_then_stage(fd, executable):
+            self.node_path.write_bytes(b"changed node")
+            return original(fd, executable)
+        with patch.object(self.store, "_stage_from_verified_fd", side_effect=change_then_stage), self.assertRaises(TrustedMediaToolError):
+            self.store.load_required({"node"})
+        self.assertEqual(list((self.root / "staged").iterdir()), [])
+
     def test_node_and_browser_are_verified_by_exact_identity(self) -> None:
         with patch(
             "scripts.trusted_media_tools.BROWSER_APPLICATION_POLICIES",
@@ -100,9 +110,9 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
             node = self.store.enroll("node", self.node_path, approval_provider=self.approver)
             browser = self.store.enroll("browser", self.chrome_path, approval_provider=self.approver)
             self.assertEqual(self.store.resolve_verified("node").sha256, node["sha256"])
-            launch = self.store.reverify_browser_for_launch()
-            self.assertEqual(launch.executable.sha256, browser["sha256"])
-            self.assertEqual(launch.signature.identifier, "com.google.Chrome")
+            with self.store.reverify_browser_for_launch() as launch:
+                self.assertEqual(launch.context.executable.sha256, browser["sha256"])
+                self.assertEqual(launch.context.signature.identifier, "com.google.Chrome")
 
     def test_browser_rejects_unapproved_path_and_identity_changes(self) -> None:
         unapproved = self.root / "Chromium.app" / "Contents" / "MacOS" / "Chromium"
@@ -140,7 +150,8 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
             "scripts.trusted_media_tools.run_bounded", side_effect=record_codesign
         ):
             self.store.enroll("browser", self.chrome_path, approval_provider=self.approver)
-            self.store.reverify_browser_for_launch()
+            with self.store.reverify_browser_for_launch():
+                pass
         self.assertTrue(all(call[0] == "/usr/bin/codesign" for call in calls))
         self.assertTrue(any(call[1:5] == ["--verify", "--strict", "--deep", "--verbose=2"] for call in calls))
         self.assertTrue(any(call[1:4] == ["-d", "--verbose=4", "-r-"] for call in calls))

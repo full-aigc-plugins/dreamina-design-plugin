@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from scripts.native_approval import NativeApprovalProvider
-from scripts.bounded_process import BoundedProcessError, BoundedProcessOutput, BoundedProcessTimeout, run_bounded
+from scripts.bounded_process import BoundedProcessError, run_bounded
 
 MEDIA_TOOL_KINDS = frozenset({"ffmpeg", "ffprobe", "whisper", "narration", "node", "browser"})
 _LEGACY_FIELDS = frozenset({"source_path", "owner_uid", "sha256"})
@@ -64,7 +64,7 @@ class BrowserSignature:
 
 @dataclass(frozen=True)
 class BrowserLaunchContext:
-    """A launch-bound receipt. Browser callers must use this re-verification seam."""
+    """Audit metadata only; execution is owned by BrowserLaunchHandle."""
     executable: TrustedExecutable
     signature: BrowserSignature
     verified_at: str
@@ -72,31 +72,68 @@ class BrowserLaunchContext:
 
 class BrowserLaunchHandle:
     """One-shot descriptor-owned browser launcher; it never exposes a pathname."""
-    _HELPER = "import os,sys; os.fchdir(int(sys.argv[1])); os.execve(sys.argv[2], sys.argv[2:], {'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})"
+    _HELPER = """import hashlib,os,sys
+bundle_fd, executable_fd = int(sys.argv[1]), int(sys.argv[2])
+relative, expected_digest = sys.argv[3], sys.argv[4]
+os.fchdir(bundle_fd)
+directory = os.open('Contents', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    macos = os.open('MacOS', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+finally:
+    os.close(directory)
+os.fchdir(macos)
+os.close(macos)
+name = relative.split('/')[-1]
+candidate = os.open(name, os.O_RDONLY | os.O_NOFOLLOW)
+try:
+    current, pinned = os.fstat(candidate), os.fstat(executable_fd)
+    identity = lambda s: (s.st_dev,s.st_ino,s.st_uid,s.st_mode,s.st_size,s.st_mtime_ns,s.st_ctime_ns)
+    if identity(current) != identity(pinned): raise RuntimeError('browser identity changed')
+    digest = hashlib.sha256()
+    while True:
+        chunk = os.read(candidate, 65536)
+        if not chunk: break
+        digest.update(chunk)
+    if digest.hexdigest() != expected_digest or identity(current) != identity(os.fstat(candidate)):
+        raise RuntimeError('browser bytes changed')
+finally:
+    os.close(candidate)
+os.close(bundle_fd)
+os.close(executable_fd)
+os.execve('./' + name, [relative, *sys.argv[5:]], {'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})
+"""
     def __init__(self, descriptor: int, bundle_descriptor: int, context: BrowserLaunchContext, relative_executable: str) -> None:
         self._descriptor = descriptor; self._bundle_descriptor = bundle_descriptor; self.context = context; self._relative_executable = relative_executable; self._used = False
 
-    def __enter__(self): return self
+    def __enter__(self):
+        if self._used: raise TrustedMediaToolError("browser launch handle has already been used or closed")
+        return self
     def __exit__(self, *_): self.close()
-    def __del__(self): self.close()
+    def __del__(self):
+        try: self.close()
+        except OSError: pass
 
-    def spawn(self, args: list[str], *, timeout_seconds: int = 30, stdout_cap: int = 1024 * 1024, stderr_cap: int = 1024 * 1024) -> subprocess.CompletedProcess[str]:
+    def spawn(self, args: list[str], *, timeout_seconds: float = 30, stdout_cap: int = 1024 * 1024, stderr_cap: int = 1024 * 1024) -> subprocess.CompletedProcess[str]:
         if self._used: raise TrustedMediaToolError("browser launch handle has already been used")
-        if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args): raise TrustedMediaToolError("browser arguments must be fixed strings")
         self._used = True
         try:
-            result = run_bounded(["/usr/bin/python3", "-I", "-c", self._HELPER, str(self._bundle_descriptor), self._relative_executable, *args], env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"}, timeout_seconds=timeout_seconds, stdout_cap=stdout_cap, stderr_cap=stderr_cap, pass_fds=(self._bundle_descriptor,))
+            if not isinstance(args, list) or not all(isinstance(arg, str) and "\0" not in arg for arg in args):
+                raise TrustedMediaToolError("browser arguments must be fixed strings")
+            result = run_bounded(["/usr/bin/python3", "-I", "-c", self._HELPER, str(self._bundle_descriptor), str(self._descriptor), self._relative_executable, self.context.executable.sha256, *args], env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"}, timeout_seconds=timeout_seconds, stdout_cap=stdout_cap, stderr_cap=stderr_cap, pass_fds=(self._bundle_descriptor, self._descriptor))
             if result.returncode != 0: raise TrustedMediaToolError("browser helper failed")
             return subprocess.CompletedProcess([], result.returncode, result.stdout, result.stderr)
-        except (BoundedProcessError, BoundedProcessTimeout, BoundedProcessOutput) as exc:
+        except (BoundedProcessError, OSError) as exc:
             raise TrustedMediaToolError("browser launch failed") from exc
         finally: self.close()
 
     def close(self) -> None:
-        if self._descriptor >= 0:
-            os.close(self._descriptor); self._descriptor = -1
-        if self._bundle_descriptor >= 0:
-            os.close(self._bundle_descriptor); self._bundle_descriptor = -1
+        self._used = True
+        descriptor, bundle_descriptor = getattr(self, "_descriptor", -1), getattr(self, "_bundle_descriptor", -1)
+        self._descriptor = self._bundle_descriptor = -1
+        try:
+            if descriptor >= 0: os.close(descriptor)
+        finally:
+            if bundle_descriptor >= 0: os.close(bundle_descriptor)
 
 
 BROWSER_APPLICATION_POLICIES: Mapping[str, BrowserApplicationPolicy] = {
@@ -108,6 +145,7 @@ BROWSER_APPLICATION_POLICIES: Mapping[str, BrowserApplicationPolicy] = {
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge": BrowserApplicationPolicy(
         "com.microsoft.edgemac", "UBF8T346G9", 'identifier "com.microsoft.edgemac" and certificate leaf[subject.OU] = UBF8T346G9'),
 }
+_MACOS_BROWSER_PATHS = frozenset(BROWSER_APPLICATION_POLICIES)
 
 
 class TrustedMediaToolStore:
@@ -137,29 +175,30 @@ class TrustedMediaToolStore:
         if not self._same_identity(enrolled, current): raise TrustedMediaToolError(f"trusted {kind} identity changed after enrollment")
         return current
 
-    def reverify_browser_for_launch(self) -> BrowserLaunchContext:
-        """Verify exact pinned browser identity and macOS signature for a single launch context."""
-        enrolled = self._record_identity("browser", self._required_record("browser"))
-        descriptor, executable = self._open_verified_fd("browser", enrolled)
-        try:
-            signature = self._verify_browser_signature(executable.source_path)
-            self._assert_final_path_identity(Path(executable.source_path), os.fstat(descriptor))
-        finally: os.close(descriptor)
-        return BrowserLaunchContext(executable, signature, datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"))
+    def reverify_browser_for_launch(self) -> BrowserLaunchHandle:
+        """Return an owned one-use launch capability, never a raw launch pathname."""
+        return self.reverify_browser_for_launch_handle()
 
     def reverify_browser_for_launch_handle(self) -> BrowserLaunchHandle:
         """Create the one-shot, descriptor-bound browser launch handle for the sync service."""
         enrolled = self._record_identity("browser", self._required_record("browser"))
         descriptor, executable = self._open_verified_fd("browser", enrolled)
+        bundle_fd = None
         try:
+            bundle = Path(executable.source_path).parents[2]
+            bundle_fd = os.open(bundle, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            bundle_identity = os.fstat(bundle_fd)
             signature = self._verify_browser_signature(executable.source_path)
             self._assert_final_path_identity(Path(executable.source_path), os.fstat(descriptor))
-            bundle = Path(executable.source_path).parents[2]
-            bundle_fd = os.open(bundle, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+            if not _same_stat_identity(bundle_identity, bundle.lstat()):
+                raise TrustedMediaToolError("browser bundle changed during signature verification")
             context = BrowserLaunchContext(executable, signature, datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"))
             return BrowserLaunchHandle(descriptor, bundle_fd, context, f"Contents/MacOS/{Path(executable.source_path).name}")
-        except Exception:
-            os.close(descriptor); raise
+        except BaseException:
+            try: os.close(descriptor)
+            finally:
+                if bundle_fd is not None: os.close(bundle_fd)
+            raise
 
     def load_required(self, kinds: Iterable[str]) -> dict[str, TrustedMediaTool]:
         """Stage non-browser executables from the very descriptor verified and hashed."""
@@ -216,12 +255,27 @@ class TrustedMediaToolStore:
         except OSError as exc: raise TrustedMediaToolError("media tool does not exist") from exc
         if not stat.S_ISREG(source_stat.st_mode) or not source_stat.st_mode & 0o111: raise TrustedMediaToolError("media tool must be a regular executable file")
         canonical = source.resolve(strict=True)
+        if kind == "browser" and canonical != source:
+            raise TrustedMediaToolError("browser path must be canonical without symlink ancestors")
         if kind == "browser" and str(canonical) not in BROWSER_APPLICATION_POLICIES: raise TrustedMediaToolError("browser enrollment requires an approved system browser executable path")
         system_say = kind == "narration" and str(canonical) == "/usr/bin/say" and source_stat.st_uid == 0
         system_browser = kind == "browser" and source_stat.st_uid == 0 and str(canonical) in BROWSER_APPLICATION_POLICIES
-        if (source_stat.st_uid != os.getuid() and not system_say and not system_browser) or source_stat.st_mode & 0o022: raise TrustedMediaToolError("media tool owner or write permissions are not trusted")
+        signed_admin_paths = {canonical, *list(canonical.parents)[:3], Path("/Applications")} if kind == "browser" and str(canonical) in _MACOS_BROWSER_PATHS else set()
+
+        def trusted_admin_mode(path: Path, observed: os.stat_result) -> bool:
+            # Exact macOS app locations may be maintained by the admin group.
+            # Enrollment and launch additionally require the pinned signature.
+            owners = {0} if path == Path("/Applications") else {0, os.getuid()}
+            return path in signed_admin_paths and observed.st_uid in owners and observed.st_gid == 80 and stat.S_IMODE(observed.st_mode) == 0o775
+
+        if (source_stat.st_uid != os.getuid() and not system_say and not system_browser) or (source_stat.st_mode & 0o022 and not trusted_admin_mode(canonical, source_stat)):
+            raise TrustedMediaToolError("media tool owner or write permissions are not trusted")
         for parent in canonical.parents:
-            if parent.stat().st_mode & 0o022: raise TrustedMediaToolError(f"group/world-writable media tool parent: {parent}")
+            observed = parent.stat()
+            if observed.st_mode & 0o022 and not trusted_admin_mode(parent, observed):
+                raise TrustedMediaToolError(f"group/world-writable media tool parent: {parent}")
+            if kind == "browser" and observed.st_uid not in {0, os.getuid()}:
+                raise TrustedMediaToolError(f"foreign-owned browser parent: {parent}")
         return canonical, source_stat
 
     @staticmethod

@@ -45,6 +45,47 @@ def comparison() -> dict[str, object]:
 
 
 class ReelBenchContractTests(unittest.TestCase):
+    @staticmethod
+    def sync_receipt():
+        receipt = evidence("verify")
+        receipt["gates"] = [{"name": name, "status": "PASS", "evidence": "observed"} for name in
+                            ("duration", "dimensions", "codec", "audio_policy", "cut_alignment", "sampled_correspondence")]
+        return receipt
+
+    @staticmethod
+    def validate_signed(receipt):
+        receipt["evidence_fingerprint"] = canonical_fingerprint({k: v for k, v in receipt.items() if k != "evidence_fingerprint"})
+        validate_reelbench_evidence(receipt)
+
+    def test_sync_exact_six_set_passes(self):
+        self.validate_signed(self.sync_receipt())
+
+    def test_sync_missing_gate_rejected(self):
+        for index in range(6):
+            receipt = self.sync_receipt(); receipt["gates"].pop(index)
+            with self.subTest(index=index), self.assertRaises(ValueError): self.validate_signed(receipt)
+
+    def test_sync_extra_gate_rejected(self):
+        receipt = self.sync_receipt(); receipt["gates"].append({"name": "frames", "status": "PASS", "evidence": "observed"})
+        with self.assertRaises(ValueError): self.validate_signed(receipt)
+
+    def test_sync_duplicate_gate_rejected(self):
+        receipt = self.sync_receipt(); receipt["gates"].append(receipt["gates"][0].copy())
+        with self.assertRaises(ValueError): self.validate_signed(receipt)
+
+    def test_sync_skipped_each_gate_rejected(self):
+        for index in range(6):
+            receipt = self.sync_receipt(); receipt["gates"][index]["status"] = "SKIPPED"
+            with self.subTest(index=index), self.assertRaises(ValueError): self.validate_signed(receipt)
+
+    def test_sync_old_sampled_gate_alias_rejected(self):
+        receipt = self.sync_receipt(); receipt["gates"][-1]["name"] = "sampled_alignment"
+        with self.assertRaises(ValueError): self.validate_signed(receipt)
+
+    def test_sync_fail_is_evidence_not_skipped(self):
+        receipt = self.sync_receipt(); receipt["gates"][-1]["status"] = "FAIL"
+        self.validate_signed(receipt)
+
     def test_evidence_requires_exact_fingerprint_and_validate_gate_set(self) -> None:
         receipt = evidence()
         validate_reelbench_evidence(receipt)
