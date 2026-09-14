@@ -272,3 +272,85 @@ class RemoteCiProbeTests(unittest.TestCase):
         probe = _default_remote_ci_for_sha("0" * 40)
         self.assertNotEqual(probe["status"], "success")   # fail closed either way
         self.assertIn("reason", probe)
+
+
+class LocalMediaFixtureTests(unittest.TestCase):
+    """The local-media acceptance synthesises its own fixture; it reads no user media."""
+
+    def test_fixture_argv_is_shell_free_and_absolute(self):
+        from scripts.run_reference_video_acceptance import _local_fixture_argv, LOCAL_FIXTURE_DURATION_SECONDS
+        import pathlib as _p; dest = _p.Path("/tmp/x/fixture.mp4")
+        argv = _local_fixture_argv(dest)
+        self.assertIsInstance(argv, list)
+        self.assertTrue(all(isinstance(a, str) for a in argv))
+        self.assertEqual(argv[-1], str(dest))
+        self.assertIn("lavfi", argv)
+        self.assertIn(f"duration={LOCAL_FIXTURE_DURATION_SECONDS:g}", " ".join(argv))
+        # no shell metacharacter interpolation, and no user file is an input
+        self.assertNotIn(";", argv)
+        self.assertNotIn("|", argv)
+        self.assertNotIn("&", argv)
+
+    def test_unenrolled_tools_report_the_precondition_not_a_pass(self):
+        from scripts.run_reference_video_acceptance import _default_run_local_media
+        from scripts.trusted_media_tools import TrustedMediaToolError, TrustedMediaToolStore
+
+        class _Unenrolled(TrustedMediaToolStore):
+            def load_required(self, kinds):
+                raise TrustedMediaToolError("required media tools are not enrolled: ffmpeg, ffprobe")
+
+        passed, detail = _default_run_local_media(store=_Unenrolled())
+        self.assertFalse(passed)
+        self.assertIn("not enrolled", detail)
+        self.assertIn("confirmation dialog", detail)   # the human precondition is named
+
+    def test_success_path_reports_digests_and_sha(self):
+        from scripts.run_reference_video_acceptance import _default_run_local_media
+        from scripts.trusted_media_tools import TrustedMediaTool, TrustedMediaToolStore
+
+        class _Store(TrustedMediaToolStore):
+            def load_required(self, kinds):
+                return {k: TrustedMediaTool(kind=k, source_path=f"/x/{k}",
+                                            sha256=k.ljust(64, "0")[:64], staged_path=f"/tmp/{k}")
+                        for k in kinds}
+            def release(self, tool): pass
+
+        class _Result:
+            exit_code = 0
+            stderr = ""
+        class _Adapter:
+            def __init__(self, store): pass
+            def run(self, kind, argv, *, timeout_seconds=0, pass_fds=()):
+                __import__("pathlib").Path(argv[-1]).write_bytes(b"fixture-bytes")
+                return _Result()
+            def probe_json(self, path): return {"format": {"duration": "2.000000"}}
+            def verify_video_frames(self, path, duration):
+                return {"readable": True, "start_anchor": {"sha256": "a"*64},
+                        "end_anchor": {"sha256": "b"*64}}
+
+        passed, detail = _default_run_local_media(store=_Store(), adapter_factory=_Adapter)
+        self.assertTrue(passed)
+        self.assertIn("locally generated fixture", detail)
+        self.assertIn("decoded=", detail)
+        self.assertIn("sha256=", detail)
+
+    def test_failure_path_never_reports_a_pass(self):
+        from scripts.run_reference_video_acceptance import _default_run_local_media
+        from scripts.trusted_media_tools import TrustedMediaTool, TrustedMediaToolStore
+
+        class _Store(TrustedMediaToolStore):
+            def load_required(self, kinds):
+                return {k: TrustedMediaTool(kind=k, source_path=f"/x/{k}",
+                                            sha256="0"*64, staged_path=f"/tmp/{k}") for k in kinds}
+            def release(self, tool): pass
+
+        class _Result:
+            exit_code = 1
+            stderr = "boom"
+        class _Adapter:
+            def __init__(self, store): pass
+            def run(self, kind, argv, *, timeout_seconds=0, pass_fds=()): return _Result()
+
+        passed, detail = _default_run_local_media(store=_Store(), adapter_factory=_Adapter)
+        self.assertFalse(passed)
+        self.assertIn("failed", detail)

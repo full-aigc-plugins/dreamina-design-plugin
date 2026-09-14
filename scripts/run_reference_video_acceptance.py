@@ -14,10 +14,12 @@ the envelope being run now.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -186,6 +188,80 @@ def _default_remote_ci_for_sha(sha: str) -> Mapping[str, str]:
     if not isinstance(runs, list) or not runs:
         return {"status": "none", "reason": f"no workflow run targets {sha[:12]}"}
     return _map_ci_run(runs[0])
+
+
+LOCAL_FIXTURE_DURATION_SECONDS = 2.0
+
+
+def _local_fixture_argv(destination: Path) -> list[str]:
+    """argv that synthesises a short local fixture.
+
+    Pure and argv-only: no user media is read, and nothing is interpolated
+    into a shell.
+    """
+    duration = f"{LOCAL_FIXTURE_DURATION_SECONDS:g}"
+    return [
+        "-v", "error",
+        "-f", "lavfi", "-i", f"testsrc=size=320x240:rate=10:duration={duration}",
+        "-f", "lavfi", "-i", f"sine=frequency=440:duration={duration}",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-shortest", "-y", str(destination),
+    ]
+
+
+def _default_run_local_media(*, store: Any = None, adapter_factory: Any = None) -> tuple[bool, str]:
+    """Process a locally generated fixture through the trusted-tool path.
+
+    No user media is read: the fixture is synthesised by the enrolled
+    ffmpeg. Enrollment is itself a human act - the store shows a native
+    confirmation dialog - so this never substitutes a silent approval. On a
+    machine where the tools are not enrolled it reports that precondition
+    instead of a pass.
+    """
+    # Running this file as a script leaves the repository root off sys.path,
+    # and the runtime modules import each other as `scripts.*`.
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from scripts.media_adapter import MediaAdapter
+    from scripts.trusted_media_tools import TrustedMediaToolError, TrustedMediaToolStore
+
+    active = store if store is not None else TrustedMediaToolStore()
+    try:
+        staged = active.load_required({"ffmpeg", "ffprobe"})
+    except TrustedMediaToolError as exc:
+        return False, (
+            f"{exc}; enrolling a media tool needs a native confirmation dialog, "
+            "so run this with the operator present"
+        )
+    identities: dict[str, str] = {}
+    try:
+        for kind, tool in staged.items():
+            identities[kind] = tool.sha256
+    finally:
+        for tool in staged.values():
+            active.release(tool)
+
+    adapter = (adapter_factory or MediaAdapter)(active)
+    with tempfile.TemporaryDirectory(prefix="dreamina-local-media-") as tmp:
+        fixture = Path(tmp) / "fixture.mp4"
+        generated = adapter.run("ffmpeg", _local_fixture_argv(fixture), timeout_seconds=120)
+        if generated.exit_code != 0:
+            return False, f"fixture generation failed: {(generated.stderr or '').strip()[:200]}"
+        if not fixture.is_file():
+            return False, "fixture generation produced no file to verify"
+        probe = adapter.probe_json(fixture)
+        frames = adapter.verify_video_frames(fixture, LOCAL_FIXTURE_DURATION_SECONDS)
+        digest = hashlib.sha256(fixture.read_bytes()).hexdigest()
+
+    duration = ""
+    if isinstance(probe.get("format"), Mapping):
+        duration = str(probe["format"].get("duration", ""))
+    anchors = sorted(k for k in frames if k != "readable")
+    return True, (
+        f"processed a locally generated fixture: ffmpeg={identities.get('ffmpeg', '')[:12]} "
+        f"ffprobe={identities.get('ffprobe', '')[:12]} duration={duration} "
+        f"decoded={anchors} sha256={digest[:12]}"
+    )
 
 
 def _default_sha_equality() -> tuple[bool, str]:
@@ -384,6 +460,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--no-paid", action="store_true", help="never run a paid gate")
     parser.add_argument("--installed-plugin", action="store_true", help="run against an installed plugin")
+    parser.add_argument("--local-media", action="store_true",
+                        help="also process a locally generated fixture through the enrolled media tools "
+                             "(needs the operator present: enrollment shows a confirmation dialog)")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
@@ -393,6 +472,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         sha_equality=_default_sha_equality,
         head_sha=_default_head_sha,
         remote_ci_for_sha=_default_remote_ci_for_sha,
+        # Only wired on request: the trusted-tool path enrolls ffmpeg/ffprobe,
+        # and enrollment shows a native confirmation dialog, so it needs the
+        # operator present. Left unwired, the gate reports NOT_RUN exactly as
+        # before rather than pretending the local media path was exercised.
+        run_local_media=_default_run_local_media if args.local_media else None,
     )
     runner = AcceptanceRunner(dependencies)
     report = runner.run(allow_paid=False, allow_publish=False)
