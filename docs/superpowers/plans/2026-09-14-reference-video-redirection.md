@@ -1669,3 +1669,52 @@ Notes:
   the remaining gates `NOT_RUN` with distinct, recorded reasons. Those steps
   close only from observed output, so they cannot be marked from a desk
   review.
+
+### Known gap: Task 17 Step 3 asks for more than the runner can reach
+
+Task 17 Step 3 says the acceptance run should observe "ffmpeg/ffprobe
+enrollment, analysis, frames, contact sheets, annotation validation,
+original redesign, quote invalidation on expansion, subtitles, local
+narration or declared degraded provider state, final composition,
+checksum, and comparison report". The runner does not.
+
+What `scripts/run_reference_video_acceptance.py` can actually compute:
+
+| Gate | Reachable from the runner? |
+|---|---|
+| `offline_suite` | yes — `run_offline_suite` |
+| `trusted_media_runtime` | yes, but only with `--local-media` and enrolled tools |
+| `sha_equality` | yes — `sha_equality` |
+| `remote_ci` | yes, but only under `allow_publish` (a CI run exists only for a pushed commit) |
+| `reference_analysis`, `semantic_gates`, `rights_and_redesign`, `batch_quote`, `audio_subtitles` | **no** — no dependency hook at all |
+| `paid_generation`, `shot_evaluation`, `final_composition` | only with a fresh paid authorization |
+| `installed_mcp` | only with publication authorization |
+
+The five unreachable gates are not merely unwired: the runner states in
+code that they are "gates this runner has no way to reach". Closing the
+gap means designing a local-project driver, and that is an architectural
+decision rather than a wiring task, because:
+
+1. **It needs a per-gate hook.** `AcceptanceDependencies` currently
+   carries `Callable[[], tuple[bool, str]]` per gate. A project run
+   produces a verdict for five gates at once, so the dependency shape has
+   to change (or five separate drivers have to be written).
+2. **The composition already exists and should be reused.**
+   `DreaminaMcpTools(*, state_root, approval_provider)` already exposes the
+   chain the Step 3 text describes
+   (`dreamina_video_project` -> `dreamina_analyze_reference_video` ->
+   `dreamina_validate_shot_analysis` -> `dreamina_create_redesign` ->
+   `dreamina_quote_video_batch` -> `dreamina_compose_video` ->
+   `dreamina_export_video_project`), so the driver should call that surface
+   rather than re-orchestrate the services underneath it. Writing a second
+   orchestrator beside it is the failure mode to avoid.
+3. **It cannot run unattended.** The analysis step needs enrolled
+   ffmpeg/ffprobe, and `TrustedMediaToolStore.enroll` shows a native
+   confirmation dialog; the rights, batch and export steps carry their own
+   approval providers. That is the same precondition
+   `--local-media` already reports.
+
+None of this blocks the gates that *are* reachable, and none of it is
+claimed as verified here. The gap is recorded rather than papered over:
+the runner is correct to report NOT_RUN for a gate it cannot measure.
+
