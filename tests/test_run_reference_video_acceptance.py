@@ -354,3 +354,90 @@ class LocalMediaFixtureTests(unittest.TestCase):
         passed, detail = _default_run_local_media(store=_Store(), adapter_factory=_Adapter)
         self.assertFalse(passed)
         self.assertIn("failed", detail)
+
+
+class CliAuthorizationTests(unittest.TestCase):
+    """The CLI must be able to carry a fresh authorization, and must refuse a stale one.
+
+    `AcceptanceRunner.run` is patched so these tests exercise the flag-to-call
+    plumbing rather than spawning the offline suite recursively.
+    """
+
+    def setUp(self):
+        import scripts.run_reference_video_acceptance as mod
+        self.mod = mod
+        self.calls = []
+        self._real_run = mod.AcceptanceRunner.run
+
+    def tearDown(self):
+        self.mod.AcceptanceRunner.run = self._real_run
+
+    def _patch_run(self, *, raises=None):
+        outer = self
+        def fake_run(self, *, allow_paid=False, approval_id=None, allow_publish=False):
+            outer.calls.append({
+                "allow_paid": allow_paid, "approval_id": approval_id,
+                "allow_publish": allow_publish,
+                "authorized_paid_approvals": tuple(self.deps.authorized_paid_approvals),
+            })
+            if raises is not None:
+                raise raises
+            return {"gates": {}}
+        self.mod.AcceptanceRunner.run = fake_run
+
+    def test_no_flags_authorises_nothing(self):
+        self._patch_run()
+        self.assertEqual(self.mod.main(["--json"]), 0)
+        self.assertEqual(self.calls[0]["allow_paid"], False)
+        self.assertEqual(self.calls[0]["allow_publish"], False)
+        self.assertIsNone(self.calls[0]["approval_id"])
+        self.assertEqual(self.calls[0]["authorized_paid_approvals"], ())
+
+    def test_approve_paid_carries_exactly_that_id(self):
+        self._patch_run()
+        self.assertEqual(self.mod.main(["--json", "--approve-paid", "apr-123"]), 0)
+        call = self.calls[0]
+        self.assertTrue(call["allow_paid"])
+        self.assertFalse(call["allow_publish"])
+        self.assertEqual(call["approval_id"], "apr-123")
+        self.assertEqual(call["authorized_paid_approvals"], ("apr-123",))
+
+    def test_approve_publish_carries_the_id(self):
+        self._patch_run()
+        self.assertEqual(self.mod.main(["--json", "--approve-publish", "pub-9"]), 0)
+        call = self.calls[0]
+        self.assertFalse(call["allow_paid"])
+        self.assertTrue(call["allow_publish"])
+        self.assertEqual(call["approval_id"], "pub-9")
+
+    def test_same_id_may_authorise_both(self):
+        self._patch_run()
+        self.assertEqual(self.mod.main(["--json", "--approve-paid", "same", "--approve-publish", "same"]), 0)
+        call = self.calls[0]
+        self.assertTrue(call["allow_paid"] and call["allow_publish"])
+        self.assertEqual(call["approval_id"], "same")
+
+    def test_two_different_ids_are_refused(self):
+        self._patch_run()
+        with self.assertRaises(SystemExit) as ctx:
+            self.mod.main(["--json", "--approve-paid", "a", "--approve-publish", "b"])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertEqual(self.calls, [])          # nothing was run
+
+    def test_no_paid_and_approve_paid_are_mutually_exclusive(self):
+        self._patch_run()
+        with self.assertRaises(SystemExit) as ctx:
+            self.mod.main(["--json", "--no-paid", "--approve-paid", "a"])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertEqual(self.calls, [])
+
+    def test_a_refused_authorization_exits_two_without_a_report(self):
+        from scripts.run_reference_video_acceptance import AcceptanceAuthorizationError
+        self._patch_run(raises=AcceptanceAuthorizationError("no paid authorization is configured for this run"))
+        import io, contextlib
+        err, out = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            rc = self.mod.main(["--json", "--approve-paid", "x"])
+        self.assertEqual(rc, 2)                    # non-zero, not a silent success
+        self.assertIn("REFUSED", err.getvalue())
+        self.assertEqual(out.getvalue(), "")       # no report that could be mistaken for one

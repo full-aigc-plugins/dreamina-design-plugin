@@ -458,20 +458,42 @@ class AcceptanceRunner:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--no-paid", action="store_true", help="never run a paid gate")
+    paid = parser.add_mutually_exclusive_group()
+    paid.add_argument("--no-paid", action="store_true",
+                      help="never run a paid gate (the default; stated explicitly)")
+    paid.add_argument("--approve-paid", metavar="APPROVAL_ID",
+                      help="authorise the paid gates for THIS run with a fresh approval id; "
+                           "a historical or unrelated id is refused")
     parser.add_argument("--installed-plugin", action="store_true", help="run against an installed plugin")
+    parser.add_argument("--approve-publish", metavar="APPROVAL_ID",
+                        help="authorise publication and installation for THIS run with a fresh "
+                             "approval id; a historical or unrelated id is refused")
     parser.add_argument("--local-media", action="store_true",
                         help="also process a locally generated fixture through the enrolled media tools "
                              "(needs the operator present: enrollment shows a confirmation dialog)")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
+    # The runner carries one approval id per invocation, so asking for two
+    # different authorisations in one run cannot be honoured exactly. Refuse
+    # instead of quietly using one id for both.
+    if args.approve_paid and args.approve_publish and args.approve_paid != args.approve_publish:
+        parser.error(
+            "--approve-paid and --approve-publish must name the same approval id, or be run "
+            "separately: the runner takes a single approval id per invocation"
+        )
+
+    approval_id = args.approve_paid or args.approve_publish
     dependencies = AcceptanceDependencies(
         run_offline_suite=_default_offline_suite,
         probe_runtime_tools=_default_probe_runtime_tools,
         sha_equality=_default_sha_equality,
         head_sha=_default_head_sha,
         remote_ci_for_sha=_default_remote_ci_for_sha,
+        # The id the operator supplies *is* this run's authorisation. It is
+        # only ever added to the authorised set, so the guards still reject a
+        # consumed id, and a run with no flags authorises nothing.
+        authorized_paid_approvals=(args.approve_paid,) if args.approve_paid else (),
         # Only wired on request: the trusted-tool path enrolls ffmpeg/ffprobe,
         # and enrollment shows a native confirmation dialog, so it needs the
         # operator present. Left unwired, the gate reports NOT_RUN exactly as
@@ -479,7 +501,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_local_media=_default_run_local_media if args.local_media else None,
     )
     runner = AcceptanceRunner(dependencies)
-    report = runner.run(allow_paid=False, allow_publish=False)
+    try:
+        report = runner.run(
+            allow_paid=bool(args.approve_paid),
+            approval_id=approval_id,
+            allow_publish=bool(args.approve_publish),
+        )
+    except (AcceptanceAuthorizationError, StaleAuthorizationError) as exc:
+        # An unauthorised or reused approval is a refusal, not a crash: say so
+        # and exit non-zero without printing a report that could be mistaken
+        # for one.
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 2
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
