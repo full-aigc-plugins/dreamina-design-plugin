@@ -106,6 +106,7 @@ class MediaAdapterTests(unittest.TestCase):
         self.assertEqual(result["end_anchor"], {"at_seconds": 3.95, "sha256": digest,
             "size_bytes": len(self.runner.frame_bytes)})
         self.assertEqual([call[call.index("-ss") + 1] for call in self.runner.calls], ["0.000", "3.950"])
+        self.assertTrue(all(call[call.index("-map") + 1] == "0:v:0" for call in self.runner.calls))
         self.assertTrue(all(call[call.index("-frames:v"):call.index("-y")] ==
                             ["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png"]
                             for call in self.runner.calls))
@@ -113,6 +114,11 @@ class MediaAdapterTests(unittest.TestCase):
     def test_video_frame_verification_rejects_empty_success_output(self) -> None:
         self.runner.frame_bytes = b""
         with self.assertRaises(MediaOutputError):
+            self.adapter.verify_video_frames(self.source, 4.0)
+
+    def test_video_frame_verification_rejects_decoder_failure(self) -> None:
+        self.runner.exit_code = 1
+        with self.assertRaisesRegex(MediaOutputError, "exit 1"):
             self.adapter.verify_video_frames(self.source, 4.0)
 
     def test_probe_rejects_non_object_or_failed_output(self) -> None:

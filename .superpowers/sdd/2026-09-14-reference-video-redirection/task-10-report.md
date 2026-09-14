@@ -75,4 +75,5 @@
 - Focused Task 10/media/contracts GREEN: 61 tests passed in 0.258 seconds. Task 10/9/8/7 plus media/contracts regression passed 200 tests in 1.010 seconds.
 - Full regression: `python3 -m unittest discover -s tests` passed 542 tests in 21.852 seconds.
 - `py_compile`, schema/fixture JSON parsing, shared schema/fixture/fingerprint validation, distribution validation, two secret-scan tests, and `git diff --check` all passed.
+- Final hardening pins the selected stream to `0:v:0` and explicitly covers nonzero decoder exit. The resulting Task 10/media/contracts suite passed 62 tests in 0.251 seconds.
 - Evidence remains synthetic/local; no network, provider request, credits, native approval, release, or publication occurred.

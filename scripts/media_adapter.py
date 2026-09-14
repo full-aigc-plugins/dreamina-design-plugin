@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import selectors
 import signal
@@ -192,7 +192,8 @@ class MediaAdapter:
             for name, position in positions.items():
                 output = root / f"{name}.png"
                 result = self.run("ffmpeg", ["-v", "error", "-ss", f"{position:.3f}",
-                    "-i", str(path), "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png",
+                    "-i", str(path), "-map", "0:v:0", "-frames:v", "1",
+                    "-f", "image2pipe", "-vcodec", "png",
                     "-y", str(output)], timeout_seconds=30)
                 if result.exit_code != 0:
                     raise MediaOutputError(f"ffmpeg frame decode failed with exit {result.exit_code}")
