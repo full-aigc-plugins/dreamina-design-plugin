@@ -41,6 +41,7 @@ EXPECTED_SCHEMAS = (
     "video_batch_quote.schema.json",
     "video_batch_allowance.schema.json",
     "shot_evaluation.schema.json",
+    "audio_plan.schema.json",
 )
 
 CREDENTIAL_KEYS = (
@@ -152,6 +153,17 @@ class ClosedSchemaTests(unittest.TestCase):
                 "silent",
             ],
         )
+
+    def test_audio_plan_is_closed_versioned_and_fingerprint_bound(self) -> None:
+        schema = load_json(SCHEMAS_DIR / "audio_plan.schema.json")
+        self.assertFalse(schema["additionalProperties"])
+        self.assertIn("plan_fingerprint", schema["required"])
+        self.assertEqual(schema["properties"]["audio_policy"]["enum"], [
+            "full_redesign", "preserve_authorized_audio", "subtitles_only", "silent",
+        ])
+        self.assertEqual(schema["properties"]["creative_mode"]["enum"], [
+            "authorized_replication", "original_redesign",
+        ])
 
     def test_each_schema_rejects_unknown_properties(self) -> None:
         for name in EXPECTED_SCHEMAS:

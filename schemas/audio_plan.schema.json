@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/audio_plan.schema.json",
+  "title": "Dreamina Versioned Audio Plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "version", "project_id", "design_fingerprint", "batch_fingerprint", "creative_mode", "audio_policy", "target_duration_seconds", "source_rights", "preserve", "transcript", "rewritten_script", "narration", "music", "effects", "subtitles", "provenance", "plan_fingerprint"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "project_id": {"type": "string", "pattern": "^vp_[a-f0-9]{24}$"},
+    "design_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "batch_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "creative_mode": {"type": "string", "enum": ["authorized_replication", "original_redesign"]},
+    "audio_policy": {"type": "string", "enum": ["full_redesign", "preserve_authorized_audio", "subtitles_only", "silent"]},
+    "target_duration_seconds": {"type": "number", "exclusiveMinimum": 0},
+    "source_rights": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false, "required": ["receipt_id", "receipt_fingerprint", "allowed_reuse"], "properties": {"receipt_id": {"type": "string", "pattern": "^rr_[a-f0-9]{24}$"}, "receipt_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "allowed_reuse": {"type": "array", "uniqueItems": true, "items": {"type": "string", "enum": ["voice", "dialogue", "music", "effects"]}}}}]},
+    "preserve": {"type": "array", "uniqueItems": true, "items": {"type": "string", "enum": ["voice", "dialogue", "music", "effects"]}},
+    "transcript": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false, "required": ["status", "provider", "model", "artifact_sha256", "segments"], "properties": {"status": {"type": "string", "enum": ["complete", "degraded", "blocked"]}, "provider": {"type": "string", "const": "whisper"}, "model": {"type": "string", "minLength": 1}, "artifact_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "segments": {"type": "array", "items": {"$ref": "#/$defs/timedText"}}}}]},
+    "rewritten_script": {"type": "array", "items": {"$ref": "#/$defs/timedText"}},
+    "narration": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/artifact"}]},
+    "music": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false, "required": ["sha256", "intent"], "properties": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "intent": {"type": "object", "additionalProperties": false, "required": ["loop", "trim_to_seconds"], "properties": {"loop": {"type": "boolean"}, "trim_to_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0}}}}}]},
+    "effects": {"type": "array", "items": {"$ref": "#/$defs/artifact"}},
+    "subtitles": {"type": "array", "items": {"$ref": "#/$defs/artifact"}},
+    "provenance": {"type": "object", "additionalProperties": false, "required": ["remote_services_used", "source_voice_cloned"], "properties": {"remote_services_used": {"type": "boolean", "const": false}, "source_voice_cloned": {"type": "boolean", "const": false}}},
+    "plan_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  },
+  "$defs": {
+    "timedText": {"type": "object", "additionalProperties": false, "required": ["start", "end", "text"], "properties": {"start": {"type": "number", "minimum": 0}, "end": {"type": "number", "exclusiveMinimum": 0}, "text": {"type": "string", "minLength": 1, "maxLength": 500}, "language": {"type": "string"}, "confidence": {"type": "number", "minimum": -1, "maximum": 1}, "requires_review": {"type": "boolean"}, "provider": {"type": "string"}, "model": {"type": "string"}, "artifact_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
+    "artifact": {"type": "object", "additionalProperties": false, "required": ["provider", "path", "sha256", "provenance"], "properties": {"provider": {"type": "string", "enum": ["macos-say", "existing-audio", "subtitle-service"]}, "voice": {"type": "string"}, "path": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "provenance": {"type": "object", "additionalProperties": false, "required": ["kind", "rights_declared"], "properties": {"kind": {"type": "string", "enum": ["new_narration", "user_supplied", "generated_subtitle"]}, "rights_declared": {"type": "array", "uniqueItems": true, "items": {"type": "string", "enum": ["voice", "dialogue", "music", "effects", "subtitles"]}}, "approved_root": {"type": "string"}, "source_voice_cloned": {"type": "boolean", "const": false}}}}}
+  }
+}
