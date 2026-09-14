@@ -69,6 +69,23 @@ class NativeApprovalProvider:
         )
         return "native-video-batch-confirmed"
 
+    def confirm_video_export(self, request: Mapping[str, Any]) -> str:
+        """Confirm the exact destination, checksum, and rights basis before export.
+
+        The destination is the one place a finished project leaves the private
+        runtime area, so the user confirms the literal path and the verified
+        checksum rather than a summary of them.
+        """
+        for field in ("destination", "sha256", "composition_version", "rights_basis"):
+            if not str(request.get(field) or "").strip():
+                raise ApprovalDeniedError(f"video export confirmation requires {field}")
+        summary = json.dumps(dict(request), ensure_ascii=False, sort_keys=True, indent=2)
+        self._confirm_dialog(
+            "确认导出最终视频到该路径（含校验和与权利依据）\n\n" + summary,
+            "确认导出",
+        )
+        return "native-video-export-confirmed"
+
     def confirm_audio_receipt_key_initialization(
         self, *, key_store_path: str, action: str, new_key_id: str, purpose: str, impact: str
     ) -> str:

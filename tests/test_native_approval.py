@@ -87,5 +87,40 @@ class NativeApprovalProviderTests(unittest.TestCase):
         self.assertIn("unverifiable", payload["impact"])
 
 
+    def test_video_export_confirmation_binds_destination_checksum_and_rights(self) -> None:
+        provider = NativeApprovalProvider()
+        request = {
+            "action": "export-video-project",
+            "project_id": "vp_" + "1" * 24,
+            "composition_version": "v001",
+            "destination": "/approved/out/final.mp4",
+            "sha256": "c" * 64,
+            "rights_basis": "original_redesign",
+        }
+        with patch.object(provider, "_confirm_dialog") as confirm:
+            token = provider.confirm_video_export(request)
+        self.assertEqual(token, "native-video-export-confirmed")
+        message, button = confirm.call_args.args
+        self.assertEqual(button, "确认导出")
+        self.assertEqual(json.loads(message.split("\n\n", 1)[1]), request)
+
+    def test_video_export_confirmation_rejects_a_missing_binding(self) -> None:
+        provider = NativeApprovalProvider()
+        for missing in ("destination", "sha256", "composition_version", "rights_basis"):
+            request = {
+                "action": "export-video-project",
+                "destination": "/approved/out/final.mp4",
+                "sha256": "c" * 64,
+                "composition_version": "v001",
+                "rights_basis": "original_redesign",
+            }
+            request.pop(missing)
+            with self.subTest(missing=missing):
+                with patch.object(provider, "_confirm_dialog"):
+                    with self.assertRaises(ApprovalDeniedError) as raised:
+                        provider.confirm_video_export(request)
+                self.assertIn(missing, str(raised.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

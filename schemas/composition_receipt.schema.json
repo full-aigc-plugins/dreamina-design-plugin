@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://partme.ai/codex-dreamina-design/schemas/composition_receipt.schema.json",
+  "title": "CompositionReceipt",
+  "description": "Closed receipt produced by verifying a temporary final MP4 against the composition plan that produced it. Every required gate must be measured, never assumed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "composition_version",
+    "project_id",
+    "path",
+    "sha256",
+    "size_bytes",
+    "audio_policy",
+    "required_gates",
+    "gates",
+    "video",
+    "duration_seconds",
+    "target_duration_seconds",
+    "duration_delta_seconds",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0.0"},
+    "composition_version": {"type": "string", "pattern": "^v[0-9]{3}$"},
+    "project_id": {"type": "string", "pattern": "^vp_[a-f0-9]{24}$"},
+    "path": {"type": "string", "minLength": 1},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "size_bytes": {"type": "integer", "minimum": 1},
+    "audio_policy": {
+      "type": "string",
+      "enum": ["full_redesign", "preserve_authorized_audio", "subtitles_only", "silent"]
+    },
+    "required_gates": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["passed"],
+        "properties": {
+          "passed": {"type": "boolean"},
+          "measured": {},
+          "expected": {},
+          "detail": {"type": "string"}
+        }
+      }
+    },
+    "video": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["codec", "pixel_format", "width", "height", "frame_rate", "stream_count"],
+      "properties": {
+        "codec": {"type": "string"},
+        "pixel_format": {"type": "string"},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "frame_rate": {"type": "number", "exclusiveMinimum": 0},
+        "stream_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "audio": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["codec", "sample_rate_hz", "channels", "stream_count"],
+      "properties": {
+        "codec": {"type": "string"},
+        "sample_rate_hz": {"type": "integer", "minimum": 1},
+        "channels": {"type": "integer", "minimum": 1},
+        "stream_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "duration_seconds": {"type": "number", "minimum": 0},
+    "target_duration_seconds": {"type": "number", "minimum": 0},
+    "duration_delta_seconds": {"type": "number", "minimum": 0},
+    "av_sync_delta_seconds": {"type": ["number", "null"], "minimum": 0},
+    "loudness_lufs": {"type": ["number", "null"]},
+    "true_peak_dbtp": {"type": ["number", "null"]},
+    "subtitle_cue_count": {"type": ["integer", "null"], "minimum": 0},
+    "faststart": {"type": "boolean"},
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_fingerprint", "design_fingerprint", "output_fingerprint", "composition_fingerprint", "tool"],
+      "properties": {
+        "source_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "design_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "output_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "composition_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "tool": {"type": "string", "minLength": 1}
+      }
+    },
+    "verified_at": {"type": "string", "format": "date-time"}
+  }
+}
