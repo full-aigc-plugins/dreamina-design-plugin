@@ -362,6 +362,8 @@ class MediaAdapter:
         source = Path(path)
         if not source.is_absolute():
             raise MediaOutputError("ffprobe source path must be absolute")
+        if source_fd is not None:
+            os.lseek(source_fd, 0, os.SEEK_SET)
         source_arg = f"/dev/fd/{source_fd}" if source_fd is not None else str(source)
         result = self.run(
             "ffprobe",
@@ -394,6 +396,8 @@ class MediaAdapter:
         decoded: dict[str, object] = {}
         source_arg = f"/dev/fd/{source_fd}" if source_fd is not None else str(path)
         for name, position in positions.items():
+            if source_fd is not None:
+                os.lseek(source_fd, 0, os.SEEK_SET)
             result = self._run_binary("ffmpeg", ["-v", "error", "-ss", f"{position:.3f}",
                 "-i", source_arg, "-map", "0:v:0", "-frames:v", "1",
                 "-f", "image2pipe", "-vcodec", "png", "-"], timeout_seconds=30,
@@ -412,6 +416,8 @@ class MediaAdapter:
         source = Path(path)
         if not source.is_absolute():
             raise MediaOutputError("image verification path must be absolute")
+        if source_fd is not None:
+            os.lseek(source_fd, 0, os.SEEK_SET)
         source_arg = f"/dev/fd/{source_fd}" if source_fd is not None else str(source)
         result = self._run_binary("ffmpeg", ["-v", "error", "-i", source_arg,
             "-map", "0:v:0", "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"],

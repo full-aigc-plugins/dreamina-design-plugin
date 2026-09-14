@@ -181,6 +181,19 @@ class MediaAdapterTests(unittest.TestCase):
             ["-v", "error", "-show_streams", "-show_format", "-of", "json", str(self.source)],
         )
 
+    def test_probe_and_frames_handoff_the_exact_rewound_source_descriptor(self) -> None:
+        descriptor = os.open(self.source, os.O_RDONLY)
+        self.addCleanup(os.close, descriptor)
+        os.lseek(descriptor, 2, os.SEEK_SET)
+        self.runner.stdout = '{"streams": [], "format": {"duration": "1.0"}}'
+        self.adapter.probe_json(self.source, source_fd=descriptor)
+        self.assertEqual(self.runner.kwargs["pass_fds"], (descriptor,))
+        self.assertIn(f"/dev/fd/{descriptor}", self.runner.argv)
+        self.assertEqual(os.lseek(descriptor, 0, os.SEEK_CUR), 0)
+        self.adapter.verify_video_frames(self.source, 4.0, source_fd=descriptor)
+        self.assertEqual(self.runner.kwargs["pass_fds"], (descriptor,))
+        self.assertTrue(all(f"/dev/fd/{descriptor}" in call for call in self.runner.binary_calls))
+
     def test_video_frame_verification_decodes_both_anchors(self) -> None:
         result = self.adapter.verify_video_frames(self.source, 4.0)
         digest = hashlib.sha256(self.runner.frame_bytes).hexdigest()
