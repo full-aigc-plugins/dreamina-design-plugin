@@ -26,6 +26,8 @@ class SyntheticTrustedMediaAdapter:
         self.probe = {"streams": [{"codec_type": "video", "width": 1280, "height": 720,
                       "codec_name": "h264"}], "format": {"duration": "4.0"}}
     def probe_json(self, path): return copy.deepcopy(self.probe)
+    def verify_video_frames(self, path, duration_seconds):
+        return {"readable": True, "start_anchor": True, "end_anchor": True}
 
 
 class VideoEvaluationServiceTests(unittest.TestCase):

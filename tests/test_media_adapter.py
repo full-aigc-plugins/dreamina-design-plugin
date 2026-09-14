@@ -21,10 +21,12 @@ class _FakeRunner:
         self.raise_timeout = False
         self.kwargs = {}
         self.argv = []
+        self.calls = []
         self.process_group_terminated = False
 
     def run(self, argv, **kwargs):
         self.argv = list(argv)
+        self.calls.append(list(argv))
         self.kwargs = kwargs
         if self.raise_timeout:
             self.process_group_terminated = bool(kwargs.get("terminate_process_group"))
@@ -90,6 +92,12 @@ class MediaAdapterTests(unittest.TestCase):
             self.runner.argv[1:],
             ["-v", "error", "-show_streams", "-show_format", "-of", "json", str(self.source)],
         )
+
+    def test_video_frame_verification_decodes_both_anchors(self) -> None:
+        result = self.adapter.verify_video_frames(self.source, 4.0)
+        self.assertEqual(result, {"readable": True, "start_anchor": True, "end_anchor": True})
+        self.assertEqual([call[call.index("-ss") + 1] for call in self.runner.calls], ["0.000", "3.950"])
+        self.assertTrue(all(call[-4:] == ["1", "-f", "null", "-"] for call in self.runner.calls))
 
     def test_probe_rejects_non_object_or_failed_output(self) -> None:
         for stdout, exit_code in (("[]", 0), ("not json", 0), ("{}", 2)):

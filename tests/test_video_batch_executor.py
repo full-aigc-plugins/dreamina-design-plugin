@@ -93,6 +93,8 @@ class TrustedProbeAdapter:
     def probe_json(self, path):
         return {"streams": [{"codec_type": "video", "width": self.width, "height": 720,
                              "codec_name": "h264"}], "format": {"duration": "4.0"}}
+    def verify_video_frames(self, path, duration_seconds):
+        return {"readable": True, "start_anchor": True, "end_anchor": True}
 
 
 class TimeoutWithSubmitId(TimeoutError):
