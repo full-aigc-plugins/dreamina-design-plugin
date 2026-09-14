@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import os
+import signal
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts.media_adapter import (
     MediaAdapter,
@@ -54,6 +56,56 @@ class _FakeRunner:
         if self.raise_output:
             raise MediaOutputError("simulated bounded-output failure")
         return self.exit_code, self.frame_bytes, self.stderr
+
+
+class _SetupPipe:
+    def __init__(self, descriptor: int, *, close_error: bool = False) -> None:
+        self.descriptor = descriptor
+        self.close_error = close_error
+        self.closed = False
+
+    def fileno(self) -> int:
+        return self.descriptor
+
+    def close(self) -> None:
+        self.closed = True
+        if self.close_error:
+            raise RuntimeError("pipe-close-cleanup")
+
+
+class _SetupProcess:
+    def __init__(self) -> None:
+        self.pid = 4242
+        self.stdout = _SetupPipe(10)
+        self.stderr = _SetupPipe(11)
+        self.running = True
+        self.wait_calls = []
+
+    def poll(self):
+        return None if self.running else 0
+
+    def wait(self, timeout=None):
+        self.wait_calls.append(timeout)
+        self.running = False
+        return 0
+
+
+class _RegisterFailSelector:
+    def __init__(self, fail_on: int, *, close_error: bool = False) -> None:
+        self.fail_on = fail_on
+        self.close_error = close_error
+        self.register_calls = 0
+        self.closed = False
+
+    def register(self, *args) -> None:
+        self.register_calls += 1
+        if self.register_calls == self.fail_on:
+            raise LookupError(f"register-{self.fail_on}")
+
+    def close(self) -> None:
+        self.closed = True
+        if self.close_error:
+            raise RuntimeError("selector-close-cleanup")
 
 
 class MediaAdapterTests(unittest.TestCase):
@@ -171,8 +223,9 @@ class MediaAdapterTests(unittest.TestCase):
                 terminate_process_group=True,
             )
 
-    def test_binary_runner_accepts_exact_stdout_cap_as_bytes(self) -> None:
-        code = "import os,sys; os.write(sys.stdout.fileno(),b'x'*4096)"
+    def test_binary_runner_accepts_exact_stdout_and_stderr_caps(self) -> None:
+        code = ("import os,sys; os.write(sys.stdout.fileno(),b'x'*4096); "
+                "os.write(sys.stderr.fileno(),b'e'*128)")
         exit_code, stdout, stderr = SubprocessMediaRunner().run_binary(
             [sys.executable, "-c", code],
             shell=False,
@@ -183,8 +236,86 @@ class MediaAdapterTests(unittest.TestCase):
             start_new_session=True,
             terminate_process_group=True,
         )
-        self.assertEqual((exit_code, len(stdout), stderr), (0, 4096, ""))
+        self.assertEqual((exit_code, len(stdout), stderr), (0, 4096, "e" * 128))
         self.assertIsInstance(stdout, bytes)
+
+    def test_binary_runner_rejects_stdout_cap_plus_one(self) -> None:
+        code = "import os,sys; os.write(sys.stdout.fileno(),b'x'*4097)"
+        with self.assertRaisesRegex(MediaOutputError, "stdout exceeded 4096 bytes"):
+            SubprocessMediaRunner().run_binary(
+                [sys.executable, "-c", code],
+                shell=False,
+                env={"PATH": os.environ.get("PATH", "")},
+                timeout_seconds=5,
+                stdout_cap=4096,
+                stderr_cap=128,
+                start_new_session=True,
+                terminate_process_group=True,
+            )
+
+    def test_binary_runner_reaps_and_closes_pipes_when_selector_construction_fails(self) -> None:
+        process = _SetupProcess()
+        with mock.patch("scripts.media_adapter.subprocess.Popen", return_value=process), \
+                mock.patch("scripts.media_adapter.selectors.DefaultSelector", side_effect=LookupError("selector-create")), \
+                mock.patch("scripts.media_adapter.os.killpg") as killpg:
+            with self.assertRaisesRegex(LookupError, "selector-create"):
+                self._run_setup_failure()
+        killpg.assert_called_once_with(process.pid, signal.SIGTERM)
+        self.assertFalse(process.running)
+        self.assertEqual(process.wait_calls, [1.0])
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+
+    def test_binary_runner_cleans_selector_and_child_when_either_registration_fails(self) -> None:
+        for fail_on in (1, 2):
+            with self.subTest(fail_on=fail_on):
+                process = _SetupProcess()
+                selector = _RegisterFailSelector(fail_on)
+                with mock.patch("scripts.media_adapter.subprocess.Popen", return_value=process), \
+                        mock.patch("scripts.media_adapter.selectors.DefaultSelector", return_value=selector), \
+                        mock.patch("scripts.media_adapter.os.killpg"):
+                    with self.assertRaisesRegex(LookupError, f"register-{fail_on}"):
+                        self._run_setup_failure()
+                self.assertFalse(process.running)
+                self.assertTrue(process.stdout.closed)
+                self.assertTrue(process.stderr.closed)
+                self.assertTrue(selector.closed)
+
+    def test_binary_runner_preserves_setup_error_when_cleanup_also_fails(self) -> None:
+        process = _SetupProcess()
+        process.stdout.close_error = True
+        process.stderr.close_error = True
+        selector = _RegisterFailSelector(2, close_error=True)
+        with mock.patch("scripts.media_adapter.subprocess.Popen", return_value=process), \
+                mock.patch("scripts.media_adapter.selectors.DefaultSelector", return_value=selector), \
+                mock.patch("scripts.media_adapter.os.killpg"):
+            with self.assertRaisesRegex(LookupError, "register-2"):
+                self._run_setup_failure()
+        self.assertFalse(process.running)
+        self.assertEqual(process.wait_calls, [1.0])
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+        self.assertTrue(selector.closed)
+
+    def test_binary_runner_reaps_child_when_process_group_is_already_gone(self) -> None:
+        process = _SetupProcess()
+        with mock.patch("scripts.media_adapter.subprocess.Popen", return_value=process), \
+                mock.patch("scripts.media_adapter.selectors.DefaultSelector", side_effect=LookupError("selector-create")), \
+                mock.patch("scripts.media_adapter.os.killpg", side_effect=ProcessLookupError):
+            with self.assertRaisesRegex(LookupError, "selector-create"):
+                self._run_setup_failure()
+        self.assertFalse(process.running)
+        self.assertEqual(process.wait_calls, [1.0])
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+
+    @staticmethod
+    def _run_setup_failure() -> None:
+        SubprocessMediaRunner().run_binary(
+            ["trusted-tool"], shell=False, env={}, timeout_seconds=1,
+            stdout_cap=4, stderr_cap=4, start_new_session=True,
+            terminate_process_group=True,
+        )
 
     def test_binary_frame_failure_releases_trusted_staging(self) -> None:
         self.runner.raise_output = True

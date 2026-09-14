@@ -8,6 +8,7 @@ import os
 import selectors
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -125,17 +126,17 @@ class SubprocessMediaRunner:
             env=dict(env),
             start_new_session=start_new_session,
         )
-        assert process.stdout is not None and process.stderr is not None
-        selector = selectors.DefaultSelector()
-        selector.register(process.stdout, selectors.EVENT_READ, ("stdout", stdout_cap))
-        selector.register(process.stderr, selectors.EVENT_READ, ("stderr", stderr_cap))
+        selector = None
         buffers = {"stdout": bytearray(), "stderr": bytearray()}
         deadline = time.monotonic() + timeout_seconds
         try:
+            assert process.stdout is not None and process.stderr is not None
+            selector = selectors.DefaultSelector()
+            selector.register(process.stdout, selectors.EVENT_READ, ("stdout", stdout_cap))
+            selector.register(process.stderr, selectors.EVENT_READ, ("stderr", stderr_cap))
             while selector.get_map():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    self._terminate(process, terminate_process_group)
                     raise TimeoutError("media process timed out")
                 for key, _ in selector.select(timeout=min(remaining, 0.1)):
                     chunk = os.read(key.fileobj.fileno(), 65536)
@@ -143,29 +144,71 @@ class SubprocessMediaRunner:
                         selector.unregister(key.fileobj)
                         continue
                     stream, cap = key.data
-                    buffers[stream].extend(chunk)
-                    if len(buffers[stream]) > cap:
-                        self._terminate(process, terminate_process_group)
+                    if len(buffers[stream]) + len(chunk) > cap:
                         raise MediaOutputError(f"media process {stream} exceeded {cap} bytes")
+                    buffers[stream].extend(chunk)
             exit_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
         finally:
-            selector.close()
-            if process.poll() is None:
-                self._terminate(process, terminate_process_group)
-            process.stdout.close()
-            process.stderr.close()
+            active_exception = sys.exc_info()[0] is not None
+            cleanup_error = None
+            try:
+                if process.poll() is None:
+                    self._terminate(process, terminate_process_group)
+            except BaseException as exc:  # Cleanup must not mask the operation failure.
+                cleanup_error = exc
+            for pipe in (process.stdout, process.stderr):
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                    except BaseException as exc:
+                        cleanup_error = cleanup_error or exc
+            if selector is not None:
+                try:
+                    selector.close()
+                except BaseException as exc:
+                    cleanup_error = cleanup_error or exc
+            if cleanup_error is not None and not active_exception:
+                raise cleanup_error
         return exit_code, bytes(buffers["stdout"]), bytes(buffers["stderr"])
 
     @staticmethod
     def _terminate(process: subprocess.Popen, process_group: bool) -> None:
+        first_error = None
         try:
             if process_group:
-                os.killpg(process.pid, signal.SIGKILL)
+                os.killpg(process.pid, signal.SIGTERM)
             else:
-                process.kill()
+                process.terminate()
         except ProcessLookupError:
             pass
-        process.wait()
+        except BaseException as exc:
+            first_error = exc
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            try:
+                if process_group:
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except ProcessLookupError:
+                pass
+            except BaseException as exc:
+                first_error = first_error or exc
+            try:
+                process.wait(timeout=1.0)
+            except BaseException as exc:
+                first_error = first_error or exc
+        except BaseException as exc:
+            first_error = first_error or exc
+            try:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=1.0)
+            except BaseException as fallback_exc:
+                first_error = first_error or fallback_exc
+        if first_error is not None:
+            raise first_error
 
 
 class MediaAdapter:
