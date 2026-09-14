@@ -14,6 +14,7 @@ from scripts.json_contracts import (
     canonical_fingerprint,
     validate_contract,
 )
+from scripts.reelbench_contracts import validate_reelbench_comparison
 from scripts.video_project_store import (
     VersionCommitIndeterminateError,
     VersionReconciliationError,
@@ -53,6 +54,7 @@ class ShotAnalysisService:
         annotations: Mapping[str, Any],
         *,
         indeterminate_commit: VersionCommitIndeterminateError | None = None,
+        comparison_version: str | None = None,
     ) -> dict[str, Any]:
         analysis = self._load_analysis(project_id, analysis_version)
         try:
@@ -82,7 +84,12 @@ class ShotAnalysisService:
                 "status": "failed",
                 "gates": [asdict(blocked), *(asdict(gate) for gate in skipped)],
                 "annotation_version": None,
+                "comparison_binding": None,
             }
+
+        comparison_binding = self._comparison_binding(
+            project_id, analysis, comparison_version,
+        )
 
         checks: list[tuple[str, Callable[[], Sequence[str]]]] = [
             ("schema", lambda: ()),
@@ -107,7 +114,12 @@ class ShotAnalysisService:
             g.status == "skipped" and (g.name != "transcript_provenance" or not skip_allowed)
             for g in gates
         )
-        result: dict[str, Any] = {"status": "failed" if blocking else "passed", "gates": [asdict(g) for g in gates], "annotation_version": None}
+        result: dict[str, Any] = {
+            "status": "failed" if blocking else "passed",
+            "gates": [asdict(g) for g in gates],
+            "annotation_version": None,
+            "comparison_binding": comparison_binding,
+        }
         if not blocking:
             document = {**candidate, "analysis_version": analysis_version}
             if indeterminate_commit is None:
@@ -152,6 +164,34 @@ class ShotAnalysisService:
             if self._store.get(project_id)["state"] == "analyzing":
                 self._store.transition(project_id, expected="analyzing", next_state="analysis_review", evidence={"analysis_version": analysis_version, "annotation_version": persisted["version"], "machine_fingerprint": analysis["machine_fingerprint"]})
         return result
+
+    def _comparison_binding(self, project_id, analysis, comparison_version):
+        """Return a receipt reference without importing ReelBench facts into annotations."""
+        if comparison_version is None:
+            return None
+        if re.fullmatch(r"v[0-9]{3,}", comparison_version) is None:
+            raise ValueError("invalid comparison version")
+        comparison = self._store.read_version(
+            project_id,
+            "reelbench_comparison",
+            comparison_version,
+            "reelbench_comparison.schema.json",
+        )
+        validate_reelbench_comparison(comparison)
+        if (
+            comparison["project_id"] != project_id
+            or comparison["native_analysis_version"] != analysis["version"]
+            or comparison["native_analysis_fingerprint"] != analysis["machine_fingerprint"]
+            or comparison["source_sha256"] != analysis["source"]["source_sha256"]
+        ):
+            raise ValueError("comparison receipt is not bound to the exact native analysis")
+        # The annotation schema deliberately stays closed: semantic annotation
+        # never absorbs ReelBench measurements. Downstream callers may retain
+        # only this immutable receipt identity alongside their workflow state.
+        return {
+            "version": comparison["version"],
+            "comparison_fingerprint": comparison["comparison_fingerprint"],
+        }
 
     def _load_analysis(self, project_id: str, version: str) -> dict[str, Any]:
         if re.fullmatch(r"v[0-9]{3,}", version) is None:

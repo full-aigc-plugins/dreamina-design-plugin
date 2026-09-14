@@ -12,7 +12,11 @@ from unittest.mock import patch
 from scripts.bounded_process import BoundedProcessResult
 from scripts.trusted_media_tools import TrustedExecutable, TrustedMediaTool
 from scripts.json_contracts import canonical_fingerprint
-from scripts.video_project_store import VersionCommitIndeterminateError, VideoProjectStore
+from scripts.video_project_store import (
+    VersionCommitIndeterminateError,
+    VersionReconciliationError,
+    VideoProjectStore,
+)
 
 
 def fixture_path(value):
@@ -100,8 +104,8 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
             argv = fixture_argv(argv)
             if argv[2] == "seed":
                 track = Path(argv[argv.index("--track") + 1])
-                track.write_text('{"hz": 5, "values": []}\n', encoding="utf-8")
-                return BoundedProcessResult(0, '{"meta":{"durationSeconds":8},"shots":[{"id":"S01","start":0,"end":8,"seconds":8}]}\n', "")
+                track.write_text('{"hz": 5, "values": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}\n', encoding="utf-8")
+                return BoundedProcessResult(0, '{"meta":{"durationSeconds":8},"shots":[{"id":"S01","start":0,"end":8,"seconds":8,"motion":0}]}\n', "")
             if argv[2] == "frames":
                 target = Path(argv[argv.index("--dir") + 1])
                 target.mkdir()
@@ -134,6 +138,46 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
             tools=trust.tools, tool_store=trust, runner=runner,
         )
         return ReelBenchProjectService(self.store, adapter)
+
+    def _validated_reelbench(self):
+        seed = self.service.run(
+            self.project_id, action="seed", expected_parent=None,
+            source_receipt_version=self.source_receipt["version"], threshold=0.3, title="Reference",
+        )
+        evidence = self.service.run(
+            self.project_id, action="evidence", expected_parent=seed["version"],
+            source_receipt_version=self.source_receipt["version"],
+        )
+        return self.service.run(
+            self.project_id, action="validate", expected_parent=evidence["version"],
+            source_receipt_version=self.source_receipt["version"],
+        )
+
+    def _write_native_analysis(self, shots, *, source_sha256=None):
+        source = dict(self.source_receipt)
+        if source_sha256 is not None:
+            source["source_sha256"] = source_sha256
+        payload = {
+            "schema_version": "1.0", "analysis_id": "an_" + "a" * 24,
+            "project_id": self.project_id, "source": source,
+            "parameters": {"scene_threshold": .3, "min_shot_seconds": .3, "track_hz": 5},
+            "cuts": [shots[0]["start_seconds"], *(shot["end_seconds"] for shot in shots)],
+            "manual_cuts": [],
+            "shots": [
+                {"id": f"S{index:02d}", "measured": {
+                    "start_seconds": shot["start_seconds"], "end_seconds": shot["end_seconds"],
+                    "duration_seconds": shot["end_seconds"] - shot["start_seconds"],
+                    "motion_median": shot["motion_median"],
+                    "boundary_source": "source_start" if index == 1 else "scene",
+                }, "semantic": None}
+                for index, shot in enumerate(shots, 1)
+            ],
+            "track_path": "/private/track.json", "frame_checksums": {},
+            "machine_fingerprint": "f" * 64,
+        }
+        return self.store.write_version(
+            self.project_id, "analysis", payload, schema_name="shot_analysis.schema.json",
+        )
 
     def test_repeated_action_creates_new_version_without_overwriting(self) -> None:
         first = self.service.run(
@@ -235,6 +279,111 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "validated"):
             self.service.run(self.project_id, action="render", expected_parent=evidence["version"],
                              source_receipt_version=self.source_receipt["version"], mode="md")
+
+    def test_matching_timelines_produce_corroborating_receipt(self) -> None:
+        reelbench = self._validated_reelbench()
+        analysis = self._write_native_analysis([
+            {"start_seconds": 0.0, "end_seconds": 8.0, "motion_median": 0.0},
+        ])
+
+        result = self.service.compare_native(self.project_id, analysis["version"], reelbench["version"])
+
+        self.assertEqual(result["overall"], "matched")
+        self.assertEqual(
+            self.store.read_version(
+                self.project_id, "reelbench_comparison", result["version"],
+                "reelbench_comparison.schema.json",
+            ),
+            result,
+        )
+        self.assertEqual(
+            result["comparison_fingerprint"],
+            canonical_fingerprint({key: value for key, value in result.items() if key != "comparison_fingerprint"}),
+        )
+
+    def test_source_or_boundary_mismatch_requires_manual_review_without_native_mutation(self) -> None:
+        reelbench = self._validated_reelbench()
+        analysis = self._write_native_analysis([
+            {"start_seconds": 0.0, "end_seconds": 7.0, "motion_median": 0.0},
+        ], source_sha256="b" * 64)
+        before = self.store.read_version(
+            self.project_id, "analysis", analysis["version"], "shot_analysis.schema.json",
+        )
+
+        result = self.service.compare_native(self.project_id, analysis["version"], reelbench["version"])
+
+        self.assertEqual(result["overall"], "manual_review")
+        self.assertEqual(result["domains"]["source_identity"]["verdict"], "manual_review")
+        self.assertEqual(result["domains"]["boundaries"]["verdict"], "manual_review")
+        self.assertEqual(
+            self.store.read_version(
+                self.project_id, "analysis", analysis["version"], "shot_analysis.schema.json",
+            ),
+            before,
+        )
+
+    def test_comparison_requires_exact_existing_versions_and_validated_reelbench_evidence(self) -> None:
+        seed = self.service.run(
+            self.project_id, action="seed", expected_parent=None,
+            source_receipt_version=self.source_receipt["version"], threshold=0.3, title="Reference",
+        )
+        analysis = self._write_native_analysis([
+            {"start_seconds": 0.0, "end_seconds": 8.0, "motion_median": 0.0},
+        ])
+
+        with self.assertRaises(VersionReconciliationError):
+            self.service.compare_native(self.project_id, "v999", seed["version"])
+        with self.assertRaisesRegex(ValueError, "validated"):
+            self.service.compare_native(self.project_id, analysis["version"], seed["version"])
+
+    def test_comparison_recovery_reconciles_only_the_exact_visible_receipt(self) -> None:
+        reelbench = self._validated_reelbench()
+        analysis = self._write_native_analysis([
+            {"start_seconds": 0.0, "end_seconds": 8.0, "motion_median": 0.0},
+        ])
+        real_write = self.store.write_version
+
+        def publish_then_report_indeterminate(*args, **kwargs):
+            document = real_write(*args, **kwargs)
+            if args[1] != "reelbench_comparison":
+                return document
+            raise VersionCommitIndeterminateError(
+                project_id=self.project_id, family="reelbench_comparison", version=document["version"],
+                path=self.store.project_root(self.project_id) / "reelbench_comparison" / f"{document['version']}.json",
+                payload_fingerprint=canonical_fingerprint(document),
+            )
+
+        with patch.object(self.store, "write_version", side_effect=publish_then_report_indeterminate):
+            with self.assertRaises(VersionCommitIndeterminateError) as caught:
+                self.service.compare_native(self.project_id, analysis["version"], reelbench["version"])
+
+        recovered = self.service.reconcile_indeterminate(caught.exception)
+        self.assertEqual(recovered["version"], "v001")
+        self.assertEqual(recovered["overall"], "matched")
+
+    def test_reordered_or_missing_shots_are_listed_as_manual_review_and_tolerance_is_inclusive(self) -> None:
+        analysis = {
+            "source": {"source_sha256": "a" * 64, "version": "v001", "duration_seconds": 8.0},
+            "shots": [
+                {"id": "S01", "measured": {"start_seconds": 0.0, "end_seconds": 4.0, "motion_median": 0.0}},
+                {"id": "S02", "measured": {"start_seconds": 4.0, "end_seconds": 8.0, "motion_median": 0.0}},
+            ],
+        }
+        evidence = {"source_sha256": "a" * 64, "source_receipt_version": "v001"}
+        within_tolerance = {"shots": {"meta": {"durationSeconds": 8.0}, "shots": [
+            {"id": "S01", "start": 0.0, "end": 4.1, "motion": 0.0},
+            {"id": "S02", "start": 4.1, "end": 8.0, "motion": 0.0},
+        ]}}
+        mismatched = {"shots": {"meta": {"durationSeconds": 8.0}, "shots": [
+            {"id": "S02", "start": 0.0, "end": 4.0, "motion": 0.0},
+        ]}}
+
+        accepted = self.service._compare_domains(analysis, evidence, within_tolerance)
+        rejected = self.service._compare_domains(analysis, evidence, mismatched)
+
+        self.assertEqual(accepted["boundaries"]["verdict"], "matched")
+        self.assertEqual(rejected["shot_count"]["verdict"], "manual_review")
+        self.assertEqual(rejected["boundaries"]["verdict"], "manual_review")
 
 
 if __name__ == "__main__":
