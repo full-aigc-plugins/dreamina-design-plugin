@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.dreamina_adapter import DreaminaResult
+from scripts.json_contracts import canonical_fingerprint
 from scripts.video_batch_executor import VideoBatchExecutor
 from scripts.video_evaluation_service import VideoEvaluationService
 from scripts.video_service import build_video_request_fingerprint
@@ -87,6 +88,13 @@ class Adapter:
         return DreaminaResult(0, {"submit_id": f"submit_{self.submissions}"}, None, f"submit_{self.submissions}", "")
 
 
+class TrustedProbeAdapter:
+    def __init__(self, width=1280): self.width = width
+    def probe_json(self, path):
+        return {"streams": [{"codec_type": "video", "width": self.width, "height": 720,
+                             "codec_name": "h264"}], "format": {"duration": "4.0"}}
+
+
 class TimeoutWithSubmitId(TimeoutError):
     def __init__(self, submit_id: str):
         super().__init__("timeout token=SECRET_TOKEN https://signed.example/?key=SECRET_KEY")
@@ -100,14 +108,16 @@ class VideoBatchExecutorTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.store = Store(Path(self.tmp.name)); self.allowance = Allowance(); self.adapter = Adapter()
+        self.evaluation_service = VideoEvaluationService(media_adapter=TrustedProbeAdapter())
         self.executor = VideoBatchExecutor(project_store=self.store, allowance=self.allowance,
-            allowance_id="ba_" + "2" * 32, video_service=None, adapter=self.adapter)
+            allowance_id="ba_" + "2" * 32, video_service=None, adapter=self.adapter,
+            evaluation_service=self.evaluation_service)
 
     def record_retry(self):
         task = self.executor._load(PROJECT_ID, "v001")["tasks"][0]
         return self.executor.apply_evaluation_decision(self.make_receipt(task))
 
-    def make_receipt(self, task):
+    def make_receipt(self, task, *, malformed=False):
         bound = {"project_id": PROJECT_ID, "batch_version": "v001", "shot_id": "S01", "attempt": 1,
                  "artifact_sha256": task["artifacts"][0]["sha256"], "design_version": "v001",
                  "design_fingerprint": "b" * 64, "quote_fingerprint": "c" * 64,
@@ -121,8 +131,11 @@ class VideoBatchExecutorTests(unittest.TestCase):
             "intent", "composition", "identity_continuity", "camera_behavior", "rhythm_function",
             "temporal_defects", "source_copying", "subtitle_safe_area")}
         gates["identity_continuity"]["status"] = "failed"
-        return VideoEvaluationService().evaluate(artifact, design_shot, {"binding": bound, "gates": gates},
-            allowance=self.allowance.get(bound["allowance_id"]), quote=self.store.document,
+        payload = {"binding": bound, "gates": gates}
+        if malformed:
+            payload["gates"].pop("intent")
+        return self.evaluation_service.evaluate(artifact, design_shot, payload,
+            binding=bound, allowance=self.allowance.get(bound["allowance_id"]), quote=self.store.document,
             evaluation_id="eval_executor", evaluator={"provider": "codex", "model": "test",
             "evaluated_at": "2026-09-14T02:00:00Z"})
 
@@ -364,6 +377,31 @@ class VideoBatchExecutorTests(unittest.TestCase):
     def test_action_only_evaluation_shape_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "contract"):
             self.executor.apply_evaluation_decision({"action": "retry"})
+
+    def test_malformed_semantics_persist_manual_receipt_and_never_retry(self):
+        self.executor.run_next(PROJECT_ID, "v001", 1)
+        self.adapter.status = "success"; self.adapter.download = True
+        task = self.executor.reconcile(PROJECT_ID, "v001")["tasks"][0]
+        receipt = self.make_receipt(task, malformed=True)
+        persisted = self.executor.apply_evaluation_decision(receipt)
+        self.assertEqual(persisted["tasks"][0]["evaluation_receipt"], receipt)
+        self.assertEqual(persisted["tasks"][0]["state"], "manual_review")
+        self.assertEqual(self.executor.run_next(PROJECT_ID, "v001", 1)["new_submissions"], 0)
+
+    def test_public_hash_cannot_forge_trusted_measured_acceptance(self):
+        self.executor.run_next(PROJECT_ID, "v001", 1)
+        self.adapter.status = "success"; self.adapter.download = True
+        task = self.executor.reconcile(PROJECT_ID, "v001")["tasks"][0]
+        receipt = self.make_receipt(task)
+        receipt["semantic_gates"]["identity_continuity"]["status"] = "passed"
+        receipt["failed_gates"] = []
+        receipt["decision"] = {"action": "accepted"}
+        receipt["artifact_evidence"]["probe"]["width"] = 640
+        receipt["evaluation_fingerprint"] = canonical_fingerprint(
+            {key: value for key, value in receipt.items() if key != "evaluation_fingerprint"})
+        with self.assertRaisesRegex(ValueError, "trusted recomputation"):
+            self.executor.apply_evaluation_decision(receipt)
+        self.assertNotIn("evaluation_receipt", self.executor._load(PROJECT_ID, "v001")["tasks"][0])
 
     def test_private_evaluation_handoff_rejects_stale_artifact_digest(self):
         self.executor.run_next(PROJECT_ID, "v001", 1)

@@ -21,9 +21,17 @@ def semantic(binding: dict, status: str = "passed") -> dict:
         name: {"status": status, "evidence": f"reviewed {name}"} for name in SEMANTIC}}
 
 
+class SyntheticTrustedMediaAdapter:
+    def __init__(self):
+        self.probe = {"streams": [{"codec_type": "video", "width": 1280, "height": 720,
+                      "codec_name": "h264"}], "format": {"duration": "4.0"}}
+    def probe_json(self, path): return copy.deepcopy(self.probe)
+
+
 class VideoEvaluationServiceTests(unittest.TestCase):
     def setUp(self):
-        self.service = VideoEvaluationService()
+        self.media = SyntheticTrustedMediaAdapter()
+        self.service = VideoEvaluationService(media_adapter=self.media)
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.clip = Path(self.tmp.name) / "clip.mp4"
         self.clip.write_bytes(b"\0\0\0\x18ftypisom" + b"x" * 20)
@@ -42,7 +50,7 @@ class VideoEvaluationServiceTests(unittest.TestCase):
                      "codec": "h264", "duration_seconds": 4.0, "aspect_ratio": "16:9"}
 
     def test_measured_gates_are_one_closed_keyed_object(self):
-        result = self.service.measure_clip(self.artifact, self.shot)
+        result = self.service.measure_clip(self.artifact, self.shot, binding=self.binding)
         self.assertEqual(set(result["gates"]), set(MEASURED))
         self.assertTrue(all(gate["status"] == "passed" for gate in result["gates"].values()))
 
@@ -54,26 +62,52 @@ class VideoEvaluationServiceTests(unittest.TestCase):
             with self.subTest(keys=sorted(payload["gates"])), self.assertRaises(EvaluationContractError):
                 self.service.validate_semantic_evaluation(payload)
 
+    def test_malformed_semantic_payload_returns_complete_manual_receipt(self):
+        payload = semantic(self.binding); payload["gates"].pop("intent"); payload["gates"]["duration"] = {"status": "passed", "evidence": "forged"}
+        allowance = {"allowance_id": self.binding["allowance_id"], "project_id": self.binding["project_id"],
+                     "quote_version": self.binding["batch_version"], "quote_fingerprint": self.binding["quote_fingerprint"],
+                     "design_version": self.binding["design_version"], "design_fingerprint": self.binding["design_fingerprint"],
+                     "state": "active", "requests": [], "reservations": []}
+        receipt = self.service.evaluate(self.artifact, self.shot, payload, binding=self.binding,
+            allowance=allowance, quote=self.quote, evaluation_id="eval_malformed",
+            evaluator={"provider": "codex", "model": "test", "evaluated_at": "2026-09-14T02:00:00Z"})
+        self.assertEqual(receipt["decision"], {"action": "manual_review"})
+        validate_contract(receipt, "shot_evaluation.schema.json")
+
     def test_semantic_binding_conflict_returns_manual_review_receipt(self):
         payload = semantic(self.binding); payload["binding"]["quote_fingerprint"] = "f" * 64
         allowance = {"allowance_id": self.binding["allowance_id"], "project_id": self.binding["project_id"],
                      "quote_version": self.binding["batch_version"], "quote_fingerprint": self.binding["quote_fingerprint"],
                      "design_version": self.binding["design_version"], "design_fingerprint": self.binding["design_fingerprint"],
                      "state": "active", "requests": [], "reservations": []}
-        receipt = self.service.evaluate(self.artifact, self.shot, payload, allowance=allowance, quote=self.quote,
+        receipt = self.service.evaluate(self.artifact, self.shot, payload, binding=self.binding, allowance=allowance, quote=self.quote,
             evaluation_id="eval_conflict", evaluator={"provider": "codex", "model": "test",
             "evaluated_at": "2026-09-14T02:00:00Z"})
         self.assertEqual(receipt["decision"], {"action": "manual_review"})
-        self.assertTrue(all(gate["status"] == "unavailable" for gate in receipt["semantic_gates"].values()))
+        self.assertTrue(all(gate["status"] == "skipped" for gate in receipt["semantic_gates"].values()))
 
-    def test_missing_measured_evidence_is_unavailable(self):
-        artifact = copy.deepcopy(self.artifact); artifact["probe"].pop("duration_seconds")
-        self.assertEqual(self.service.measure_clip(artifact, self.shot)["gates"]["duration"]["status"], "unavailable")
+    def test_artifact_and_design_binding_conflicts_return_manual_receipt(self):
         allowance = {"allowance_id": self.binding["allowance_id"], "project_id": self.binding["project_id"],
                      "quote_version": self.binding["batch_version"], "quote_fingerprint": self.binding["quote_fingerprint"],
                      "design_version": self.binding["design_version"], "design_fingerprint": self.binding["design_fingerprint"],
                      "state": "active", "requests": [], "reservations": []}
-        receipt = self.service.evaluate(artifact, self.shot, semantic(self.binding), allowance=allowance,
+        for source in ("artifact", "design"):
+            artifact, design = copy.deepcopy(self.artifact), copy.deepcopy(self.shot)
+            (artifact if source == "artifact" else design)["shot_id"] = "S99"
+            receipt = self.service.evaluate(artifact, design, semantic(self.binding), binding=self.binding,
+                allowance=allowance, quote=self.quote, evaluation_id=f"eval_{source}_conflict",
+                evaluator={"provider": "codex", "model": "test", "evaluated_at": "2026-09-14T02:00:00Z"})
+            self.assertEqual(receipt["decision"], {"action": "manual_review"})
+            validate_contract(receipt, "shot_evaluation.schema.json")
+
+    def test_missing_measured_evidence_is_unavailable(self):
+        artifact = copy.deepcopy(self.artifact); self.media.probe["format"].pop("duration")
+        self.assertEqual(self.service.measure_clip(artifact, self.shot, binding=self.binding)["gates"]["duration"]["status"], "skipped")
+        allowance = {"allowance_id": self.binding["allowance_id"], "project_id": self.binding["project_id"],
+                     "quote_version": self.binding["batch_version"], "quote_fingerprint": self.binding["quote_fingerprint"],
+                     "design_version": self.binding["design_version"], "design_fingerprint": self.binding["design_fingerprint"],
+                     "state": "active", "requests": [], "reservations": []}
+        receipt = self.service.evaluate(artifact, self.shot, semantic(self.binding), binding=self.binding, allowance=allowance,
             quote=self.quote, evaluation_id="eval_missing", evaluator={"provider": "codex", "model": "test",
             "evaluated_at": "2026-09-14T02:00:00Z"})
         self.assertEqual(receipt["decision"], {"action": "manual_review"})
@@ -84,7 +118,7 @@ class VideoEvaluationServiceTests(unittest.TestCase):
         self.binding["allowance_id"] = allowance_id; self.artifact.update(self.binding); self.shot.update(self.binding)
         payload = semantic(self.binding); payload["gates"]["temporal_defects"]["status"] = "failed"
         evaluator = {"provider": "codex", "model": "test-model", "evaluated_at": "2026-09-14T02:00:00Z"}
-        receipt = self.service.evaluate(self.artifact, self.shot, payload,
+        receipt = self.service.evaluate(self.artifact, self.shot, payload, binding=self.binding,
             allowance=allowance_service.get(allowance_id), quote=self.quote,
             evaluation_id="eval_real_1", evaluator=evaluator)
         retry = self.quote["items"][0]["attempts"][1]
@@ -93,7 +127,7 @@ class VideoEvaluationServiceTests(unittest.TestCase):
         validate_contract(receipt, "shot_evaluation.schema.json")
         retry_reservation = allowance_service.reserve(allowance_id, shot_id="S01", attempt=2,
                                                        request_fingerprint=retry["request_fingerprint"])
-        blocked = self.service.evaluate(self.artifact, self.shot, payload,
+        blocked = self.service.evaluate(self.artifact, self.shot, payload, binding=self.binding,
             allowance=allowance_service.get(allowance_id), quote=self.quote,
             evaluation_id="eval_real_2", evaluator={**evaluator, "evaluated_at": "2026-09-14T02:00:01Z"})
         self.assertEqual(blocked["decision"], {"action": "manual_review"})
@@ -102,7 +136,7 @@ class VideoEvaluationServiceTests(unittest.TestCase):
             request_fingerprint=initial["request_fingerprint"])
         allowance_service.commit(retry_reservation["reservation_id"], "submit_retry")
         allowance_service.commit(initial_reservation["reservation_id"], "submit_initial")
-        exhausted = self.service.evaluate(self.artifact, self.shot, payload,
+        exhausted = self.service.evaluate(self.artifact, self.shot, payload, binding=self.binding,
             allowance=allowance_service.get(allowance_id), quote=self.quote,
             evaluation_id="eval_real_3", evaluator={**evaluator, "evaluated_at": "2026-09-14T02:00:02Z"})
         self.assertEqual(exhausted["decision"], {"action": "manual_review"})
@@ -112,7 +146,7 @@ class VideoEvaluationServiceTests(unittest.TestCase):
                      "quote_version": self.binding["batch_version"], "quote_fingerprint": self.binding["quote_fingerprint"],
                      "design_version": self.binding["design_version"], "design_fingerprint": self.binding["design_fingerprint"],
                      "state": "active", "requests": [], "reservations": []}
-        receipt = self.service.evaluate(self.artifact, self.shot, semantic(self.binding), allowance=allowance,
+        receipt = self.service.evaluate(self.artifact, self.shot, semantic(self.binding), binding=self.binding, allowance=allowance,
             quote=self.quote, evaluation_id="eval_complete", evaluator={"provider": "codex", "model": "test-model",
             "evaluated_at": "2026-09-14T02:00:00Z"})
         self.assertEqual(set(receipt), {"schema_version", "evaluation_id", "binding", "artifact_evidence",

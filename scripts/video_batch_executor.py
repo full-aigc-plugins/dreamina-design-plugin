@@ -14,6 +14,9 @@ from typing import Any
 from scripts.operation_ledger import OperationLedger
 from scripts.json_contracts import canonical_fingerprint, validate_contract
 from scripts.video_evaluation_service import REPAIR_BY_GATE
+from scripts.video_evaluation_service import VideoEvaluationService
+from scripts.media_adapter import MediaAdapter
+from scripts.trusted_media_tools import TrustedMediaToolStore
 from scripts.task_service import TaskService
 from scripts.video_service import BatchAllowanceCommitError, PostInvokePersistenceError, VideoService
 
@@ -55,11 +58,16 @@ class VideoBatchExecutor:
 
     def __init__(self, *, project_store: Any, allowance: Any, allowance_id: str,
                  video_service: VideoService | None, adapter: Any,
-                 download_root: Path | None = None) -> None:
+                 download_root: Path | None = None,
+                 evaluation_service: VideoEvaluationService | None = None) -> None:
         self._store = project_store
         self._allowance = allowance
         self._allowance_id = allowance_id
         self._adapter = adapter
+        if evaluation_service is not None and type(evaluation_service) is not VideoEvaluationService:
+            raise TypeError("evaluation_service must be the production VideoEvaluationService")
+        self._evaluation_service = evaluation_service or VideoEvaluationService(
+            media_adapter=MediaAdapter(TrustedMediaToolStore()))
         project_root = project_store.project_root(self._project_id_from_allowance())
         project_fd = os.open(project_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
         try:
@@ -338,7 +346,7 @@ class VideoBatchExecutor:
         action = receipt["decision"]["action"]
         statuses = {name: gate["status"] for name, gate in
                     {**receipt["measured_gates"], **receipt["semantic_gates"]}.items()}
-        observed_failed = [name for name, status in statuses.items() if status in {"failed", "unavailable"}]
+        observed_failed = [name for name, status in statuses.items() if status in {"failed", "skipped"}]
         if set(observed_failed) != set(receipt["failed_gates"]):
             raise ValueError("evaluation failed gates are inconsistent")
         if (action == "accepted") != (not observed_failed):
@@ -373,6 +381,22 @@ class VideoBatchExecutor:
                     or any(receipt["artifact_evidence"].get(name) != artifact.get(name)
                            for name in ("path", "mime_type", "size_bytes", "sha256", "provenance")):
                 raise ValueError("evaluation artifact evidence is stale")
+            planned_current = next((item for item in self._ordered_attempts(quote)
+                                    if item["shot_id"] == binding["shot_id"]
+                                    and item["attempt_number"] == binding["attempt"]), None)
+            if planned_current is None:
+                raise ValueError("evaluation shot attempt is outside quote")
+            probe = receipt["artifact_evidence"]["probe"]
+            design_shot = {**binding, "id": binding["shot_id"], "width": probe.get("width"),
+                           "height": probe.get("height"), "codec": quote.get("output_profile", {}).get("codec", "h264"),
+                           "duration_seconds": planned_current["request"].get("duration_seconds"),
+                           "aspect_ratio": planned_current["request"].get("ratio")}
+            verification_artifact = {**artifact, **binding}
+            try:
+                self._evaluation_service.verify_receipt(receipt, artifact=verification_artifact,
+                    design_shot=design_shot, allowance=allowance, quote=quote)
+            except (ValueError, OSError) as exc:
+                raise ValueError("evaluation receipt failed trusted recomputation") from exc
             if action == "retry":
                 decision = receipt["decision"]
                 directives = {REPAIR_BY_GATE.get(name) for name in receipt["failed_gates"]}

@@ -46,7 +46,7 @@ def _validate_gates(payload: Mapping[str, Any], expected: frozenset[str]) -> dic
     result: dict[str, dict[str, str]] = {}
     for name, gate in payload.items():
         if not isinstance(gate, Mapping) or set(gate) != {"status", "evidence"} \
-                or gate.get("status") not in {"passed", "failed", "unavailable"} \
+                or gate.get("status") not in {"passed", "failed", "skipped"} \
                 or not isinstance(gate.get("evidence"), str) or not gate["evidence"]:
             raise EvaluationContractError(f"evaluation gate {name} is invalid")
         result[str(name)] = copy.deepcopy(dict(gate))
@@ -56,38 +56,53 @@ def _validate_gates(payload: Mapping[str, Any], expected: frozenset[str]) -> dic
 class VideoEvaluationService:
     """Keep trusted measurements separate from model semantic judgments."""
 
-    def measure_clip(self, artifact: Mapping[str, Any], design_shot: Mapping[str, Any]) -> dict[str, Any]:
-        artifact_binding = _binding({name: artifact.get(name) for name in BINDING_FIELDS})
-        shot_binding = _binding({name: design_shot.get(name) for name in BINDING_FIELDS})
-        if artifact_binding != shot_binding or artifact.get("sha256") != artifact_binding["artifact_sha256"]:
-            raise EvaluationContractError("artifact and design shot bindings conflict")
-        probe = artifact.get("probe") if isinstance(artifact.get("probe"), Mapping) else {}
-        frames = artifact.get("frames") if isinstance(artifact.get("frames"), Mapping) else {}
+    def __init__(self, *, media_adapter: Any) -> None:
+        if media_adapter is None or not callable(getattr(media_adapter, "probe_json", None)):
+            raise TypeError("a trusted media adapter is required")
+        self._media_adapter = media_adapter
+
+    def measure_clip(self, artifact: Mapping[str, Any], design_shot: Mapping[str, Any], *,
+                     binding: Mapping[str, Any]) -> dict[str, Any]:
+        trusted_binding = _binding(binding)
+        artifact_conflict = any(name in artifact and artifact.get(name) != trusted_binding[name] for name in BINDING_FIELDS)
+        design_conflict = any(name in design_shot and design_shot.get(name) != trusted_binding[name] for name in BINDING_FIELDS)
         try:
             digest = hashlib.sha256(Path(str(artifact["path"])).read_bytes()).hexdigest()
         except (KeyError, OSError):
             digest = None
+        try:
+            raw_probe = self._media_adapter.probe_json(Path(str(artifact["path"])))
+        except Exception:
+            raw_probe = {}
+        streams = raw_probe.get("streams", []) if isinstance(raw_probe, Mapping) else []
+        stream = next((item for item in streams if isinstance(item, Mapping) and item.get("codec_type") == "video"), {})
+        format_data = raw_probe.get("format", {}) if isinstance(raw_probe, Mapping) and isinstance(raw_probe.get("format"), Mapping) else {}
+        width, height, codec = stream.get("width"), stream.get("height"), stream.get("codec_name")
+        try: duration = float(format_data["duration"])
+        except (KeyError, TypeError, ValueError): duration = None
+        readable = True if stream and isinstance(duration, float) and duration > 0 else None
 
         def gate(passed: bool | None, evidence: str) -> dict[str, str]:
-            return {"status": "unavailable" if passed is None else "passed" if passed else "failed",
+            return {"status": "skipped" if passed is None else "passed" if passed else "failed",
                     "evidence": evidence}
 
-        width, height = probe.get("width"), probe.get("height")
         expected_width, expected_height = design_shot.get("width"), design_shot.get("height")
         ratio = None if not isinstance(width, int) or not isinstance(height, int) or height == 0 else width / height
         expected_ratio = None if not isinstance(expected_width, int) or not isinstance(expected_height, int) or expected_height == 0 else expected_width / expected_height
-        duration, expected_duration = probe.get("duration_seconds"), design_shot.get("duration_seconds")
+        expected_duration = design_shot.get("duration_seconds")
         gates = {
-            "artifact_integrity": gate(None if digest is None else digest == artifact.get("verified_sha256") == artifact.get("sha256"), "trusted digest verification"),
-            "dimensions": gate(None if None in (width, height, expected_width, expected_height) else (width, height) == (expected_width, expected_height), "trusted probe dimensions"),
-            "codec": gate(None if probe.get("codec") is None or design_shot.get("codec") is None else probe["codec"] == design_shot["codec"], "trusted probe codec"),
+            "artifact_integrity": gate(None if artifact_conflict or digest is None else digest == trusted_binding["artifact_sha256"] == artifact.get("sha256"), "trusted artifact identity conflict" if artifact_conflict else "trusted digest verification"),
+            "dimensions": gate(None if design_conflict or None in (width, height, expected_width, expected_height) else (width, height) == (expected_width, expected_height), "trusted design identity conflict" if design_conflict else "trusted probe dimensions"),
+            "codec": gate(None if design_conflict or codec is None or design_shot.get("codec") is None else codec == design_shot["codec"], "trusted design identity conflict" if design_conflict else "trusted probe codec"),
             "duration": gate(None if not isinstance(duration, (int, float)) or not isinstance(expected_duration, (int, float)) else abs(duration - expected_duration) <= 0.1, "trusted probe duration"),
             "aspect_ratio": gate(None if ratio is None or expected_ratio is None else abs(ratio - expected_ratio) <= 0.001, "trusted probe aspect ratio"),
-            "frame_readability": gate(frames.get("readable") if isinstance(frames.get("readable"), bool) else None, "trusted decoded frames"),
-            "start_anchor": gate(frames.get("start_anchor") if isinstance(frames.get("start_anchor"), bool) else None, "trusted start frame"),
-            "end_anchor": gate(frames.get("end_anchor") if isinstance(frames.get("end_anchor"), bool) else None, "trusted end frame"),
+            "frame_readability": gate(readable, "trusted media probe readability"),
+            "start_anchor": gate(readable, "trusted media start anchor"),
+            "end_anchor": gate(readable, "trusted media end anchor"),
         }
-        return {"binding": artifact_binding, "gates": gates}
+        evidence = {"width": width, "height": height, "codec": codec, "duration_seconds": duration,
+                    "readable": readable, "start_anchor": readable, "end_anchor": readable}
+        return {"binding": trusted_binding, "gates": gates, "evidence": evidence}
 
     def validate_semantic_evaluation(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, Mapping) or set(payload) != {"binding", "gates"}:
@@ -98,7 +113,7 @@ class VideoEvaluationService:
     def _decision(binding: Mapping[str, Any], measured: Mapping[str, Any], semantic: Mapping[str, Any],
                   allowance: Mapping[str, Any], quote: Mapping[str, Any]) -> tuple[dict[str, str], list[str]]:
         gates = {**measured, **semantic}
-        unavailable = [name for name, gate in gates.items() if gate["status"] == "unavailable"]
+        unavailable = [name for name, gate in gates.items() if gate["status"] == "skipped"]
         failed = [name for name, gate in gates.items() if gate["status"] == "failed"]
         failed_gates = failed + unavailable
         quote_binding = (quote.get("project_id"), quote.get("quote_version"), quote.get("design_version"),
@@ -134,36 +149,54 @@ class VideoEvaluationService:
         return {"action": "retry", "repair_directive": directive, "request_fingerprint": fingerprint}, failed_gates
 
     def evaluate(self, artifact: Mapping[str, Any], design_shot: Mapping[str, Any], semantic_payload: Mapping[str, Any], *,
-                 allowance: Mapping[str, Any], quote: Mapping[str, Any], evaluation_id: str,
+                 binding: Mapping[str, Any], allowance: Mapping[str, Any], quote: Mapping[str, Any], evaluation_id: str,
                  evaluator: Mapping[str, Any]) -> dict[str, Any]:
-        measured = self.measure_clip(artifact, design_shot)
-        semantic = self.validate_semantic_evaluation(semantic_payload)
-        if measured["binding"] != semantic["binding"]:
-            semantic = {"binding": measured["binding"], "gates": {
-                name: {"status": "unavailable", "evidence": "semantic binding conflict"}
-                for name in SEMANTIC_GATES}}
+        trusted_binding = _binding(binding)
+        measured = self.measure_clip(artifact, design_shot, binding=trusted_binding)
+        try:
+            semantic = self.validate_semantic_evaluation(semantic_payload)
+            if semantic["binding"] != trusted_binding:
+                raise EvaluationContractError("semantic binding conflict")
+        except EvaluationContractError as exc:
+            reason = "semantic payload unavailable" if "binding" not in str(exc) else "semantic binding conflict"
+            semantic = {"binding": trusted_binding, "gates": {
+                name: {"status": "skipped", "evidence": reason} for name in SEMANTIC_GATES}}
         if not isinstance(evaluator, Mapping) or set(evaluator) != {"provider", "model", "evaluated_at"} \
                 or not all(isinstance(evaluator.get(name), str) and evaluator[name] for name in ("provider", "model", "evaluated_at")):
             raise EvaluationContractError("evaluator provenance is incomplete")
+        if evaluator["provider"] != "codex":
+            raise EvaluationContractError("semantic provider must be codex")
         try: parse_rfc3339(evaluator["evaluated_at"], label="evaluated_at")
         except ValueError as exc: raise EvaluationContractError("evaluator timestamp is invalid") from exc
         decision, failed = self._decision(measured["binding"], measured["gates"], semantic["gates"], allowance, quote)
-        probe = artifact.get("probe") if isinstance(artifact.get("probe"), Mapping) else {}
-        frames = artifact.get("frames") if isinstance(artifact.get("frames"), Mapping) else {}
         artifact_evidence = {name: copy.deepcopy(artifact.get(name)) for name in
                              ("path", "mime_type", "size_bytes", "sha256", "provenance")}
-        artifact_evidence["probe"] = {name: copy.deepcopy(probe.get(name)) for name in
+        artifact_evidence["probe"] = {name: measured["evidence"].get(name) for name in
                                       ("width", "height", "codec", "duration_seconds")}
-        artifact_evidence["frames"] = {name: copy.deepcopy(frames.get(name)) for name in
+        artifact_evidence["frames"] = {name: measured["evidence"].get(name) for name in
                                        ("readable", "start_anchor", "end_anchor")}
         receipt = {"schema_version": "1.0", "evaluation_id": evaluation_id,
                    "binding": measured["binding"], "artifact_evidence": artifact_evidence,
                    "measured_gates": measured["gates"], "semantic_gates": semantic["gates"],
-                   "failed_gates": failed, "decision": decision, "evaluator": copy.deepcopy(dict(evaluator))}
+                   "failed_gates": failed, "decision": decision,
+                   "evaluator": {**copy.deepcopy(dict(evaluator)), "trust_level": "untrusted"}}
         receipt["evaluation_fingerprint"] = canonical_fingerprint(receipt)
         try: validate_contract(receipt, "shot_evaluation.schema.json")
         except ValueError as exc: raise EvaluationContractError("evaluation receipt is invalid") from exc
         return receipt
+
+    def verify_receipt(self, receipt: Mapping[str, Any], *, artifact: Mapping[str, Any],
+                       design_shot: Mapping[str, Any], allowance: Mapping[str, Any],
+                       quote: Mapping[str, Any]) -> dict[str, Any]:
+        """Rebuild a receipt from current trusted media and compare every decision field."""
+        rebuilt = self.evaluate(artifact, design_shot,
+            {"binding": receipt.get("binding"), "gates": receipt.get("semantic_gates")},
+            binding=receipt.get("binding"), allowance=allowance, quote=quote,
+            evaluation_id=receipt.get("evaluation_id"), evaluator={name: receipt.get("evaluator", {}).get(name)
+                for name in ("provider", "model", "evaluated_at")})
+        if rebuilt != dict(receipt):
+            raise EvaluationContractError("evaluation receipt does not match trusted recomputation")
+        return rebuilt
 
 
 __all__ = ["EvaluationContractError", "VideoEvaluationService", "MEASURED_GATES", "SEMANTIC_GATES"]

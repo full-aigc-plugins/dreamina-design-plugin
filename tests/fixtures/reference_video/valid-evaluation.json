@@ -11,6 +11,6 @@
   },
   "failed_gates": [],
   "decision": {"action": "accepted"},
-  "evaluator": {"provider": "codex", "model": "test-model", "evaluated_at": "2026-09-14T02:00:00Z"},
-  "evaluation_fingerprint": "29a99b7fccb2685826b1947e285ad8d98e303a5845b96073b78761e63c300eab"
+  "evaluator": {"provider": "codex", "model": "test-model", "evaluated_at": "2026-09-14T02:00:00Z", "trust_level": "untrusted"},
+  "evaluation_fingerprint": "bce4e932424f37e54e36cc1345523d4f8b034234cbc26b61aa2d199a7611a827"
 }

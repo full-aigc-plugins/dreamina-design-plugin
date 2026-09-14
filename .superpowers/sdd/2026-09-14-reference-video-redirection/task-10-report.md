@@ -40,3 +40,14 @@
 - Final full regression: 532 tests passed in 17.035 seconds.
 - Python compilation, all-schema JSON parsing, shared contract validation, fixture fingerprint validation, distribution validation, secret-scan tests, and `git diff --check` passed.
 - All evidence remained synthetic/local; no network, real Dreamina, paid request, native production approval, release, or publication occurred.
+
+## Fix Round 2: Trusted Recalculation and Complete Manual Receipts
+
+- `VideoEvaluationService` now requires a media adapter, an explicit trusted binding, and fresh `probe_json` evidence. Caller-supplied artifact probe/frame claims are ignored; artifact bytes are re-read and hashed.
+- Missing/extra/wrong-domain semantic gates and artifact/design/semantic binding conflicts produce complete schema-valid `manual_review` receipts. Downstream unknown evidence is represented as bounded `skipped` gates instead of an exception or invented pass.
+- Evaluator provenance is closed to `provider=codex`, strict RFC3339 time, and `trust_level=untrusted`; semantic model output remains structurally separate from trusted measured gates.
+- `VideoBatchExecutor` accepts only the concrete production evaluation service, reloads the exact quote and allowance, re-verifies the content-addressed artifact, then calls `verify_receipt` to re-probe, rebuild every measured gate, re-derive retry availability, and compare the complete receipt before persistence.
+- Added regressions proving malformed semantics persist a full manual receipt without retry and that a forged accepted receipt with a freshly recomputed public SHA-256 cannot pass trusted recomputation or reach durable state.
+- RED evidence: the service had no trusted media-adapter/binding API; binding conflicts raised instead of returning manual receipts; and executor previously trusted a schema-valid public-hash receipt without media recomputation.
+- Final Task 10/9/8/7 focused regression: 188 tests passed in 0.898 seconds.
+- Final full regression: 536 tests passed in 21.438 seconds.
