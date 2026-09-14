@@ -147,6 +147,15 @@ class ReelBenchRoundFourTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_reelbench_evidence(changed)
 
+    def test_initial_seed_cannot_claim_zero_valued_parent(self):
+        from scripts.json_contracts import canonical_fingerprint
+        from scripts.reelbench_contracts import validate_reelbench_evidence
+        first = self.action()
+        first.update(parent_version='v000', parent_fingerprint='a' * 64)
+        first['evidence_fingerprint'] = canonical_fingerprint({k: v for k, v in first.items() if k != 'evidence_fingerprint'})
+        with self.assertRaises(ValueError):
+            validate_reelbench_evidence(first)
+
     def test_mutated_script_and_matching_lock_never_launch(self):
         for filename in ('video-shots.mjs', 'report.css', 'report.js'):
             with self.subTest(filename=filename):

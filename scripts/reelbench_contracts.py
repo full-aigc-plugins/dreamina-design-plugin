@@ -39,7 +39,7 @@ def validate_reelbench_evidence(receipt: Mapping[str, Any]) -> None:
         raise ContractValidationError("parent version and fingerprint must be paired")
     number = int(receipt['version'][1:])
     parent_number = int(receipt['parent_version'][1:]) if receipt['parent_version'] is not None else 0
-    if number < 1 or parent_number != number - 1:
+    if number < 1 or (receipt['parent_version'] is not None and parent_number < 1) or parent_number != number - 1:
         raise ContractValidationError('version must bind the immediately preceding parent; only initial seed has none')
     if receipt["parent_version"] is not None and int(receipt["parent_version"][1:]) >= int(receipt["version"][1:]):
         raise ContractValidationError("parent must precede child version")
