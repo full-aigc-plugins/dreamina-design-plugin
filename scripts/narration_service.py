@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import stat
@@ -373,24 +374,29 @@ class AudioPlanService:
         requested = set(preserve)
         if not requested <= AUDIO_CLASSES or len(requested) != len(preserve):
             raise AudioRightsError("preserved audio classes must be closed and unique")
-        if creative_mode == "original_redesign" and requested.intersection({"voice", "dialogue", "music"}):
+        if creative_mode == "original_redesign" and (source_rights is not None or requested.intersection({"voice", "dialogue", "music"})):
             raise AudioRightsError("original redesign cannot reuse source voice, dialogue, or music")
-        if audio_policy == "preserve_authorized_audio":
+        if audio_policy in {"preserve_authorized_audio", "subtitles_only"} and requested:
             allowed = set(source_rights.get("allowed_reuse", [])) if source_rights else set()
             if creative_mode != "authorized_replication" or not requested or requested != allowed:
                 raise AudioRightsError("rights receipt does not cover every requested audio class")
             self._verify_current_rights(
                 project_id=project_id,
                 design_fingerprint=design_fingerprint,
+                audio_policy=audio_policy,
                 source_rights=source_rights,
                 requested=requested,
             )
-        elif requested:
-            raise AudioRightsError("source audio reuse requires preserve_authorized_audio")
+        elif audio_policy == "preserve_authorized_audio":
+            raise AudioRightsError("preserve_authorized_audio requires at least one preserved class")
+        elif requested or source_rights is not None:
+            raise AudioRightsError("source audio reuse requires an authorized audio policy")
         if audio_policy == "full_redesign" and (not rewritten_script or narration is None):
             raise ValueError("full redesign requires a rewritten script and new narration")
-        if audio_policy in {"subtitles_only", "silent"} and (narration is not None or music is not None or effects):
+        if audio_policy == "silent" and (narration is not None or music is not None or effects):
             raise ValueError("subtitle-only or silent plans cannot invent audio")
+        if audio_policy == "subtitles_only" and not requested and (narration is not None or music is not None or effects):
+            raise ValueError("subtitle-only audio must be an explicitly authorized preserved source")
         narration_value = None
         if narration is not None:
             role = str(narration.get("artifact_role", ""))
@@ -398,14 +404,24 @@ class AudioPlanService:
             if audio_policy == "full_redesign" and not (narration_value["provider"] == "macos-say" or
                     (narration_value["provenance"]["source"] == "user_new_narration" and "voice" in narration_value["provenance"]["rights_declared"])):
                 raise AudioRightsError("full redesign narration must be trusted new narration")
+            if audio_policy == "subtitles_only" and narration_value["provider"] != "existing-audio":
+                raise AudioRightsError("subtitle-only mode cannot synthesize new narration")
         effects_value = [_require_artifact(item, role="effect", key_store=self._key_store, required_right="effects") for item in effects]
         subtitles_value = [_require_artifact(item, role=str(item.get("artifact_role", "")), key_store=self._key_store) for item in subtitles]
         music_value = None
         if music is not None:
             raw = dict(music)
             intent = {"loop": raw.pop("loop", False), "trim_to_seconds": raw.pop("trim_to_seconds", None)}
+            if not isinstance(intent["loop"], bool) or (
+                    intent["trim_to_seconds"] is not None and (
+                        isinstance(intent["trim_to_seconds"], bool)
+                        or not isinstance(intent["trim_to_seconds"], (int, float))
+                        or not math.isfinite(intent["trim_to_seconds"])
+                        or intent["trim_to_seconds"] <= 0
+                    )):
+                raise ValueError("music loop and trim intent must be closed and bounded")
             music_value = {**_require_artifact(raw, role="music", key_store=self._key_store, required_right="music"), "intent": intent}
-        if audio_policy == "preserve_authorized_audio":
+        if audio_policy in {"preserve_authorized_audio", "subtitles_only"} and requested:
             concrete = {}
             if narration_value is not None and narration_value["provider"] == "existing-audio":
                 for name in ("voice", "dialogue"):
@@ -442,7 +458,7 @@ class AudioPlanService:
         validate_contract(result, "audio_plan.schema.json")
         return result
 
-    def _verify_current_rights(self, *, project_id: str, design_fingerprint: str,
+    def _verify_current_rights(self, *, project_id: str, design_fingerprint: str, audio_policy: str,
                                source_rights: Mapping[str, Any], requested: set[str]) -> None:
         """Reload and validate the exact current design and rights receipt before reuse."""
         if self._project_store is None:
@@ -459,7 +475,7 @@ class AudioPlanService:
                 schema_name="video_rights_receipt.schema.json",
             )
             if (project["creative_mode"] != "authorized_replication"
-                    or project["audio_policy"] != "preserve_authorized_audio"
+                    or project["audio_policy"] != audio_policy
                     or design["creative_mode"] != "authorized_replication"
                     or design["rights_receipt_id"] != receipt_id
                     or canonical_fingerprint(receipt) != source_rights["receipt_fingerprint"]
@@ -468,9 +484,9 @@ class AudioPlanService:
             payload = design["payload"]
             from scripts.video_rights_service import VideoRightsService
 
-            rights = VideoRightsService(self._project_store, native_confirmer=None)
-            if self._now is not None:
-                rights._now = self._now
+            rights = (VideoRightsService(self._project_store, native_confirmer=None, now=self._now)
+                      if self._now is not None
+                      else VideoRightsService(self._project_store, native_confirmer=None))
             # Effects are governed by the receipt's audio media scope and the exact
             # signed artifact binding; the shared rights vocabulary has no effects token.
             rights.assert_scope(

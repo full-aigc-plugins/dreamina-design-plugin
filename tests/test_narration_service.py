@@ -50,13 +50,14 @@ class FakeKeyApproval:
 
 
 class StubRightsStore:
-    def __init__(self, receipt, design):
+    def __init__(self, receipt, design, audio_policy="preserve_authorized_audio"):
         self.receipt = receipt
         self.design = design
+        self.audio_policy = audio_policy
 
     def get(self, project_id):
         return {"project_id": project_id, "creative_mode": "authorized_replication",
-                "audio_policy": "preserve_authorized_audio"}
+                "audio_policy": self.audio_policy}
 
     def find_version_by_field(self, project_id, family, **kwargs):
         return self.receipt if family == "rights_receipt" else self.design
@@ -73,7 +74,8 @@ class NarrationServiceTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def _authorized_service(self, bindings, requested, *, expires_at="2027-09-14T00:00:00Z"):
+    def _authorized_service(self, bindings, requested, *, expires_at="2027-09-14T00:00:00Z",
+                            audio_policy="preserve_authorized_audio"):
         allowed_reuse = sorted(set(requested).difference({"effects"})) or ["audio_beats"]
         receipt = {
             "schema_version": "1.0", "version": "v001", "receipt_id": "rr_" + "5" * 24,
@@ -99,7 +101,7 @@ class NarrationServiceTests(unittest.TestCase):
             "allowed_reuse": sorted(requested), "artifact_bindings": bindings,
         }
         return AudioPlanService(
-            key_store=self.keys, project_store=StubRightsStore(receipt, design),
+            key_store=self.keys, project_store=StubRightsStore(receipt, design, audio_policy),
             now=lambda: "2026-09-14T01:00:00Z",
         ), source_rights
 
@@ -436,6 +438,51 @@ class NarrationServiceTests(unittest.TestCase):
             payload_fingerprint=canonical_fingerprint(first),
         )
         self.assertEqual(service.commit_plan(plan, indeterminate_commit=commit), first)
+
+    def test_subtitles_only_can_retain_exact_authorized_audio_or_use_silence(self) -> None:
+        track = self.root / "subtitle-music.wav"
+        track.write_bytes(b"subtitle-music")
+        music = ExistingAudioProvider([self.root], key_store=self.keys).accept(
+            track, expected_sha256=hashlib.sha256(track.read_bytes()).hexdigest(), rights={"music": True})
+        bindings = {"music": {"path": music["path"], "sha256": music["sha256"]}}
+        service, source_rights = self._authorized_service(
+            bindings, ["music"], audio_policy="subtitles_only")
+        common = dict(
+            project_id="vp_" + "1" * 24, design_fingerprint="2" * 64,
+            batch_fingerprint="3" * 64, creative_mode="authorized_replication",
+            audio_policy="subtitles_only", transcript=None,
+            rewritten_script=[{"start": 0, "end": 1, "text": "caption"}], narration=None,
+            effects=[], subtitles=[], target_duration_seconds=1,
+        )
+        retained = service.create_plan(
+            source_rights=source_rights, preserve=["music"],
+            music={**music, "loop": False, "trim_to_seconds": 1}, **common)
+        self.assertEqual(retained["preserve"], ["music"])
+        silence = AudioPlanService(key_store=self.keys).create_plan(
+            source_rights=None, preserve=[], music=None, **common)
+        self.assertIsNone(silence["music"])
+
+    def test_music_intent_and_original_source_rights_fail_closed(self) -> None:
+        track = self.root / "intent.wav"
+        track.write_bytes(b"intent")
+        music = ExistingAudioProvider([self.root], key_store=self.keys).accept(
+            track, expected_sha256=hashlib.sha256(track.read_bytes()).hexdigest(), rights={"music": True})
+        bindings = {"music": {"path": music["path"], "sha256": music["sha256"]}}
+        service, source_rights = self._authorized_service(bindings, ["music"])
+        base = dict(
+            project_id="vp_" + "1" * 24, design_fingerprint="2" * 64,
+            batch_fingerprint="3" * 64, creative_mode="authorized_replication",
+            audio_policy="preserve_authorized_audio", source_rights=source_rights,
+            transcript=None, rewritten_script=[], narration=None, effects=[], subtitles=[],
+            target_duration_seconds=1, preserve=["music"],
+        )
+        for intent in ({"loop": "yes", "trim_to_seconds": 1}, {"loop": False, "trim_to_seconds": -1}):
+            with self.subTest(intent=intent), self.assertRaises(ValueError):
+                service.create_plan(music={**music, **intent}, **base)
+        with self.assertRaises(AudioRightsError):
+            AudioPlanService(key_store=self.keys).create_plan(
+                **{**base, "creative_mode": "original_redesign", "audio_policy": "subtitles_only",
+                   "music": None, "preserve": []})
 
     def test_full_redesign_is_default_and_silent_allows_optional_subtitles(self) -> None:
         narration = MacOSSayProvider(
