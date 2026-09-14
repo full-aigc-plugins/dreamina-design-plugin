@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+from pathlib import Path
 import unittest
 
 from scripts.json_contracts import canonical_fingerprint
@@ -17,7 +19,7 @@ def evidence(action: str = "validate") -> dict[str, object]:
         for name in REELBENCH_VALIDATE_GATES
     ] if action == "validate" else []
     receipt: dict[str, object] = {
-        "schema_version": "1.0", "version": "v001", "parent_version": None, "parent_fingerprint": None,
+        "schema_version": "1.1", "version": "v001", "parent_version": None, "parent_fingerprint": None,
         "project_id": "vp_" + "1" * 24, "source_receipt_version": "v001",
         "source_sha256": "2" * 64, "action": action,
         "upstream": {"source": "https://github.com/eternityspring/reelbench-skills.git", "revision": "18f2f63987337df0975a89973d38d50f3231ee31", "lock_fingerprint": "3" * 64},
@@ -26,15 +28,24 @@ def evidence(action: str = "validate") -> dict[str, object]:
         "artifacts": [{"path": "reelbench/v001/report.md", "size_bytes": 1, "mime_type": "text/markdown", "sha256": "6" * 64}],
         "created_at": "2026-09-15T00:00:00Z", "committed_at": "2026-09-15T00:00:01Z",
     }
+    if action != "seed":
+        receipt.update(version="v003", parent_version="v002", parent_fingerprint="9" * 64)
+    receipt["shots"] = {"sha256": "6" * 64, "ids": ["S01"]}
+    scripts = Path(__file__).resolve().parents[1] / "skills/dreamina-video-shots/scripts"
+    receipt["script_manifest"] = [{"path": "script/" + name, "size_bytes": (scripts / name).stat().st_size,
+                                   "sha256": hashlib.sha256((scripts / name).read_bytes()).hexdigest()}
+                                  for name in ("video-shots.mjs", "report.css", "report.js")]
     arguments = {
         "seed": ["source/" + "2" * 64, "--threshold", "0.30", "--min", "0.30", "--track", "output/track.json", "--title", "Reference"],
         "validate": ["inputs/shots.json", "--track", "inputs/track.json", "--frames", "inputs/frames", "--lang", "en"],
     }.get(action, [])
     if action in {"seed", "evidence", "validate", "render"}:
         template = receipt["tool_identities"][0]
-        receipt["tool_identities"] = [{**template, "kind": kind, "source_path": f"/trusted/{kind}"} for kind in ("node", "ffmpeg", "ffprobe")]
+        receipt["tool_identities"] = [{**template, "kind": kind, "mode": 0o500,
+            "source_path": "tools/node" if kind == "node" else f"tools/bin/{kind}"} for kind in ("node", "ffmpeg", "ffprobe")]
     receipt["commands"] = [{"action": action, "argv": ["tools/node", "script/video-shots.mjs", action, *arguments],
-                            "returncode": 0, "tool_identities": receipt["tool_identities"]}]
+                            "returncode": 0, "tool_identities": receipt["tool_identities"],
+                            "script_manifest": receipt["script_manifest"]}]
     if action == "seed":
         receipt["artifacts"] = [{"path": f"reelbench/v001/{name}", "size_bytes": 1,
                                 "mime_type": "application/json", "sha256": "6" * 64} for name in ("shots.json", "track.json")]
@@ -43,6 +54,14 @@ def evidence(action: str = "validate") -> dict[str, object]:
     receipt["consumed_artifacts"] = [{"version": "v001", "receipt_fingerprint": "7" * 64,
         "path": "source/source.mp4", "workspace_path": "source/" + "2" * 64,
         "sha256": "2" * 64, "size_bytes": 1}]
+    if action in {"evidence", "validate", "render"}:
+        receipt["consumed_artifacts"] += [{"version": "v001", "receipt_fingerprint": "8" * 64,
+            "path": f"reelbench/v001/{name}", "workspace_path": "inputs/" + name,
+            "sha256": "6" * 64, "size_bytes": 1} for name in ("shots.json", "track.json")]
+    if action in {"validate", "render"}:
+        receipt["consumed_artifacts"] += [{"version": "v002", "receipt_fingerprint": "9" * 64,
+            "path": f"reelbench/v002/frames/S01{pick}.jpg", "workspace_path": f"inputs/frames/S01{pick}.jpg",
+            "sha256": "6" * 64, "size_bytes": 1} for pick in ("a", "b")]
     receipt["argv_fingerprint"] = canonical_fingerprint({"commands": receipt["commands"]})
     receipt["evidence_fingerprint"] = canonical_fingerprint(receipt)
     return receipt

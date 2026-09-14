@@ -8,7 +8,7 @@ import signal
 import subprocess
 import time
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Callable, Sequence
 
 
 class BoundedProcessError(RuntimeError):
@@ -30,7 +30,7 @@ class BoundedProcessResult:
     stderr: str
 
 
-def run_bounded(argv: Sequence[str], *, env: dict[str, str], timeout_seconds: float, stdout_cap: int, stderr_cap: int, pass_fds: Sequence[int] = ()) -> BoundedProcessResult:
+def run_bounded(argv: Sequence[str], *, env: dict[str, str], timeout_seconds: float, stdout_cap: int, stderr_cap: int, pass_fds: Sequence[int] = (), monitor: Callable[[], None] | None = None) -> BoundedProcessResult:
     """Read both pipes incrementally; limits count bytes and include child lifetime.
 
     The process group is owned by this call, including descendants whose leader
@@ -43,6 +43,8 @@ def run_bounded(argv: Sequence[str], *, env: dict[str, str], timeout_seconds: fl
     if any(type(cap) is not int or cap < 0 for cap in (stdout_cap, stderr_cap)):
         raise BoundedProcessError("output caps must be nonnegative byte counts")
     deadline = time.monotonic() + timeout_seconds
+    if monitor is not None:
+        monitor()
     process = subprocess.Popen(list(argv), shell=False, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, close_fds=True, pass_fds=tuple(pass_fds))
     selector = None
     try:
@@ -53,10 +55,12 @@ def run_bounded(argv: Sequence[str], *, env: dict[str, str], timeout_seconds: fl
             os.set_blocking(stream.fileno(), False)
             selector.register(stream, selectors.EVENT_READ, index)
         while selector.get_map():
+            if monitor is not None:
+                monitor()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise BoundedProcessTimeout("process timed out")
-            for key, _ in selector.select(remaining):
+            for key, _ in selector.select(min(remaining, 0.02) if monitor is not None else remaining):
                 index = key.data
                 # Read at most one byte past the cap, never accumulate excess.
                 chunk = os.read(key.fd, min(65536, caps[index] - len(buffers[index]) + 1))
@@ -66,10 +70,18 @@ def run_bounded(argv: Sequence[str], *, env: dict[str, str], timeout_seconds: fl
                     raise BoundedProcessOutput("process output exceeded cap")
                 else:
                     buffers[index].extend(chunk)
-        try:
-            process.wait(timeout=max(0, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired as exc:
-            raise BoundedProcessTimeout("process timed out") from exc
+        while process.poll() is None:
+            if monitor is not None:
+                monitor()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise BoundedProcessTimeout("process timed out")
+            try:
+                process.wait(timeout=min(remaining, 0.02) if monitor is not None else remaining)
+            except subprocess.TimeoutExpired:
+                continue
+        if monitor is not None:
+            monitor()
         return BoundedProcessResult(process.returncode, *(buffer.decode("utf-8", errors="replace") for buffer in buffers))
     finally:
         # Kill even when poll() says the leader exited: its children can remain.

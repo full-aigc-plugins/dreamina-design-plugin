@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import sys
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
@@ -11,6 +12,43 @@ DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_FILES = 256
 MAX_TREE_BYTES = 256 * 1024 * 1024
+MAX_WORKSPACE_FILES = 512
+
+
+class WorkspaceQuotaError(ValueError):
+    """The private workspace exhausted its aggregate byte or entry budget."""
+
+
+def check_quota(root, reserve=0, reserve_files=0):
+    """Measure current entries without loading file contents into memory."""
+    count = 0
+    total = reserve
+    directories = 0
+    def visit(fd, depth):
+        nonlocal count, total, directories
+        if depth > 5:
+            raise WorkspaceQuotaError('workspace depth quota exceeded')
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode):
+                    directories += 1
+                    if directories > 64:
+                        raise WorkspaceQuotaError('workspace directory quota exceeded')
+                    with directory(fd, entry.name) as child:
+                        visit(child, depth + 1)
+                elif stat.S_ISREG(info.st_mode):
+                    count += 1
+                    total += info.st_size
+                    if count > MAX_WORKSPACE_FILES or total > MAX_TREE_BYTES:
+                        raise WorkspaceQuotaError('workspace aggregate quota exceeded')
+                else:
+                    raise WorkspaceQuotaError('workspace contains unsafe entry')
+    with directory(root) as fd:
+        visit(fd, 0)
+    if total > MAX_TREE_BYTES or count + reserve_files > MAX_WORKSPACE_FILES:
+        raise WorkspaceQuotaError('workspace aggregate quota exceeded')
+    return total, count
 
 
 def components(value):
@@ -21,35 +59,59 @@ def components(value):
     return path.parts
 
 
+def _close_owned(owned):
+    """Close all descriptors even when ownership-transfer cleanup raises."""
+    primary = sys.exc_info()[1]
+    first = None
+    for descriptor in reversed(owned):
+        try:
+            os.close(descriptor)
+        except BaseException as exc:
+            if first is None:
+                first = exc
+            # An injected/pre-close failure can leave the descriptor open.
+            # No new descriptor is opened during this cleanup.
+            try:
+                os.close(descriptor)
+            except BaseException:
+                pass
+    owned.clear()
+    if primary is None and first is not None:
+        raise first
+
+
 @contextmanager
 def directory(root, relative=None):
-    fd = os.dup(root)
+    owned = [os.dup(root)]
     try:
         if relative is not None:
             for part in components(relative):
-                child = os.open(part, DIRECTORY, dir_fd=fd)
-                os.close(fd)
-                fd = child
-        yield fd
+                child = os.open(part, DIRECTORY, dir_fd=owned[-1])
+                owned.append(child)
+                previous = owned[-2]
+                os.close(previous)
+                owned.remove(previous)
+        yield owned[-1]
     finally:
-        os.close(fd)
+        _close_owned(owned)
 
 
 def open_absolute(path):
-    """Pin every ancestor without following a replaceable directory symlink."""
+    """Pin every ancestor; newly opened handles immediately have an owner."""
     path = Path(path)
     if not path.is_absolute():
         raise ValueError('absolute root required')
-    fd = os.open('/', DIRECTORY)
+    owned = [os.open('/', DIRECTORY)]
     try:
         for part in path.parts[1:]:
-            child = os.open(part, DIRECTORY, dir_fd=fd)
-            os.close(fd)
-            fd = child
-        return fd
-    except BaseException:
-        os.close(fd)
-        raise
+            child = os.open(part, DIRECTORY, dir_fd=owned[-1])
+            owned.append(child)
+            previous = owned[-2]
+            os.close(previous)
+            owned.remove(previous)
+        return owned.pop()
+    finally:
+        _close_owned(owned)
 
 
 @contextmanager
@@ -63,29 +125,28 @@ def file_at(root, name):
                 raise ValueError('unsafe file type or owner')
             yield fd
         finally:
-            os.close(fd)
+            _close_owned([fd])
 
 
 def mkdir(root, name):
-    parts = components(name)
-    with directory(root) as initial:
-        current = os.dup(initial)
-        try:
-            for part in parts:
-                try:
-                    os.mkdir(part, 0o700, dir_fd=current)
-                    os.fsync(current)
-                except FileExistsError:
-                    pass
-                child = os.open(part, DIRECTORY, dir_fd=current)
-                info = os.fstat(child)
-                if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
-                    os.close(child)
-                    raise ValueError('workspace directory is not private')
-                os.close(current)
-                current = child
-        finally:
-            os.close(current)
+    owned = [os.dup(root)]
+    try:
+        for part in components(name):
+            try:
+                os.mkdir(part, 0o700, dir_fd=owned[-1])
+                os.fsync(owned[-1])
+            except FileExistsError:
+                pass
+            child = os.open(part, DIRECTORY, dir_fd=owned[-1])
+            owned.append(child)
+            info = os.fstat(child)
+            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                raise ValueError('workspace directory is not private')
+            previous = owned[-2]
+            os.close(previous)
+            owned.remove(previous)
+    finally:
+        _close_owned(owned)
 
 
 def identity(info):
@@ -109,7 +170,9 @@ def read(root, name, maximum=MAX_FILE_BYTES):
         return b''.join(chunks)
 
 
-def write(root, name, payload, mode=0o600):
+def write(root, name, payload, mode=0o600, *, quota=False):
+    if quota:
+        check_quota(root, reserve=len(payload), reserve_files=1)
     parts = components(name)
     if len(parts) > 1:
         mkdir(root, '/'.join(parts[:-1]))
@@ -124,11 +187,11 @@ def write(root, name, payload, mode=0o600):
                 view = view[count:]
             os.fsync(fd)
         finally:
-            os.close(fd)
+            _close_owned([fd])
         os.fsync(parent)
 
 
-def copy(root, name, destination, target, *, maximum, expected=None, mode=0o600):
+def copy(root, name, destination, target, *, maximum, expected=None, mode=0o600, quota=False):
     """Stream the exact opened bytes; never re-open a verified source pathname."""
     parts = components(target)
     if len(parts) > 1:
@@ -137,6 +200,8 @@ def copy(root, name, destination, target, *, maximum, expected=None, mode=0o600)
         before = os.fstat(source)
         if before.st_size < 1 or before.st_size > maximum:
             raise ValueError('input file size exceeds preventive bound')
+        if quota:
+            check_quota(destination, reserve=before.st_size, reserve_files=1)
         out = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=parent)
         digest = hashlib.sha256()
         total = 0
@@ -160,7 +225,7 @@ def copy(root, name, destination, target, *, maximum, expected=None, mode=0o600)
             os.fsync(out)
             result_info = os.fstat(out)
         finally:
-            os.close(out)
+            _close_owned([out])
         os.fsync(parent)
         return record, result_info
 
@@ -211,14 +276,21 @@ def inventory(root, relative=None, *, maximum=MAX_FILES, max_bytes=MAX_TREE_BYTE
     return result
 
 
-def remove_tree(root, name):
+def remove_tree(root, name, *, expected=None):
     """Remove only descendants of the already pinned parent, without symlink traversal."""
     with directory(root, name) as fd:
+        info = os.fstat(fd)
+        identity = {"device": info.st_dev, "inode": info.st_ino}
+        if expected is not None and expected != identity:
+            raise ValueError("cleanup directory identity changed")
         for entry in os.listdir(fd):
             info = os.stat(entry, dir_fd=fd, follow_symlinks=False)
             if stat.S_ISDIR(info.st_mode):
                 remove_tree(fd, entry)
             else:
                 os.unlink(entry, dir_fd=fd)
+    current = os.stat(name, dir_fd=root, follow_symlinks=False)
+    if {"device": current.st_dev, "inode": current.st_ino} != identity:
+        raise ValueError("cleanup directory identity changed")
     os.rmdir(name, dir_fd=root)
     os.fsync(root)

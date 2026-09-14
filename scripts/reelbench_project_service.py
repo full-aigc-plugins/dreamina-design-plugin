@@ -9,6 +9,8 @@ import re
 import secrets
 import stat
 import fcntl
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,7 @@ from scripts.json_contracts import canonical_fingerprint, validate_contract
 from scripts.reelbench_adapter import ReelBenchAdapter
 from scripts.reelbench_contracts import validate_reelbench_evidence
 from scripts.video_project_store import VersionCommitIndeterminateError, VideoProjectStore
+from scripts.reelbench_operation import OperationJournal
 
 # Two frames per shot plus ceil(shots / 25) sheets per pick fit 256 artifacts.
 MAX_SHOTS = 120
@@ -27,6 +30,12 @@ MAX_DOCUMENT_BYTES = ws.MAX_FILE_BYTES
 MAX_REPORT_BYTES = 4 * 1024 * 1024
 _VERSION = re.compile(r"v[0-9]{3,}")
 _MIME = {".json": "application/json", ".md": "text/markdown", ".html": "text/html", ".jpg": "image/jpeg"}
+_LOCKS_GUARD = threading.Lock()
+_STORE_LOCKS = {}
+
+
+class ReelBenchProjectIdentityError(ValueError):
+    """The project entry no longer names the locked project inode."""
 
 
 class ReelBenchProjectService:
@@ -42,20 +51,53 @@ class ReelBenchProjectService:
             raise ValueError("unsupported ReelBench action")
         self._version(expected_parent, nullable=True)
         self._version(source_receipt_version)
-        root = self._store.project_root(project_id)
-        descriptor = ws.open_absolute(root)
-        try:
-            info = os.fstat(descriptor)
-            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
-                raise ValueError("project root must be private")
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
-            return self._execute(descriptor, root, project_id, action, expected_parent,
-                                 source_receipt_version, options)
-        finally:
-            # Closing the inode handle releases its lock even if cleanup raises.
-            os.close(descriptor)
+        with self._locked_project(project_id) as (store_fd, descriptor, root):
+            guard = lambda: self._assert_project(store_fd, descriptor, project_id)
+            journal = OperationJournal(store_fd, descriptor, project_id, root)
+            journal.recover(self, guard)
+            result = self._execute(descriptor, root, project_id, action, expected_parent,
+                                   source_receipt_version, options, guard, journal)
+            try:
+                guard()
+            except BaseException as exc:
+                raise VersionCommitIndeterminateError(project_id=project_id, family="reelbench_evidence",
+                    version=result["version"], path=root / "reelbench_evidence" / f"{result['version']}.json",
+                    payload_fingerprint=canonical_fingerprint(result)) from exc
+            return result
 
-    def _execute(self, project_fd, root, project_id, action, parent, source_version, options):
+    @contextmanager
+    def _locked_project(self, project_id):
+        self._store._validate_project_id(project_id)
+        store_fd = ws.open_absolute(self._store._root)
+        owned = [store_fd]
+        try:
+            identity = self._directory_identity(os.fstat(store_fd))
+            with _LOCKS_GUARD:
+                lock = _STORE_LOCKS.setdefault(identity, threading.RLock())
+            with lock:
+                # Keep the stable store inode locked throughout the action. This
+                # deliberately serializes this store, including replacement writers.
+                fcntl.flock(store_fd, fcntl.LOCK_EX)
+                descriptor = os.open(project_id, ws.DIRECTORY, dir_fd=store_fd)
+                owned.append(descriptor)
+                info = os.fstat(descriptor)
+                if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                    raise ValueError("project root must be private")
+                self._assert_project(store_fd, descriptor, project_id)
+                yield store_fd, descriptor, self._store._root / project_id
+        finally:
+            ws._close_owned(owned)
+
+    @classmethod
+    def _assert_project(cls, store_fd, project_fd, project_id):
+        try:
+            entry = os.stat(project_id, dir_fd=store_fd, follow_symlinks=False)
+            if cls._directory_identity(entry) != cls._directory_identity(os.fstat(project_fd)):
+                raise ReelBenchProjectIdentityError("project entry identity changed")
+        except OSError as exc:
+            raise ReelBenchProjectIdentityError("project entry identity changed") from exc
+
+    def _execute(self, project_fd, root, project_id, action, parent, source_version, options, guard, journal):
         source = self._read_version(project_fd, "source_receipt", source_version)
         validate_contract(source, "source_receipt.schema.json")
         if source["project_id"] != project_id:
@@ -68,6 +110,8 @@ class ReelBenchProjectService:
             raise ValueError("expected parent does not match latest ReelBench evidence version")
         version = f"v{int(latest[1:]) + 1 if latest else 1:03d}"
         lineage = self._lineage(project_fd, project_id, parent, source)
+        if action == "seed" and parent is not None:
+            raise ValueError("seed must have no parent; create a new project to seed again")
         allowed = {"seed": {"threshold", "title"}, "evidence": set(), "validate": set(), "render": {"mode"}}[action]
         if set(options) - allowed:
             raise ValueError("unsupported ReelBench action options")
@@ -84,6 +128,9 @@ class ReelBenchProjectService:
         error = None
         try:
             work = os.open(name, ws.DIRECTORY, dir_fd=project_fd)
+            marker = journal.create(work, name, action=action, version=version, parent=parent,
+                parent_fingerprint=lineage[0]["evidence_fingerprint"] if lineage else None, source=source)
+            os.fsync(project_fd)
             source_relative = Path(source["staged_path"]).relative_to(root).as_posix()
             if not source_relative.startswith("source/"):
                 raise ValueError("source receipt escaped project source")
@@ -94,7 +141,7 @@ class ReelBenchProjectService:
                     raise ValueError("source is not private")
                 source_identity = ws.identity(info)
             ws.copy(project_fd, source_relative, work, source_name, maximum=MAX_SOURCE_BYTES,
-                    expected={"sha256": source["source_sha256"], "size_bytes": source["size_bytes"]}, mode=0o400)
+                    expected={"sha256": source["source_sha256"], "size_bytes": source["size_bytes"]}, mode=0o400, quota=True)
             consumed = [{"version": source_version, "receipt_fingerprint": canonical_fingerprint(source),
                 "path": source_relative, "workspace_path": source_name, "sha256": source["source_sha256"],
                 "size_bytes": source["size_bytes"]}]
@@ -116,7 +163,7 @@ class ReelBenchProjectService:
                 for relative, (receipt, artifact) in selected.items():
                     target = "inputs/" + relative
                     ws.copy(project_fd, artifact["path"], work, target, maximum=MAX_DOCUMENT_BYTES,
-                            expected=artifact, mode=0o400)
+                            expected=artifact, mode=0o400, quota=True)
                     consumed.append({"version": receipt["version"], "receipt_fingerprint": receipt["evidence_fingerprint"],
                         "path": artifact["path"], "workspace_path": target,
                         "sha256": artifact["sha256"], "size_bytes": artifact["size_bytes"]})
@@ -134,14 +181,17 @@ class ReelBenchProjectService:
                     copied = self._digest(work, entry["workspace_path"], MAX_SOURCE_BYTES)
                     if copied != {k: entry[k] for k in ("sha256", "size_bytes")}:
                         raise ValueError("consumed artifact changed during execution")
+                guard()
                 ws.mkdir(project_fd, "reelbench")
                 with ws.directory(project_fd, "reelbench") as family:
                     os.mkdir(version, 0o700, dir_fd=family)
                     output_created = True
                     output_fd = os.open(version, ws.DIRECTORY, dir_fd=family)
                     os.fsync(family)
+                    journal.bind_output(work, marker, output_fd)
                 artifacts = []
                 for relative, expected in sorted(generated.items()):
+                    guard()
                     target = f"reelbench/{version}/{relative}"
                     ws.copy(work, "output/" + relative, output_fd, relative,
                             maximum=MAX_DOCUMENT_BYTES, expected=expected)
@@ -151,14 +201,21 @@ class ReelBenchProjectService:
                     if self._directory_identity(os.fstat(check)) != self._directory_identity(os.fstat(output_fd)):
                         raise ValueError("artifact publication directory identity changed")
                 os.fsync(project_fd)
-                receipt = self._receipt(project_id, version, parent, source, lineage, action, results, artifacts, consumed)
+                shots_path = "output/shots.json" if action == "seed" else "inputs/shots.json"
+                shots_bytes = ws.read(work, shots_path)
+                shots = {"sha256": hashlib.sha256(shots_bytes).hexdigest(),
+                         "ids": [item["id"] for item in self._shots(shots_bytes)["shots"]]}
+                receipt = self._receipt(project_id, version, parent, source, lineage, action, results, artifacts, consumed, shots)
                 validate_reelbench_evidence(receipt)
+                journal.bind_receipt(work, marker, receipt)
                 error = VersionCommitIndeterminateError(project_id=project_id, family="reelbench_evidence",
                     version=version, path=root / "reelbench_evidence" / f"{version}.json",
                     payload_fingerprint=canonical_fingerprint(receipt))
                 try:
+                    guard()
                     persisted = self._store.write_version(project_id, "reelbench_evidence", receipt,
-                        schema_name="reelbench_evidence.schema.json", version=version, project_fd=project_fd)
+                        schema_name="reelbench_evidence.schema.json", version=version, project_fd=project_fd,
+                        publication_guard=guard)
                 except VersionCommitIndeterminateError:
                     published = True
                     raise
@@ -182,6 +239,7 @@ class ReelBenchProjectService:
                 published = True
                 try:
                     validate_reelbench_evidence(persisted)
+                    guard()
                 except BaseException as exc:
                     raise error from exc
                 return persisted
@@ -226,7 +284,7 @@ class ReelBenchProjectService:
             result = self._adapter.seed(source=source, shots=out / "shots.json", track=out / "track.json",
                 threshold=options.get("threshold", 0.3), title=options.get("title", "Reference"))
             document = self._shots(result.stdout.encode())
-            ws.write(work, "output/shots.json", result.stdout.encode())
+            ws.write(work, "output/shots.json", result.stdout.encode(), quota=True)
             self._json(ws.read(work, "output/track.json"))
             return [result]
         shots = base / "inputs/shots.json"
@@ -256,12 +314,12 @@ class ReelBenchProjectService:
                 raise ValueError("report player source is not complete")
             url = "../../" + quote(source_relative, safe="/")
             payload = payload.replace(marker, f' src="{url}"'.encode(), 1)
-        ws.write(work, f"output/report.{mode}", payload)
+        ws.write(work, f"output/report.{mode}", payload, quota=True)
         # Offline reports must retain their relative frame references after publishing.
         if mode == "html":
             for name, expected in ws.inventory(work, "inputs/frames").items():
                 ws.copy(work, "inputs/frames/" + name, work, "output/inputs/frames/" + name,
-                        maximum=MAX_DOCUMENT_BYTES, expected=expected)
+                        maximum=MAX_DOCUMENT_BYTES, expected=expected, quota=True)
         return [result]
 
     def _complete(self, work, action, generated, options):
@@ -304,25 +362,37 @@ class ReelBenchProjectService:
                 expected[artifact["path"][len(prefix):]] = {k: artifact[k] for k in ("sha256", "size_bytes")}
             if observed != expected:
                 raise ValueError("ancestor artifact inventory or digest mismatch")
+            if receipt["action"] == "seed":
+                shots_artifact = next(a for a in receipt["artifacts"] if a["path"].endswith("/shots.json"))
+            else:
+                shots_artifact = next(a for a in receipt["consumed_artifacts"] if a["workspace_path"] == "inputs/shots.json")
+            shots_bytes = ws.read(fd, shots_artifact["path"])
+            if hashlib.sha256(shots_bytes).hexdigest() != receipt["shots"]["sha256"]:
+                raise ValueError("ancestor shots artifact digest mismatch")
+            parsed = {"sha256": hashlib.sha256(shots_bytes).hexdigest(),
+                      "ids": [shot["id"] for shot in self._shots(shots_bytes)["shots"]]}
+            if parsed != receipt["shots"]:
+                raise ValueError("ancestor parsed shots identity mismatch")
             receipts.append(receipt)
             expected_fingerprint = receipt["parent_fingerprint"]
             current = receipt["parent_version"]
         return receipts
 
-    def _receipt(self, project_id, version, parent, source, lineage, action, results, artifacts, consumed):
+    def _receipt(self, project_id, version, parent, source, lineage, action, results, artifacts, consumed, shots):
         lock_root = ws.open_absolute(self._adapter._shots_script.parents[3] / "upstream")
         try:
             lock_bytes = ws.read(lock_root, "reelbench.lock.json")
         finally:
             os.close(lock_root)
         commands = [{"action": result.action, "argv": result.argv, "returncode": result.returncode,
-                     "tool_identities": list(result.tool_identities)} for result in results]
-        receipt = {"schema_version": "1.0", "version": version, "parent_version": parent,
+                     "tool_identities": list(result.tool_identities), "script_manifest": list(result.script_manifest)} for result in results]
+        receipt = {"schema_version": "1.1", "version": version, "parent_version": parent,
             "parent_fingerprint": lineage[0]["evidence_fingerprint"] if lineage else None,
             "project_id": project_id, "source_receipt_version": source["version"], "source_sha256": source["source_sha256"],
             "action": action, "upstream": {"source": "https://github.com/eternityspring/reelbench-skills.git",
                 "revision": "18f2f63987337df0975a89973d38d50f3231ee31", "lock_fingerprint": hashlib.sha256(lock_bytes).hexdigest()},
             "tool_identities": list(results[0].tool_identities), "commands": commands, "consumed_artifacts": consumed,
+            "script_manifest": list(results[0].script_manifest), "shots": shots,
             "argv_fingerprint": canonical_fingerprint({"commands": commands}),
             "gates": list(results[0].gates), "artifacts": artifacts,
             "created_at": _now(), "committed_at": _now()}
@@ -332,17 +402,15 @@ class ReelBenchProjectService:
     def reconcile_indeterminate(self, error):
         if error.family != "reelbench_evidence":
             raise ValueError("indeterminate error is not ReelBench evidence")
-        receipt = self._store.reconcile_version(error.project_id, error.family, error.version,
-            error.payload_fingerprint, "reelbench_evidence.schema.json")
-        validate_reelbench_evidence(receipt)
-        descriptor = ws.open_absolute(self._store.project_root(error.project_id))
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        with self._locked_project(error.project_id) as (store_fd, descriptor, _root):
+            receipt = self._read_version(descriptor, error.family, error.version)
+            if canonical_fingerprint(receipt) != error.payload_fingerprint:
+                raise ValueError("indeterminate receipt fingerprint mismatch")
+            validate_reelbench_evidence(receipt)
             source = self._read_version(descriptor, "source_receipt", receipt["source_receipt_version"])
             self._lineage(descriptor, error.project_id, receipt["version"], source)
-        finally:
-            os.close(descriptor)
-        return receipt
+            self._assert_project(store_fd, descriptor, error.project_id)
+            return receipt
 
     @staticmethod
     def _read_version(fd, family, version):

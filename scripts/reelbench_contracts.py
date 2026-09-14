@@ -13,6 +13,13 @@ REELBENCH_VALIDATE_GATES = (
 )
 _SYNC_VERIFY_GATES = frozenset({"duration", "dimensions", "codec", "audio_policy", "cut_alignment", "sampled_correspondence"})
 _EARLY_ACTIONS = frozenset({"seed", "evidence", "render", "plan", "panels", "export"})
+# Evidence schema 1.1 is tied to the reviewed upstream revision. These are its
+# exact executable/report assets, independently of mutable receipt claims.
+_PINNED_SHOTS_SCRIPTS = {
+    "script/video-shots.mjs": ("c49963d11b34bf561355ed3896e76ee0aeda7c3c1433733ee2ff27f291bdcb22", 77449),
+    "script/report.css": ("41e278aa9dca66ec12e30411e04411691151405ae779db1710c4c85a4835c52e", 33842),
+    "script/report.js": ("94e888c99c0a08d62a62301b54fe9d6ae950bdfe1a9c80ea4e6ee94630ee5d23", 20988),
+}
 
 
 def validate_reelbench_evidence(receipt: Mapping[str, Any]) -> None:
@@ -26,6 +33,10 @@ def validate_reelbench_evidence(receipt: Mapping[str, Any]) -> None:
     names = [gate["name"] for gate in gates]
     if len(names) != len(set(names)): raise ContractValidationError("ReelBench gate names must be unique")
     action = receipt["action"]
+    if action == "seed" and receipt["parent_version"] is not None:
+        raise ContractValidationError("seed must not have a parent")
+    if action != "seed" and receipt["parent_version"] is None:
+        raise ContractValidationError("non-seed actions require exact parent version and fingerprint")
     if (receipt["parent_version"] is None) != (receipt["parent_fingerprint"] is None):
         raise ContractValidationError("parent version and fingerprint must be paired")
     if receipt["parent_version"] is not None and int(receipt["parent_version"][1:]) >= int(receipt["version"][1:]):
@@ -43,6 +54,8 @@ def validate_reelbench_evidence(receipt: Mapping[str, Any]) -> None:
             raise ContractValidationError("command must use exact workspace entrypoint")
         if command["tool_identities"] != receipt["tool_identities"]:
             raise ContractValidationError("command tool identity mismatch")
+        if command["script_manifest"] != receipt["script_manifest"]:
+            raise ContractValidationError("command script manifest mismatch")
         if command["returncode"] != 0 and action != "validate":
             raise ContractValidationError("failed command cannot publish successful artifacts")
     if action == "evidence":
@@ -99,6 +112,31 @@ def _assert_shots_commands(receipt):
     if {item["kind"] for item in receipt["tool_identities"]} != {"node", "ffmpeg", "ffprobe"}:
         raise ContractValidationError("shot actions require exact node, ffmpeg, and ffprobe identities")
     source = "source/" + receipt["source_sha256"]
+    tool_paths = {"node": "tools/node", "ffmpeg": "tools/bin/ffmpeg", "ffprobe": "tools/bin/ffprobe"}
+    if any(item["source_path"] != tool_paths[item["kind"]] or item["mode"] != 0o500 for item in receipt["tool_identities"]):
+        raise ContractValidationError("tool identities must describe exact staged paths and mode")
+    scripts = [item["path"] for item in receipt["script_manifest"]]
+    if len(scripts) != 3 or set(scripts) != {"script/video-shots.mjs", "script/report.css", "script/report.js"}:
+        raise ContractValidationError("complete pinned script and report asset manifest required")
+    if any((item["sha256"], item["size_bytes"]) != _PINNED_SHOTS_SCRIPTS[item["path"]] for item in receipt["script_manifest"]):
+        raise ContractValidationError("script manifest differs from the pinned upstream program")
+    ids = receipt["shots"]["ids"]
+    if ids != [f"S{index:02d}" for index in range(1, len(ids) + 1)]:
+        raise ContractValidationError("shot ids must be the exact canonical numbered set")
+    consumed = {entry["workspace_path"]: entry for entry in receipt["consumed_artifacts"]}
+    required = {source}
+    if receipt["action"] != "seed":
+        required |= {"inputs/shots.json", "inputs/track.json"}
+    if receipt["action"] in {"validate", "render"}:
+        required |= {f"inputs/frames/{shot}{pick}.jpg" for shot in ids for pick in ("a", "b")}
+    if set(consumed) != required:
+        raise ContractValidationError("action must consume exactly its required source/documents/frames")
+    if receipt["action"] == "seed":
+        shots_artifact = next((a for a in receipt["artifacts"] if a["path"].endswith("/shots.json")), None)
+    else:
+        shots_artifact = consumed["inputs/shots.json"]
+    if shots_artifact is None or shots_artifact["sha256"] != receipt["shots"]["sha256"]:
+        raise ContractValidationError("parsed shot ids must bind the exact shots artifact digest")
     for command in receipt["commands"]:
         args = command["argv"][3:]
         action = command["action"]
@@ -128,6 +166,8 @@ def _assert_shots_commands(receipt):
             raise ContractValidationError("consumed artifact path and version mismatch")
         if int(entry["version"][1:]) >= int(receipt["version"][1:]):
             raise ContractValidationError("consumed artifact must precede child receipt")
+        if entry["version"] == receipt["parent_version"] and entry["receipt_fingerprint"] != receipt["parent_fingerprint"]:
+            raise ContractValidationError("consumed parent receipt fingerprint mismatch")
     paths = [entry["path"] for entry in receipt["artifacts"]]
     prefix = f"reelbench/{receipt['version']}/"
     if any(not path.startswith(prefix) for path in paths):
@@ -144,7 +184,7 @@ def _assert_shots_commands(receipt):
         expected = {f"frames/{name}{pick}.jpg" for name in frames_a for pick in ("a", "b")}
         pages = math.ceil(len(frames_a) / 25)
         expected |= {f"sheets/sheet-{pick}{page:02d}.jpg" for pick in ("a", "b") for page in range(1, pages + 1)}
-        if not frames_a or len(frames_a) > 120 or frames_a != frames_b or produced != expected:
+        if frames_a != set(ids) or frames_a != frames_b or produced != expected:
             raise ContractValidationError("evidence requires exact frame pairs and both sheet sets")
     if action == "render":
         mode = receipt["commands"][0]["argv"][4]

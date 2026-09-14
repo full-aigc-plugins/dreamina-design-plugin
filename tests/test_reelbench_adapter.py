@@ -9,6 +9,7 @@ from pathlib import Path
 
 from scripts.bounded_process import BoundedProcessResult
 from scripts.trusted_media_tools import TrustedExecutable
+from tests.test_reelbench_project_service import FakeTrustedStore
 
 
 class ReelBenchAdapterTests(unittest.TestCase):
@@ -22,6 +23,11 @@ class ReelBenchAdapterTests(unittest.TestCase):
         self.shots_script = Path(__file__).resolve().parents[1] / "skills" / "dreamina-video-shots" / "scripts" / "video-shots.mjs"
         self.calls: list[tuple[list[str], dict[str, object]]] = []
         self.adapter = self._adapter()
+        self.workspace_fd = os.open(self.project_root, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, self.workspace_fd)
+        self.enterContext(self.adapter.execution_workspace(self.workspace_fd))
+        self.project_root = Path(f"/dev/fd/{self.workspace_fd}")
+        self.source = self.project_root / "source.mp4"
 
     def _adapter(self):
         from scripts.reelbench_adapter import ReelBenchAdapter
@@ -30,10 +36,11 @@ class ReelBenchAdapterTests(unittest.TestCase):
             self.calls.append((list(argv), kwargs))
             return BoundedProcessResult(0, '{"shots": []}\n', "")
 
+        trust = FakeTrustedStore(self.temp.name)
         return ReelBenchAdapter(
             project_root=self.project_root,
             shots_script=self.shots_script,
-            tools={kind: self._tool(kind) for kind in ("node", "ffmpeg", "ffprobe")},
+            tools=trust.tools, tool_store=trust,
             runner=runner,
         )
 
@@ -51,9 +58,9 @@ class ReelBenchAdapterTests(unittest.TestCase):
             title="Reference; never a shell fragment",
         )
 
-        self.assertEqual(result.argv[1:3], [str(self.shots_script), "seed"])
+        self.assertEqual(result.argv[1:3], ["script/video-shots.mjs", "seed"])
         self.assertFalse(result.shell)
-        self.assertEqual(self.calls[0][0], result.argv)
+        self.assertEqual(self.calls[0][0][6:], result.argv)
         self.assertNotIn("shell", self.calls[0][1])
         self.assertIn("Reference; never a shell fragment", result.argv)
 

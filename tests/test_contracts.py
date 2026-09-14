@@ -114,7 +114,7 @@ class SchemaPresenceTests(unittest.TestCase):
 class ClosedSchemaTests(unittest.TestCase):
     def test_reelbench_receipts_are_closed_and_distinguish_skipped(self) -> None:
         receipt = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "version": "v001",
             "parent_version": None,
             "project_id": "vp_" + "1" * 24,
@@ -144,8 +144,11 @@ class ClosedSchemaTests(unittest.TestCase):
             "evidence_fingerprint": "7" * 64,
         }
         receipt["parent_fingerprint"] = None
+        receipt["shots"] = {"sha256": "6" * 64, "ids": ["S01"]}
+        receipt["script_manifest"] = [{"path": "script/video-shots.mjs", "size_bytes": 1, "sha256": "8" * 64}]
         receipt["commands"] = [{"action": "seed", "argv": ["tools/node", "script/video-shots.mjs", "seed"],
-                                "returncode": 0, "tool_identities": receipt["tool_identities"]}]
+                                "returncode": 0, "tool_identities": receipt["tool_identities"],
+                                "script_manifest": receipt["script_manifest"]}]
         receipt["consumed_artifacts"] = [{"version": "v001", "receipt_fingerprint": "8" * 64,
             "path": "source/source.mp4", "workspace_path": "source/" + "2" * 64,
             "sha256": "2" * 64, "size_bytes": 1}]

@@ -163,11 +163,12 @@ class VideoProjectStore:
         parent_version_field: str | None = None,
         version: str | None = None,
         project_fd: int | None = None,
+        publication_guard=None,
     ) -> dict[str, Any]:
         if FAMILY.fullmatch(family) is None:
             raise ValueError("invalid version family")
         if project_fd is not None:
-            return self._write_version_at(project_fd, project_id, family, payload, schema_name, version)
+            return self._write_version_at(project_fd, project_id, family, payload, schema_name, version, publication_guard)
         with self._exclusive_lock(project_id):
             self.get(project_id)
             family_root = self.project_root(project_id) / family
@@ -486,7 +487,7 @@ class VideoProjectStore:
                 raise indeterminate_error from exc
             raise
 
-    def _write_version_at(self, project_fd, project_id, family, payload, schema_name, version):
+    def _write_version_at(self, project_fd, project_id, family, payload, schema_name, version, publication_guard=None):
         """Create-only publication below a caller-owned, exclusively locked project inode."""
         from scripts import reelbench_workspace as ws
         self._validate_project_id(project_id)
@@ -505,6 +506,8 @@ class VideoProjectStore:
             visible = False
             try:
                 ws.write(fd, temporary, (json.dumps(document, sort_keys=True, ensure_ascii=False) + "\n").encode())
+                if publication_guard is not None:
+                    publication_guard()
                 os.link(temporary, f"{version}.json", src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
                 visible = True
                 os.unlink(temporary, dir_fd=fd)

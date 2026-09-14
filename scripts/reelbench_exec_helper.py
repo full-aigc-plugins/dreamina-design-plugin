@@ -7,7 +7,7 @@ HELPER_CODE = r'''
 import hashlib, json, os, resource, stat, sys
 fd = int(sys.argv[1])
 os.fchdir(fd)
-os.close(fd)
+os.set_inheritable(fd, True)
 os.umask(0o077)
 resource.setrlimit(resource.RLIMIT_FSIZE, (8388608, 8388608))
 manifest = json.loads(sys.argv[2])

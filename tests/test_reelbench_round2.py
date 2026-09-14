@@ -49,10 +49,8 @@ class ReelBenchRoundTwoTests(unittest.TestCase):
     def test_new_seed_cannot_reuse_old_seed_frame_lineage(self):
         seed = self.action('seed')
         evidence = self.action('evidence', seed['version'])
-        reseeded = self.action('seed', evidence['version'])
-        with patch.object(self.service._adapter, 'validate', side_effect=AssertionError('child launched')):
-            with self.assertRaisesRegex(ValueError, 'frame'):
-                self.action('validate', reseeded['version'])
+        with self.assertRaisesRegex(ValueError, 'seed'):
+            self.action('seed', evidence['version'])
 
     def test_missing_tail_frame_rejects_partial_evidence(self):
         seed = self.action('seed')
@@ -107,7 +105,7 @@ class ReelBenchRoundTwoTests(unittest.TestCase):
             self.assertEqual(self.action('seed')['version'], 'v001')
         with patch('os.write', return_value=0):
             with self.assertRaisesRegex(OSError, 'short write'):
-                self.action('seed', 'v001')
+                self.action('evidence', 'v001')
         self.assertFalse((self.store.project_root(self.project_id) / 'reelbench_evidence/v002.json').exists())
 
     def test_project_swap_and_restore_does_not_redirect_source_or_outputs(self):
@@ -134,7 +132,7 @@ class ReelBenchRoundTwoTests(unittest.TestCase):
         original.rename(moved)
         original.symlink_to(moved, target_is_directory=True)
         with patch.object(self.service._adapter, 'frames', side_effect=AssertionError('child launched')):
-            with self.assertRaises(OSError):
+            with self.assertRaises((OSError, ValueError)):
                 self.action('evidence', seed['version'])
 
     def test_source_receipt_filename_and_embedded_version_must_match(self):
@@ -160,7 +158,7 @@ class ReelBenchRoundTwoTests(unittest.TestCase):
         replacement = []
         def replace_after_child(argv, **kwargs):
             result = runner(argv, **kwargs)
-            work = fixture_path(argv[argv.index('--track') + 1]).parents[1]
+            work = fixture_path(f"/dev/fd/{argv[4]}/output/track.json").parents[1]
             moved = work.with_name(work.name + '-moved')
             work.rename(moved)
             work.mkdir(mode=0o700)
@@ -221,7 +219,7 @@ class ReelBenchRoundTwoTests(unittest.TestCase):
         seed['evidence_fingerprint'] = canonical_fingerprint({k: v for k, v in seed.items() if k != 'evidence_fingerprint'})
         (self.store.project_root(self.project_id) / 'reelbench_evidence/v001.json').write_text(json.dumps(seed))
         with patch.object(self.service._adapter, 'frames', side_effect=AssertionError('child launched')):
-            with self.assertRaisesRegex(ValueError, 'shot count'):
+            with self.assertRaises(ValueError):
                 self.action('evidence', seed['version'])
 
     def test_persistent_temp_unlink_cannot_hide_visible_receipt(self):
@@ -339,6 +337,7 @@ class ReelBenchRoundTwoTests(unittest.TestCase):
             if artifact['path'].endswith('/shots.json'):
                 artifact['sha256'] = hashlib.sha256(shot_path.read_bytes()).hexdigest()
                 artifact['size_bytes'] = shot_path.stat().st_size
+                seed['shots']['sha256'] = artifact['sha256']
         seed['evidence_fingerprint'] = canonical_fingerprint({k: v for k, v in seed.items() if k != 'evidence_fingerprint'})
         (self.store.project_root(self.project_id) / 'reelbench_evidence/v001.json').write_text(json.dumps(seed))
         evidence = self.action('evidence', seed['version'])

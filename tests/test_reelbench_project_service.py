@@ -5,11 +5,12 @@ import os
 import tempfile
 import unittest
 import fcntl
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
 from scripts.bounded_process import BoundedProcessResult
-from scripts.trusted_media_tools import TrustedExecutable
+from scripts.trusted_media_tools import TrustedExecutable, TrustedMediaTool
 from scripts.json_contracts import canonical_fingerprint
 from scripts.video_project_store import VersionCommitIndeterminateError, VideoProjectStore
 
@@ -25,6 +26,40 @@ def fixture_path(value):
     else:
         base = os.readlink(f"/proc/self/fd/{number}")
     return Path(base) / tail
+
+
+class FakeTrustedStore:
+    """A trust-store test double; adapters still stage, hash, and launch identically."""
+    def __init__(self, base):
+        self.root = Path(tempfile.mkdtemp(prefix='fake-trusted-', dir=Path(base).resolve()))
+        self.tools = {}
+        for kind in ('node', 'ffmpeg', 'ffprobe'):
+            path = self.root / kind
+            path.write_bytes(kind.encode())
+            path.chmod(0o500)
+            info = path.stat()
+            self.tools[kind] = TrustedExecutable(kind, str(path), info.st_uid, 0o500,
+                info.st_dev, info.st_ino, info.st_size, hashlib.sha256(path.read_bytes()).hexdigest())
+
+    def load_required(self, kinds):
+        result = {}
+        for kind in kinds:
+            root = Path(tempfile.mkdtemp(prefix='stage-', dir=self.root))
+            path = root / kind
+            shutil.copyfile(self.root / kind, path)
+            path.chmod(0o500)
+            result[kind] = TrustedMediaTool(kind, str(self.root / kind), self.tools[kind].sha256, str(path))
+        return result
+
+    def release(self, tool):
+        shutil.rmtree(Path(tool.staged_path).parent)
+
+
+def fixture_argv(argv):
+    assert argv[:3] == ['/usr/bin/python3', '-I', '-c']
+    fd = argv[4]
+    return [str(fixture_path(f"/dev/fd/{fd}/" + arg)) if arg.startswith(('source/', 'inputs/', 'output/')) else arg
+            for arg in argv[6:]]
 
 
 class ReelBenchProjectServiceTests(unittest.TestCase):
@@ -58,13 +93,11 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
         from scripts.reelbench_project_service import ReelBenchProjectService
 
         script = Path(__file__).resolve().parents[1] / "skills" / "dreamina-video-shots" / "scripts" / "video-shots.mjs"
-        tools = {
-            kind: TrustedExecutable(kind, f"/trusted/{kind}", os.getuid(), 0o500, 1, 2, 1, hashlib.sha256(kind.encode()).hexdigest())
-            for kind in ("node", "ffmpeg", "ffprobe")
-        }
+        trust = FakeTrustedStore(self.temp.name)
 
         def runner(argv, **_kwargs):
-            argv = [str(fixture_path(arg)) if arg.startswith("/dev/fd/") else arg for arg in argv]
+            _kwargs['monitor']()
+            argv = fixture_argv(argv)
             if argv[2] == "seed":
                 track = Path(argv[argv.index("--track") + 1])
                 track.write_text('{"hz": 5, "values": []}\n', encoding="utf-8")
@@ -98,7 +131,7 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
 
         adapter = ReelBenchAdapter(
             project_root=self.store.project_root(self.project_id), shots_script=script,
-            tools=tools, runner=runner,
+            tools=trust.tools, tool_store=trust, runner=runner,
         )
         return ReelBenchProjectService(self.store, adapter)
 
@@ -108,8 +141,8 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
             source_receipt_version=self.source_receipt["version"], threshold=0.3, title="Reference",
         )
         second = self.service.run(
-            self.project_id, action="seed", expected_parent=first["version"],
-            source_receipt_version=self.source_receipt["version"], threshold=0.3, title="Reference",
+            self.project_id, action="evidence", expected_parent=first["version"],
+            source_receipt_version=self.source_receipt["version"],
         )
 
         self.assertEqual((first["version"], second["version"]), ("v001", "v002"))
@@ -134,7 +167,7 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
 
     def test_same_bytes_source_replacement_during_execution_fails_closed(self) -> None:
         def runner(argv, **_kwargs):
-            argv = [str(fixture_path(arg)) if arg.startswith("/dev/fd/") else arg for arg in argv]
+            argv = fixture_argv(argv)
             track = Path(argv[argv.index("--track") + 1])
             track.write_text('{"hz": 5, "values": []}\n', encoding="utf-8")
             replacement = self.source.with_name("source-replacement.mp4")
