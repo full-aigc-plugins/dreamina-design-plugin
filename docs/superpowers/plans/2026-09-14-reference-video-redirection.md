@@ -1718,3 +1718,45 @@ None of this blocks the gates that *are* reachable, and none of it is
 claimed as verified here. The gap is recorded rather than papered over:
 the runner is correct to report NOT_RUN for a gate it cannot measure.
 
+### Task 17 authorization-entry evidence (verified 2026-09-15)
+
+Commit `312bace` makes the acceptance runner's existing authorization
+guards exercisable from the CLI without turning the runner into a paid-job
+executor:
+
+* `--approve-paid <approval-id>` supplies a fresh authorization only for
+  that invocation; no flag authorizes nothing, and consumed/stale IDs remain
+  rejected by the existing guard.
+* `--approve-publish <approval-id>` independently authorizes the publication
+  gate. If both flags are used in one invocation, their IDs must be identical;
+  otherwise the CLI refuses the run with exit status 2 instead of conflating
+  two approvals.
+* `--no-paid` and `--approve-paid` are mutually exclusive, and a refused run
+  writes `REFUSED:` to stderr without emitting an acceptance report.
+* Seven focused CLI tests cover flag-to-runner propagation, mutual exclusion,
+  mismatched approval IDs, refusal status, and suppression of misleading
+  reports.
+
+The observed publication-authorized run exercised the real remote-CI probe.
+For full HEAD `312bace43077461cad1912569dbdb9590d96d58d`, GitHub Actions run
+`34870791432` completed successfully. A transient GitHub API EOF was reported
+as `NOT_RUN`/no result rather than PASS; a later probe observed the completed
+successful run. This is fail-closed probe evidence, not evidence that other
+publication or installation gates ran.
+
+The paid path remains deliberately non-executing:
+
+```python
+def _run_paid_gate(self, report):
+    for name in sorted(PAID_GATES):
+        report[name] = GateResult(
+            NOT_RUN,
+            "paid gate authorized but no paid batch was executed in this run",
+        )
+```
+
+Therefore this evidence closes only the CLI authorization-entry wiring and
+the reachable remote-CI observation. It does **not** close Task 17's paid
+batch, installed-artifact, five project-run gates, or final publication
+acceptance. Those items remain unchecked until their own observable runs are
+performed.
