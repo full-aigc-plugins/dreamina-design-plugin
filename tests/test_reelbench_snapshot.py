@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -324,22 +326,32 @@ class ReelBenchSnapshotTests(unittest.TestCase):
     def test_post_open_path_replacements_fail_closed(self) -> None:
         replacement = self.base / "plugin-replacement"
         shutil.copytree(self.root, replacement)
-        with self._replace_after_open(self.root, replacement, "_open_directory_path"):
+        with self._assert_fd_balance(), self._replace_after_open(self.root, replacement, "_open_directory_path"):
             report = verify_reelbench_snapshot(self.root, self.upstream)
-        self.assertIn("plugin_root", report.mismatches)
+        self.assertEqual(report.mismatches, ["plugin_root"])
+        self.assertEqual(report.source_status, "PARTIAL")
 
         self._write_independent_fixture()
         skill = self.root / "skills/dreamina-video-shots"
         skill_replacement = self.base / "skill-replacement"
         shutil.copytree(skill, skill_replacement)
-        with self._replace_after_open(skill, skill_replacement, "_open_directory_at"):
+        with self._assert_fd_balance(), self._replace_after_open(skill, skill_replacement, "_open_directory_at"):
             report = verify_reelbench_snapshot(self.root, self.upstream)
-        self.assertTrue(report.mismatches)
+        self.assertEqual(
+            report.mismatches,
+            ["video-shots", "video-shots/SKILL.md", "video-shots/scripts/video-shots.mjs"],
+        )
+        self.assertEqual(report.source_status, "PARTIAL")
 
         self._write_independent_fixture()
         upstream_replacement = self.base / "upstream-replacement"
         shutil.copytree(self.upstream, upstream_replacement)
-        with self._replace_after_open(self.upstream, upstream_replacement, "_open_directory_path"):
+        output = io.StringIO()
+        with (
+            self._assert_fd_balance(),
+            self._replace_after_open(self.upstream, upstream_replacement, "_open_directory_path"),
+            redirect_stdout(output),
+        ):
             exit_code = main(
                 [
                     "--plugin-root",
@@ -350,12 +362,194 @@ class ReelBenchSnapshotTests(unittest.TestCase):
                 ]
             )
         self.assertEqual(exit_code, 2)
+        report_json = json.loads(output.getvalue())
+        self.assertEqual(report_json["mismatches"], ["upstream_root"])
+        self.assertEqual(report_json["source_status"], "UNVERIFIABLE")
+        self.assertEqual(report_json["source_reason"], "upstream_root changed after initial validation")
 
-    def test_missing_o_nofollow_fails_closed_without_attribute_error(self) -> None:
-        with mock.patch.object(snapshot.os, "O_NOFOLLOW", None):
-            report = verify_reelbench_snapshot(self.root, self.upstream)
+    def _assert_missing_open_flag(self, flag: str, expected_reason: str) -> None:
+        for absent in (False, True):
+            for mode in ([], ["--allow-partial"], ["--strict-pinned-source"]):
+                with self.subTest(flag=flag, absent=absent, mode=mode):
+                    output = io.StringIO()
+                    with mock.patch.object(snapshot.os, flag, None), redirect_stdout(output):
+                        if absent:
+                            delattr(snapshot.os, flag)
+                        exit_code = main(["--plugin-root", str(self.root), *mode])
+                    report = json.loads(output.getvalue())
+                    self.assertEqual(exit_code, 2)
+                    self.assertEqual(report["source_status"], "UNVERIFIABLE")
+                    self.assertEqual(report["mismatches"], [f"runtime.{flag}"])
+                    self.assertEqual(report["source_reason"], expected_reason)
+
+    def test_missing_o_nofollow_fails_closed_with_exact_diagnostic(self) -> None:
+        self._assert_missing_open_flag(
+            "O_NOFOLLOW", "the platform cannot safely open untrusted paths without O_NOFOLLOW"
+        )
+
+    def test_missing_o_directory_fails_closed_with_exact_diagnostic(self) -> None:
+        self._assert_missing_open_flag(
+            "O_DIRECTORY", "the platform cannot safely open untrusted paths without O_DIRECTORY"
+        )
+
+    def test_both_missing_open_flags_are_reported_independently(self) -> None:
+        with (
+            mock.patch.object(snapshot.os, "O_NOFOLLOW", None),
+            mock.patch.object(snapshot.os, "O_DIRECTORY", None),
+        ):
+            report = verify_reelbench_snapshot(self.root)
         self.assertEqual(report.source_status, "UNVERIFIABLE")
-        self.assertEqual(report.mismatches, ["runtime.O_NOFOLLOW"])
+        self.assertEqual(report.mismatches, ["runtime.O_DIRECTORY", "runtime.O_NOFOLLOW"])
+        self.assertEqual(
+            report.source_reason,
+            "the platform cannot safely open untrusted paths without O_DIRECTORY, O_NOFOLLOW",
+        )
+
+    def test_lock_only_provenance_reason_does_not_claim_content_match(self) -> None:
+        expected_reason = "upstream_root not provided; pinned Git provenance was not checked"
+        for mutated in (False, True):
+            with self.subTest(mutated=mutated):
+                if mutated:
+                    (self.root / "skills/dreamina-video-shots/scripts/video-shots.mjs").write_bytes(b"changed\n")
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    exit_code = main(["--plugin-root", str(self.root), "--allow-partial"])
+                report = json.loads(output.getvalue())
+                self.assertEqual(report["source_status"], "PARTIAL")
+                self.assertEqual(report["source_reason"], expected_reason)
+                self.assertEqual(exit_code, 2 if mutated else 0)
+                self.assertEqual(
+                    report["mismatches"],
+                    ["video-shots/scripts/video-shots.mjs"] if mutated else [],
+                )
+
+    @contextmanager
+    def _assert_fd_balance(self):
+        """Track real FD ownership, and clean up leaks even when a RED assertion fails."""
+        real_open, real_dup, real_close = os.open, os.dup, os.close
+        acquired: set[int] = set()
+
+        def track_acquisition(operation):
+            def acquire(*args, **kwargs):
+                descriptor = operation(*args, **kwargs)
+                acquired.add(descriptor)
+                return descriptor
+            return acquire
+
+        def close(descriptor):
+            real_close(descriptor)
+            acquired.discard(descriptor)
+
+        try:
+            with (
+                mock.patch.object(snapshot.os, "open", side_effect=track_acquisition(real_open)),
+                mock.patch.object(snapshot.os, "dup", side_effect=track_acquisition(real_dup)),
+                mock.patch.object(snapshot.os, "close", side_effect=close),
+            ):
+                yield
+            self.assertEqual(acquired, set(), f"new descriptors leaked: {sorted(acquired)}")
+        finally:
+            for descriptor in acquired:
+                real_close(descriptor)
+
+    def test_directory_dup_failure_releases_child_and_preserves_parent_fd(self) -> None:
+        parent_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with (
+                self._assert_fd_balance(),
+                mock.patch.object(snapshot.os, "dup", side_effect=OSError("dup failed")),
+            ):
+                for _ in range(5):
+                    self.assertIsNone(snapshot._open_directory_at(parent_fd, "skills", "skills"))
+                    self.assertEqual(os.fstat(parent_fd).st_ino, self.root.stat().st_ino)
+        finally:
+            os.close(parent_fd)
+
+    def test_directory_fstat_failure_releases_child_fd(self) -> None:
+        parent_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with (
+                self._assert_fd_balance(),
+                mock.patch.object(snapshot.os, "fstat", side_effect=OSError("fstat failed")),
+            ):
+                self.assertIsNone(snapshot._open_directory_at(parent_fd, "skills", "skills"))
+            self.assertEqual(os.fstat(parent_fd).st_ino, self.root.stat().st_ino)
+        finally:
+            os.close(parent_fd)
+
+    def test_directory_handle_construction_failure_releases_both_fds(self) -> None:
+        parent_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with (
+                self._assert_fd_balance(),
+                mock.patch.object(snapshot, "DirectoryHandle", side_effect=MemoryError("handle failed")),
+            ):
+                with self.assertRaises(MemoryError):
+                    snapshot._open_directory_at(parent_fd, "skills", "skills")
+            self.assertEqual(os.fstat(parent_fd).st_ino, self.root.stat().st_ino)
+        finally:
+            os.close(parent_fd)
+
+    def test_directory_identity_replacement_releases_child_fd(self) -> None:
+        parent_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        real_lstat = os.lstat
+
+        def stat_then_replace(name, *, dir_fd):
+            metadata = real_lstat(name, dir_fd=dir_fd)
+            (self.root / "skills").rename(self.root / "old-skills")
+            (self.root / "skills").mkdir()
+            return metadata
+
+        try:
+            with (
+                self._assert_fd_balance(),
+                mock.patch.object(snapshot.os, "lstat", side_effect=stat_then_replace),
+            ):
+                self.assertIsNone(snapshot._open_directory_at(parent_fd, "skills", "skills"))
+            self.assertEqual(os.fstat(parent_fd).st_ino, self.root.stat().st_ino)
+        finally:
+            os.close(parent_fd)
+
+    def test_path_anchor_fstat_failure_releases_anchor_fd(self) -> None:
+        with (
+            self._assert_fd_balance(),
+            mock.patch.object(snapshot.os, "fstat", side_effect=OSError("anchor fstat failed")),
+        ):
+            self.assertIsNone(snapshot._open_directory_path(self.root, "plugin_root"))
+
+    def test_path_handle_construction_failure_releases_entire_fd_chain(self) -> None:
+        real_handle = snapshot.DirectoryHandle
+        for failure_point in ("anchor", "plugin"):
+            with self.subTest(failure_point=failure_point):
+                def construct(**kwargs):
+                    if (
+                        failure_point == "anchor" and kwargs["parent_fd"] is None
+                    ) or kwargs["name"] == failure_point:
+                        raise MemoryError("handle failed")
+                    return real_handle(**kwargs)
+
+                with (
+                    self._assert_fd_balance(),
+                    mock.patch.object(snapshot, "DirectoryHandle", side_effect=construct),
+                ):
+                    with self.assertRaises(MemoryError):
+                        snapshot._open_directory_path(self.root, "plugin_root")
+
+    def test_path_construction_failure_releases_entire_fd_chain(self) -> None:
+        with (
+            self._assert_fd_balance(),
+            mock.patch.object(snapshot, "DirectoryPath", side_effect=MemoryError("path failed")),
+        ):
+            with self.assertRaises(MemoryError):
+                snapshot._open_directory_path(self.root, "plugin_root")
+
+    def test_verification_releases_fds_on_success_and_invalid_lock(self) -> None:
+        with self._assert_fd_balance():
+            self.assertEqual(self._report().mismatches, [])
+        self.lock["source"] = "invalid"
+        self._write_lock()
+        with self._assert_fd_balance():
+            self.assertEqual(self._report().mismatches, ["lock:source"])
 
     def test_real_packaged_lock_is_consistent_but_explicitly_partial_without_source(self) -> None:
         report = verify_reelbench_snapshot(ROOT)

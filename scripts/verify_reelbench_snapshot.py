@@ -14,6 +14,7 @@ import re
 import stat
 import subprocess
 import sys
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -116,10 +117,15 @@ class DirectoryPath:
                     pass
 
 
+def _missing_safe_open_flags() -> list[str]:
+    return [
+        name for name in ("O_DIRECTORY", "O_NOFOLLOW")
+        if not isinstance(getattr(os, name, None), int)
+    ]
+
+
 def _safe_open_supported() -> bool:
-    return isinstance(getattr(os, "O_NOFOLLOW", None), int) and isinstance(
-        getattr(os, "O_DIRECTORY", None), int
-    )
+    return not _missing_safe_open_flags()
 
 
 def _directory_flags() -> int:
@@ -132,6 +138,9 @@ def _identity(metadata: os.stat_result) -> tuple[int, int, int]:
 
 def _open_directory_at(parent_fd: int, name: str, display: str) -> DirectoryHandle | None:
     """Open a child directory from a validated parent FD without following links."""
+    descriptor: int | None = None
+    retained_parent: int | None = None
+    handle: DirectoryHandle | None = None
     try:
         before = os.lstat(name, dir_fd=parent_fd)
         if not stat.S_ISDIR(before.st_mode):
@@ -139,18 +148,29 @@ def _open_directory_at(parent_fd: int, name: str, display: str) -> DirectoryHand
         descriptor = os.open(name, _directory_flags(), dir_fd=parent_fd)
         opened = os.fstat(descriptor)
         if not stat.S_ISDIR(opened.st_mode) or _identity(opened) != _identity(before):
-            os.close(descriptor)
             return None
-        return DirectoryHandle(
+        retained_parent = os.dup(parent_fd)
+        handle = DirectoryHandle(
             fd=descriptor,
             dev=opened.st_dev,
             ino=opened.st_ino,
-            parent_fd=os.dup(parent_fd),
+            parent_fd=retained_parent,
             name=name,
             display=display,
         )
+        return handle
     except OSError:
         return None
+    finally:
+        # Transfer ownership only after the complete handle exists. Even a
+        # non-OSError during construction must release both newly acquired FDs.
+        if handle is None:
+            try:
+                if retained_parent is not None:
+                    os.close(retained_parent)
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
 
 
 def _open_directory_path(path: Path, display: str) -> DirectoryPath | None:
@@ -164,30 +184,34 @@ def _open_directory_path(path: Path, display: str) -> DirectoryPath | None:
     if any(component in {"", ".", ".."} for component in components):
         return None
     try:
-        anchor_fd = os.open("/" if absolute else ".", _directory_flags())
-        anchor = os.fstat(anchor_fd)
-        if not stat.S_ISDIR(anchor.st_mode):
-            os.close(anchor_fd)
-            return None
+        with ExitStack() as cleanup:
+            anchor_fd = os.open("/" if absolute else ".", _directory_flags())
+            cleanup.callback(os.close, anchor_fd)
+            anchor = os.fstat(anchor_fd)
+            if not stat.S_ISDIR(anchor.st_mode):
+                return None
+            handles = [
+                DirectoryHandle(
+                    fd=anchor_fd,
+                    dev=anchor.st_dev,
+                    ino=anchor.st_ino,
+                    parent_fd=None,
+                    name=None,
+                    display=display,
+                )
+            ]
+            for component in components:
+                child = _open_directory_at(handles[-1].fd, component, display)
+                if child is None:
+                    return None
+                cleanup.callback(_close_handle, child)
+                handles.append(child)
+            directory_path = DirectoryPath(handles)
+            # The returned path owns the complete chain only after construction.
+            cleanup.pop_all()
+            return directory_path
     except OSError:
         return None
-    handles = [
-        DirectoryHandle(
-            fd=anchor_fd,
-            dev=anchor.st_dev,
-            ino=anchor.st_ino,
-            parent_fd=None,
-            name=None,
-            display=display,
-        )
-    ]
-    for component in components:
-        child = _open_directory_at(handles[-1].fd, component, display)
-        if child is None:
-            DirectoryPath(handles).close()
-            return None
-        handles.append(child)
-    return DirectoryPath(handles)
 
 
 def _handle_is_current(handle: DirectoryHandle) -> bool:
@@ -555,13 +579,14 @@ def verify_reelbench_snapshot(
     plugin_root: Path, upstream_root: Path | None = None
 ) -> ReelBenchSnapshotReport:
     """Verify packaged bytes and, when possible, provenance from the pinned Git tree."""
-    if not _safe_open_supported():
+    missing_flags = _missing_safe_open_flags()
+    if missing_flags:
         return ReelBenchSnapshotReport(
             revision=PINNED_REVISION,
             packaged_names=[],
-            mismatches=["runtime.O_NOFOLLOW"],
+            mismatches=[f"runtime.{name}" for name in missing_flags],
             source_status="UNVERIFIABLE",
-            source_reason="the platform cannot safely open untrusted paths without O_NOFOLLOW",
+            source_reason="the platform cannot safely open untrusted paths without " + ", ".join(missing_flags),
         )
     plugin_path = _open_directory_path(Path(plugin_root), "plugin_root")
     if plugin_path is None:
@@ -631,7 +656,7 @@ def verify_reelbench_snapshot(
             mismatches.append(key)
 
     source_status = "PARTIAL"
-    source_reason = "upstream_root not provided; local bytes match the closed lock only"
+    source_reason = "upstream_root not provided; pinned Git provenance was not checked"
     if upstream_root is not None:
         upstream_path = _open_directory_path(Path(upstream_root), "upstream_root")
         if upstream_path is None:
