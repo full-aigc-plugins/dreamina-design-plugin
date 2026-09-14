@@ -8,7 +8,6 @@ import os
 import selectors
 import signal
 import subprocess
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +40,15 @@ class MediaResult:
     stderr: str
 
 
+@dataclass(frozen=True)
+class _BinaryMediaResult:
+    """Bounded binary stdout and bounded text stderr from one media process."""
+
+    exit_code: int
+    stdout: bytes
+    stderr: str
+
+
 class SubprocessMediaRunner:
     """Stream a subprocess with independent byte caps and process-group cleanup."""
 
@@ -56,6 +64,59 @@ class SubprocessMediaRunner:
         start_new_session: bool,
         terminate_process_group: bool,
     ) -> tuple[int, str, str]:
+        exit_code, stdout, stderr = self._run_bytes(
+            argv,
+            shell=shell,
+            env=env,
+            timeout_seconds=timeout_seconds,
+            stdout_cap=stdout_cap,
+            stderr_cap=stderr_cap,
+            start_new_session=start_new_session,
+            terminate_process_group=terminate_process_group,
+        )
+        return (
+            exit_code,
+            stdout.decode("utf-8", errors="replace"),
+            stderr.decode("utf-8", errors="replace"),
+        )
+
+    def run_binary(
+        self,
+        argv: Sequence[str],
+        *,
+        shell: bool,
+        env: Mapping[str, str],
+        timeout_seconds: int,
+        stdout_cap: int,
+        stderr_cap: int,
+        start_new_session: bool,
+        terminate_process_group: bool,
+    ) -> tuple[int, bytes, str]:
+        """Stream bounded binary stdout without applying text decoding."""
+        exit_code, stdout, stderr = self._run_bytes(
+            argv,
+            shell=shell,
+            env=env,
+            timeout_seconds=timeout_seconds,
+            stdout_cap=stdout_cap,
+            stderr_cap=stderr_cap,
+            start_new_session=start_new_session,
+            terminate_process_group=terminate_process_group,
+        )
+        return exit_code, stdout, stderr.decode("utf-8", errors="replace")
+
+    def _run_bytes(
+        self,
+        argv: Sequence[str],
+        *,
+        shell: bool,
+        env: Mapping[str, str],
+        timeout_seconds: int,
+        stdout_cap: int,
+        stderr_cap: int,
+        start_new_session: bool,
+        terminate_process_group: bool,
+    ) -> tuple[int, bytes, bytes]:
         process = subprocess.Popen(  # noqa: S603
             list(argv),
             stdout=subprocess.PIPE,
@@ -93,11 +154,7 @@ class SubprocessMediaRunner:
                 self._terminate(process, terminate_process_group)
             process.stdout.close()
             process.stderr.close()
-        return (
-            exit_code,
-            buffers["stdout"].decode("utf-8", errors="replace"),
-            buffers["stderr"].decode("utf-8", errors="replace"),
-        )
+        return exit_code, bytes(buffers["stdout"]), bytes(buffers["stderr"])
 
     @staticmethod
     def _terminate(process: subprocess.Popen, process_group: bool) -> None:
@@ -154,6 +211,36 @@ class MediaAdapter:
         finally:
             self._tool_store.release(tool)
 
+    def _run_binary(
+        self, kind: str, argv: Sequence[str], *, timeout_seconds: int
+    ) -> _BinaryMediaResult:
+        """Execute one enrolled kind with bounded binary stdout for frame decoding."""
+        if isinstance(argv, (str, bytes)) or not all(isinstance(arg, str) for arg in argv):
+            raise TypeError("argv must be a sequence of strings")
+        if not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be a positive integer")
+        tools = self._tool_store.load_required({kind})
+        tool = tools[kind]
+        try:
+            try:
+                exit_code, stdout, stderr = self._runner.run_binary(
+                    [tool.staged_path, *argv],
+                    shell=False,
+                    env=self.env,
+                    timeout_seconds=timeout_seconds,
+                    stdout_cap=self.max_output_bytes,
+                    stderr_cap=self.max_output_bytes,
+                    start_new_session=True,
+                    terminate_process_group=True,
+                )
+            except (TimeoutError, subprocess.TimeoutExpired) as exc:
+                raise MediaTimeoutError(
+                    f"{kind} timed out after {timeout_seconds}s; operation NOT resubmitted"
+                ) from exc
+            return _BinaryMediaResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
+        finally:
+            self._tool_store.release(tool)
+
     def probe_json(self, path: Path) -> dict[str, object]:
         """Run ffprobe and require exactly one JSON object on stdout."""
         source = Path(path)
@@ -186,30 +273,18 @@ class MediaAdapter:
             raise MediaOutputError("video frame verification input is invalid")
         positions = {"start_anchor": 0.0, "end_anchor": max(0.0, duration_seconds - 0.05)}
         decoded: dict[str, object] = {}
-        with tempfile.TemporaryDirectory(prefix="dreamina-frame-") as temporary:
-            root = Path(temporary)
-            root.chmod(0o700)
-            for name, position in positions.items():
-                output = root / f"{name}.png"
-                result = self.run("ffmpeg", ["-v", "error", "-ss", f"{position:.3f}",
-                    "-i", str(path), "-map", "0:v:0", "-frames:v", "1",
-                    "-f", "image2pipe", "-vcodec", "png",
-                    "-y", str(output)], timeout_seconds=30)
-                if result.exit_code != 0:
-                    raise MediaOutputError(f"ffmpeg frame decode failed with exit {result.exit_code}")
-                try:
-                    size_bytes = output.stat().st_size
-                    if size_bytes <= 0 or size_bytes > self.max_output_bytes:
-                        raise MediaOutputError("ffmpeg frame output size is invalid")
-                    frame = output.read_bytes()
-                except OSError as exc:
-                    raise MediaOutputError("ffmpeg frame output is unavailable") from exc
-                if not frame or not (frame.startswith(b"\x89PNG\r\n\x1a\n")
-                                     or frame.startswith(b"\xff\xd8\xff")):
-                    raise MediaOutputError("ffmpeg frame output is not a valid PNG or JPEG")
-                decoded[name] = {"at_seconds": round(position, 3),
-                                 "sha256": hashlib.sha256(frame).hexdigest(),
-                                 "size_bytes": len(frame)}
+        for name, position in positions.items():
+            result = self._run_binary("ffmpeg", ["-v", "error", "-ss", f"{position:.3f}",
+                "-i", str(path), "-map", "0:v:0", "-frames:v", "1",
+                "-f", "image2pipe", "-vcodec", "png", "-"], timeout_seconds=30)
+            if result.exit_code != 0:
+                raise MediaOutputError(f"ffmpeg frame decode failed with exit {result.exit_code}")
+            frame = result.stdout
+            if not frame or not frame.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise MediaOutputError("ffmpeg frame output is not a valid PNG")
+            decoded[name] = {"at_seconds": round(position, 3),
+                             "sha256": hashlib.sha256(frame).hexdigest(),
+                             "size_bytes": len(frame)}
         return {"readable": True, **decoded}
 
     @staticmethod

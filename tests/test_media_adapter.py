@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.media_adapter import MediaAdapter, MediaOutputError, MediaTimeoutError
+from scripts.media_adapter import (
+    MediaAdapter,
+    MediaOutputError,
+    MediaTimeoutError,
+    SubprocessMediaRunner,
+)
 from scripts.trusted_media_tools import TrustedMediaToolError, TrustedMediaToolStore
 
 
@@ -25,6 +32,8 @@ class _FakeRunner:
         self.calls = []
         self.process_group_terminated = False
         self.frame_bytes = b"\x89PNG\r\n\x1a\n" + b"frame"
+        self.binary_calls = []
+        self.raise_output = False
 
     def run(self, argv, **kwargs):
         self.argv = list(argv)
@@ -36,6 +45,15 @@ class _FakeRunner:
         if "image2pipe" in argv and argv[-1] != "-":
             Path(argv[-1]).write_bytes(self.frame_bytes)
         return self.exit_code, self.stdout, self.stderr
+
+    def run_binary(self, argv, **kwargs):
+        self.argv = list(argv)
+        self.calls.append(list(argv))
+        self.binary_calls.append(list(argv))
+        self.kwargs = kwargs
+        if self.raise_output:
+            raise MediaOutputError("simulated bounded-output failure")
+        return self.exit_code, self.frame_bytes, self.stderr
 
 
 class MediaAdapterTests(unittest.TestCase):
@@ -107,9 +125,72 @@ class MediaAdapterTests(unittest.TestCase):
             "size_bytes": len(self.runner.frame_bytes)})
         self.assertEqual([call[call.index("-ss") + 1] for call in self.runner.calls], ["0.000", "3.950"])
         self.assertTrue(all(call[call.index("-map") + 1] == "0:v:0" for call in self.runner.calls))
-        self.assertTrue(all(call[call.index("-frames:v"):call.index("-y")] ==
-                            ["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png"]
+        self.assertTrue(all(call[call.index("-frames:v"):] ==
+                            ["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"]
                             for call in self.runner.calls))
+        self.assertEqual(len(self.runner.binary_calls), 2)
+
+    def test_video_frame_verification_requires_png_not_jpeg(self) -> None:
+        self.runner.frame_bytes = b"\xff\xd8\xffjpeg"
+        with self.assertRaisesRegex(MediaOutputError, "valid PNG"):
+            self.adapter.verify_video_frames(self.source, 4.0)
+
+    def test_binary_runner_terminates_oversized_stream_before_completion(self) -> None:
+        marker = self.root / "completed"
+        code = (
+            "import os,sys,time\n"
+            "chunk=b'x'*1024\n"
+            "for _ in range(1024):\n"
+            " os.write(sys.stdout.fileno(),chunk); time.sleep(0.002)\n"
+            f"open({str(marker)!r},'wb').write(b'done')\n"
+        )
+        with self.assertRaisesRegex(MediaOutputError, "stdout exceeded 4096 bytes"):
+            SubprocessMediaRunner().run_binary(
+                [sys.executable, "-c", code],
+                shell=False,
+                env={"PATH": os.environ.get("PATH", "")},
+                timeout_seconds=5,
+                stdout_cap=4096,
+                stderr_cap=128,
+                start_new_session=True,
+                terminate_process_group=True,
+            )
+        self.assertFalse(marker.exists())
+
+    def test_binary_runner_caps_stderr_without_decoding_stdout(self) -> None:
+        code = "import os,sys; os.write(sys.stdout.fileno(),b'\\x89PNG\\r\\n\\x1a\\n'); os.write(sys.stderr.fileno(),b'e'*129)"
+        with self.assertRaisesRegex(MediaOutputError, "stderr exceeded 128 bytes"):
+            SubprocessMediaRunner().run_binary(
+                [sys.executable, "-c", code],
+                shell=False,
+                env={"PATH": os.environ.get("PATH", "")},
+                timeout_seconds=5,
+                stdout_cap=4096,
+                stderr_cap=128,
+                start_new_session=True,
+                terminate_process_group=True,
+            )
+
+    def test_binary_runner_accepts_exact_stdout_cap_as_bytes(self) -> None:
+        code = "import os,sys; os.write(sys.stdout.fileno(),b'x'*4096)"
+        exit_code, stdout, stderr = SubprocessMediaRunner().run_binary(
+            [sys.executable, "-c", code],
+            shell=False,
+            env={"PATH": os.environ.get("PATH", "")},
+            timeout_seconds=5,
+            stdout_cap=4096,
+            stderr_cap=128,
+            start_new_session=True,
+            terminate_process_group=True,
+        )
+        self.assertEqual((exit_code, len(stdout), stderr), (0, 4096, ""))
+        self.assertIsInstance(stdout, bytes)
+
+    def test_binary_frame_failure_releases_trusted_staging(self) -> None:
+        self.runner.raise_output = True
+        with self.assertRaisesRegex(MediaOutputError, "bounded-output failure"):
+            self.adapter.verify_video_frames(self.source, 4.0)
+        self.assertEqual(list((self.root / "staged").iterdir()), [])
 
     def test_video_frame_verification_rejects_empty_success_output(self) -> None:
         self.runner.frame_bytes = b""
