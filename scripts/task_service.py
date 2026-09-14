@@ -185,6 +185,9 @@ class TaskService:
                 raise ValueError("content-addressed artifact collision")
             mime = "image/png" if prefix.startswith(b"\x89PNG") else "image/jpeg" if prefix.startswith(b"\xff\xd8\xff") else "video/mp4" if len(prefix) >= 12 and prefix[4:8] == b"ftyp" else None
             if mime is None: raise ValueError("content-addressed artifact collision")
+            expected_extension = {"video/mp4": ".mp4", "image/png": ".png", "image/jpeg": ".jpg"}[mime]
+            if not name.endswith(expected_extension):
+                raise ValueError("content-addressed artifact collision")
             return {"path": str(target / name), "mime_type": mime, "size_bytes": size,
                     "sha256": expected_digest, "provenance": "externally-queried"}
         finally: os.close(descriptor)

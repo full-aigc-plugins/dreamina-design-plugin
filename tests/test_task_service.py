@@ -121,3 +121,13 @@ class TaskServiceTests(unittest.TestCase):
             receipts = TaskService(Adapter()).verify_download_dir(str(target))
             self.assertEqual([item["sha256"] for item in receipts], [digest])
             self.assertFalse((target / ".verified-stale.tmp").exists())
+
+    def test_canonical_extension_must_match_verified_media_type(self):
+        media = b"\x89PNG\r\n\x1a\n" + b"x" * 24
+        digest = hashlib.sha256(media).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "download-001"; target.mkdir(mode=0o700)
+            disguised = target / f"artifact-{digest}.mp4"
+            disguised.write_bytes(media); disguised.chmod(0o400)
+            with self.assertRaisesRegex(ValueError, "collision"):
+                TaskService(Adapter()).verify_download_dir(str(target))
