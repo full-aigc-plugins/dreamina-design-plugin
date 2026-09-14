@@ -29,6 +29,8 @@ LOCK_TOP_LEVEL_KEYS = {"schema_version", "source", "revision", "aliases", "files
 LOCK_FILE_KEYS = {"git_blob", "upstream_sha256", "packaged_sha256"}
 GIT_BLOB_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+MAX_LOCK_BYTES = 4 * 1024 * 1024
+MAX_SNAPSHOT_FILE_BYTES = 64 * 1024 * 1024
 
 
 class DuplicateJsonKeyError(ValueError):
@@ -79,6 +81,52 @@ def _is_directory(path: Path) -> bool:
     return metadata is not None and stat.S_ISDIR(metadata.st_mode)
 
 
+def _read_regular_file(path: Path, max_bytes: int) -> bytes | None:
+    """Read one bounded regular file without following a replaced symlink."""
+    before = _lstat(path)
+    if (
+        before is None
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_size < 0
+        or before.st_size > max_bytes
+    ):
+        return None
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_dev != before.st_dev
+            or opened.st_ino != before.st_ino
+            or opened.st_size != before.st_size
+            or opened.st_size > max_bytes
+        ):
+            return None
+        chunks: list[bytes] = []
+        remaining = opened.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                return None
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(descriptor)
+        if (
+            after.st_dev != opened.st_dev
+            or after.st_ino != opened.st_ino
+            or after.st_size != opened.st_size
+        ):
+            return None
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+
+
 def _collect_regular_files(root: Path, prefix: str) -> tuple[dict[str, bytes], list[str]]:
     """Collect only regular files while rejecting every symlink/special entry."""
     metadata = _lstat(root)
@@ -89,6 +137,10 @@ def _collect_regular_files(root: Path, prefix: str) -> tuple[dict[str, bytes], l
     diagnostics: list[str] = []
 
     def visit(directory: Path, relative: Path) -> None:
+        directory_metadata = _lstat(directory)
+        if directory_metadata is None or not stat.S_ISDIR(directory_metadata.st_mode):
+            diagnostics.append((Path(prefix) / relative).as_posix())
+            return
         try:
             entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
         except OSError:
@@ -108,10 +160,11 @@ def _collect_regular_files(root: Path, prefix: str) -> tuple[dict[str, bytes], l
             if not stat.S_ISREG(child_metadata.st_mode):
                 diagnostics.append(display)
                 continue
-            try:
-                files[(Path(prefix) / child_relative).as_posix()] = child.read_bytes()
-            except OSError:
+            data = _read_regular_file(child, MAX_SNAPSHOT_FILE_BYTES)
+            if data is None:
                 diagnostics.append(display)
+                continue
+            files[(Path(prefix) / child_relative).as_posix()] = data
 
     visit(root, Path())
     return files, diagnostics
@@ -144,9 +197,12 @@ def _read_lock(plugin_root: Path) -> tuple[dict[str, Any] | None, list[str]]:
     lock_path, path_errors = _safe_lock_file(plugin_root)
     if lock_path is None:
         return None, path_errors
+    lock_bytes = _read_regular_file(lock_path, MAX_LOCK_BYTES)
+    if lock_bytes is None:
+        return None, ["upstream/reelbench.lock.json"]
     try:
         lock = json.loads(
-            lock_path.read_text(encoding="utf-8"),
+            lock_bytes.decode("utf-8"),
             object_pairs_hook=_duplicate_rejecting_object,
         )
     except DuplicateJsonKeyError as error:
@@ -305,6 +361,15 @@ def verify_reelbench_snapshot(
 ) -> ReelBenchSnapshotReport:
     """Verify packaged bytes and, when possible, provenance from the pinned Git tree."""
     root = Path(plugin_root)
+    root_metadata = _lstat(root)
+    if root_metadata is None or not stat.S_ISDIR(root_metadata.st_mode):
+        return ReelBenchSnapshotReport(
+            revision=PINNED_REVISION,
+            packaged_names=[],
+            mismatches=["plugin_root"],
+            source_status="UNVERIFIABLE",
+            source_reason="plugin_root is missing, a symlink, or not a directory",
+        )
     lock, mismatches = _read_lock(root)
     if lock is None:
         return ReelBenchSnapshotReport(
@@ -405,26 +470,35 @@ def main(argv: list[str] | None = None) -> int:
     plugin_root = Path.cwd()
     upstream_root: Path | None = None
     strict = False
+    allow_partial = False
     index = 0
     while index < len(args):
         argument = args[index]
         if argument == "--plugin-root" and index + 1 < len(args):
-            plugin_root = Path(args[index + 1]).resolve()
+            plugin_root = Path(args[index + 1])
             index += 2
         elif argument == "--upstream-root" and index + 1 < len(args):
-            upstream_root = Path(args[index + 1]).resolve()
+            upstream_root = Path(args[index + 1])
             index += 2
         elif argument in {"--strict", "--strict-pinned-source"}:
             strict = True
             index += 1
+        elif argument == "--allow-partial":
+            allow_partial = True
+            index += 1
         else:
             print(json.dumps({"error": f"invalid argument: {argument}"}, sort_keys=True))
             return 2
+    if strict and allow_partial:
+        print(json.dumps({"error": "--allow-partial conflicts with strict mode"}, sort_keys=True))
+        return 2
     report = verify_reelbench_snapshot(plugin_root, upstream_root)
     print(report.to_json())
     if report.mismatches:
         return 2
     if strict and report.source_status != "PINNED_GIT":
+        return 1
+    if report.source_status == "PARTIAL" and not allow_partial:
         return 1
     return 0
 

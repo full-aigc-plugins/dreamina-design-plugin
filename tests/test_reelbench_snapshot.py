@@ -216,19 +216,82 @@ class ReelBenchSnapshotTests(unittest.TestCase):
             str(self.root),
         ]
         partial = subprocess.run(command, check=False, capture_output=True, text=True)
-        self.assertEqual(partial.returncode, 0, partial.stderr)
+        self.assertEqual(partial.returncode, 1, partial.stderr)
         self.assertEqual(json.loads(partial.stdout)["source_status"], "PARTIAL")
 
+        allowed = subprocess.run(command + ["--allow-partial"], check=False, capture_output=True, text=True)
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        self.assertEqual(json.loads(allowed.stdout)["source_status"], "PARTIAL")
+
         strict = subprocess.run(command + ["--strict-pinned-source"], check=False, capture_output=True, text=True)
-        self.assertNotEqual(strict.returncode, 0)
+        self.assertEqual(strict.returncode, 1)
         self.assertEqual(json.loads(strict.stdout)["source_status"], "PARTIAL")
         self.assertEqual(main(["--plugin-root", str(self.root), "--strict"]), 1)
+
+        ambiguous = subprocess.run(
+            command + ["--allow-partial", "--strict-pinned-source"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(ambiguous.returncode, 2)
+        self.assertEqual(json.loads(ambiguous.stdout)["error"], "--allow-partial conflicts with strict mode")
 
         self.lock["source"] = "invalid"
         self._write_lock()
         invalid = subprocess.run(command, check=False, capture_output=True, text=True)
         self.assertEqual(invalid.returncode, 2)
         self.assertEqual(json.loads(invalid.stdout)["mismatches"], ["lock:source"])
+
+    def test_cli_rejects_raw_plugin_and_upstream_root_symlinks_in_all_modes(self) -> None:
+        plugin_link = Path(self.tmp.name) / "plugin-link"
+        plugin_link.symlink_to(self.root, target_is_directory=True)
+        command = [
+            sys.executable,
+            str(ROOT / "scripts/verify_reelbench_snapshot.py"),
+            "--plugin-root",
+            str(plugin_link),
+        ]
+        for mode in ([], ["--allow-partial"], ["--strict-pinned-source"]):
+            result = subprocess.run(command + mode, check=False, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(json.loads(result.stdout)["mismatches"], ["plugin_root"])
+
+        upstream_link = Path(self.tmp.name) / "upstream-link"
+        upstream_link.symlink_to(self.upstream, target_is_directory=True)
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/verify_reelbench_snapshot.py"),
+                "--plugin-root",
+                str(self.root),
+                "--upstream-root",
+                str(upstream_link),
+                "--allow-partial",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(json.loads(result.stdout)["mismatches"], ["upstream_root"])
+
+        dangling = Path(self.tmp.name) / "dangling-plugin"
+        dangling.symlink_to(Path(self.tmp.name) / "missing-plugin", target_is_directory=True)
+        dangling_result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/verify_reelbench_snapshot.py"),
+                "--plugin-root",
+                str(dangling),
+                "--allow-partial",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(dangling_result.returncode, 2)
+        self.assertEqual(json.loads(dangling_result.stdout)["mismatches"], ["plugin_root"])
 
     def test_real_packaged_lock_is_consistent_but_explicitly_partial_without_source(self) -> None:
         report = verify_reelbench_snapshot(ROOT)
