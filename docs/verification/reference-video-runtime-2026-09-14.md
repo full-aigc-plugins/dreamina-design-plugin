@@ -25,12 +25,13 @@ python3 scripts/run_reference_video_acceptance.py --no-paid
 | `final_composition` | `NOT_RUN` | Same |
 | `audio_subtitles` | `NOT_RUN` | Requires a project run against a user-authorized source fixture |
 | `installed_mcp` | `NOT_RUN` | Publication was not authorized for this run |
-| `remote_ci` | `NOT_RUN` | Same |
+| `remote_ci` | **PASS** | GitHub Actions run `34843153722` targets `5c761fa` with `conclusion=success` |
 | `sha_equality` | **PASS** | `branch=feat/reference-video-redirection-0.4.0 head=cbe4ec5f49b2 tracking=cbe4ec5f49b2 remote=cbe4ec5f49b2` |
 
-`all_passed = false`. Two of thirteen gates passed; the other eleven are
-`NOT_RUN` with a recorded reason. **No runtime, paid, or publication gate is
-claimed.**
+Three of thirteen gates have passed: `offline_suite`, `sha_equality`, and —
+after the branch was merged to `main` and CI ran on the exact SHA — `remote_ci`.
+The remaining ten are `NOT_RUN` with a recorded reason. **No runtime, paid, or
+publication gate is claimed.**
 
 ## Why the runtime gates are NOT_RUN
 
@@ -46,10 +47,27 @@ They are blocked on authorization and fixtures, not on missing code:
   consumed approval as stale, and rejects any approval id that is not authorized
   for the current run.
 - **`installed_mcp`** needs a public Marketplace installation of `0.4.0`.
-- **`remote_ci`** cannot run for this branch at all: `.github/workflows/ci.yml`
-  triggers on pushes to `main` and on pull requests only, so a push to
-  `feat/reference-video-redirection-0.4.0` produces no run. This gate becomes
-  reachable only through a pull request or a merge to `main`.
+- **`remote_ci`** could not run while the work sat on a feature branch:
+  `.github/workflows/ci.yml` triggers on pushes to `main` and on pull requests
+  only. It became reachable when the branch was merged to `main`, and is now
+  `PASS` for the exact merged SHA.
+
+### CI-only defect found and fixed at merge time
+
+The first merge to `main` went red: `test_rights_authorization_rejects_symlink_and_parent_replacement`
+failed on Linux while passing locally on macOS. It was investigated in a
+Linux container rather than guessed at. The test patched `json.load` and
+replaced the receipt's parent directory on the **first** call for any file,
+so the outcome depended on read order. On macOS the replacement happened to
+break an unrelated analysis lookup and the assertion passed for the wrong
+reason — the raised message was "required passed analysis version is
+unavailable", not a detected replacement. On Linux the same path returned
+without error.
+
+The patch now fires only when the handle really is the receipt, matched by
+inode, so the test deterministically exercises the defense it names. Verified
+green on both macOS and Linux before pushing. This was a test defect, not a
+product one: the assertion is unchanged.
 
 ## Anti-false-pass properties proven by the test suite
 
