@@ -5,6 +5,14 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "version", "project_id", "design_fingerprint", "batch_fingerprint", "creative_mode", "audio_policy", "target_duration_seconds", "source_rights", "preserve", "transcript", "rewritten_script", "narration", "music", "effects", "subtitles", "provenance", "plan_fingerprint"],
+  "allOf": [
+    {"if": {"properties": {"creative_mode": {"const": "original_redesign"}}}, "then": {"properties": {"source_rights": {"type": "null"}, "preserve": {"maxItems": 0}}}},
+    {"if": {"properties": {"audio_policy": {"const": "full_redesign"}}}, "then": {"properties": {"source_rights": {"type": "null"}, "preserve": {"maxItems": 0}, "rewritten_script": {"minItems": 1}, "narration": {"not": {"type": "null"}}}}},
+    {"if": {"properties": {"audio_policy": {"const": "preserve_authorized_audio"}}}, "then": {"properties": {"creative_mode": {"const": "authorized_replication"}, "source_rights": {"type": "object"}, "preserve": {"minItems": 1}}}},
+    {"if": {"properties": {"audio_policy": {"const": "silent"}}}, "then": {"properties": {"source_rights": {"type": "null"}, "preserve": {"maxItems": 0}, "narration": {"type": "null"}, "music": {"type": "null"}, "effects": {"maxItems": 0}}}},
+    {"if": {"properties": {"audio_policy": {"const": "subtitles_only"}, "source_rights": {"type": "object"}}}, "then": {"properties": {"creative_mode": {"const": "authorized_replication"}, "preserve": {"minItems": 1}}}},
+    {"if": {"properties": {"audio_policy": {"const": "subtitles_only"}, "source_rights": {"type": "null"}}}, "then": {"properties": {"preserve": {"maxItems": 0}, "narration": {"type": "null"}, "music": {"type": "null"}, "effects": {"maxItems": 0}}}}
+  ],
   "properties": {
     "schema_version": {"type": "string", "const": "1.0"},
     "version": {"type": "string", "pattern": "^v[0-9]{3,}$"},

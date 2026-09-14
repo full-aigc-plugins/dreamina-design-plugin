@@ -438,6 +438,11 @@ class NarrationServiceTests(unittest.TestCase):
             payload_fingerprint=canonical_fingerprint(first),
         )
         self.assertEqual(service.commit_plan(plan, indeterminate_commit=commit), first)
+        changed = {**plan, "batch_fingerprint": "4" * 64}
+        changed_core = {key: value for key, value in changed.items() if key not in {"version", "plan_fingerprint"}}
+        changed["plan_fingerprint"] = canonical_fingerprint(changed_core)
+        with self.assertRaises(ContractValidationError):
+            service.commit_plan(changed, indeterminate_commit=commit)
 
     def test_subtitles_only_can_retain_exact_authorized_audio_or_use_silence(self) -> None:
         track = self.root / "subtitle-music.wav"

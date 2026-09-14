@@ -84,7 +84,10 @@ class SubtitleService:
         if source not in {"rewritten_script", "narration_timing"}:
             raise SubtitleTimelineError("subtitle receipt source is not approved")
         output = Path(output_path)
-        if not output.is_absolute() or output.is_symlink() or not output.parent.is_dir():
+        if (not output.is_absolute() or output.exists() or output.is_symlink()
+                or not output.parent.is_dir() or output.parent.is_symlink()
+                or output.parent.stat().st_uid != os.getuid()
+                or output.parent.stat().st_mode & 0o077):
             raise SubtitleTimelineError("subtitle output must be in an existing absolute directory")
         payload = content.encode("utf-8")
         descriptor, temporary = tempfile.mkstemp(prefix=".subtitle-", dir=output.parent)
@@ -92,7 +95,16 @@ class SubtitleService:
             os.fchmod(descriptor, 0o600)
             with os.fdopen(descriptor, "wb") as handle:
                 handle.write(payload); handle.flush(); os.fsync(handle.fileno())
-            os.replace(temporary, output); os.chmod(output, 0o600)
+            try:
+                os.link(temporary, output, follow_symlinks=False)
+            except FileExistsError as exc:
+                raise SubtitleTimelineError("subtitle output already exists") from exc
+            os.chmod(output, 0o600)
+            directory = os.open(output.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         finally:
             Path(temporary).unlink(missing_ok=True)
         from scripts.narration_service import _artifact_receipt

@@ -527,10 +527,14 @@ class AudioPlanService:
                     or indeterminate_commit.family != "audio_plan"
                     or indeterminate_commit.path != expected_path):
                 raise ContractValidationError("indeterminate audio-plan identity is invalid")
-            return self._project_store.reconcile_version(
+            recovered = self._project_store.reconcile_version(
                 document["project_id"], "audio_plan", indeterminate_commit.version,
                 indeterminate_commit.payload_fingerprint, "audio_plan.schema.json",
             )
+            if ({key: value for key, value in recovered.items() if key != "version"}
+                    != {key: value for key, value in document.items() if key != "version"}):
+                raise ContractValidationError("indeterminate audio-plan retry does not match committed content")
+            return recovered
         payload = {key: value for key, value in document.items() if key != "version"}
         return self._project_store.write_version(
             document["project_id"], "audio_plan", payload,

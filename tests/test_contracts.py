@@ -200,6 +200,27 @@ class ClosedSchemaTests(unittest.TestCase):
             with self.subTest(payload=payload), self.assertRaises(ContractValidationError):
                 validate_contract(payload, "audio_plan.schema.json")
 
+    def test_audio_plan_schema_closes_mode_specific_rights_and_silence_semantics(self) -> None:
+        base = {"schema_version":"1.0","version":"v001","project_id":"vp_"+"1"*24,
+            "design_fingerprint":"2"*64,"batch_fingerprint":"3"*64,
+            "creative_mode":"original_redesign","audio_policy":"silent",
+            "target_duration_seconds":1,"source_rights":None,"preserve":[],"transcript":None,
+            "rewritten_script":[],"narration":None,"music":None,"effects":[],"subtitles":[],
+            "provenance":{"remote_services_used":False,"source_voice_cloned":False},
+            "plan_fingerprint":"4"*64}
+        validate_contract(base, "audio_plan.schema.json")
+        fabricated_rights = {"receipt_id":"rr_"+"5"*24,"receipt_fingerprint":"6"*64,
+            "allowed_reuse":[],"artifact_bindings":{}}
+        invalid = [
+            {**base, "source_rights": fabricated_rights},
+            {**base, "preserve": ["music"]},
+            {**base, "audio_policy": "preserve_authorized_audio"},
+            {**base, "audio_policy": "full_redesign"},
+        ]
+        for payload in invalid:
+            with self.subTest(payload=payload), self.assertRaises(ContractValidationError):
+                validate_contract(payload, "audio_plan.schema.json")
+
     def test_each_schema_rejects_unknown_properties(self) -> None:
         for name in EXPECTED_SCHEMAS:
             schema = load_json(SCHEMAS_DIR / name)
