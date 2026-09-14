@@ -39,6 +39,7 @@ MANUAL_REVIEW_REASONS = frozenset({
     "measured_evidence_unavailable", "mixed_repair_directives", "quote_binding_conflict",
     "repair_directive_unavailable", "retry_not_prequoted", "retry_unavailable",
     "semantic_binding_conflict", "semantic_evaluator_invalid", "semantic_evidence_invalid",
+    "semantic_evidence_unavailable",
 })
 _DIGEST = re.compile(r"[a-f0-9]{64}")
 _SUBMIT_ID = re.compile(r"[A-Za-z0-9._:-]{1,160}")
@@ -105,32 +106,30 @@ class _ArtifactSnapshot(AbstractContextManager):
             root = Path(self.temporary.name)
             root.chmod(0o700)
             self.path = root / "artifact.snapshot"
-            output_fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                                | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            self.snapshot_fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_EXCL
+                                       | getattr(os, "O_NOFOLLOW", 0), 0o600)
             digest = hashlib.sha256()
             copied = 0
-            try:
-                while True:
-                    chunk = os.read(self.source_fd, min(1024 * 1024, max_bytes - copied + 1))
-                    if not chunk:
-                        break
-                    copied += len(chunk)
-                    if copied > max_bytes or copied > declared_size:
-                        raise EvaluationContractError("artifact exceeded its trusted size bound")
-                    digest.update(chunk)
-                    view = memoryview(chunk)
-                    while view:
-                        written = os.write(output_fd, view)
-                        if written <= 0:
-                            raise EvaluationContractError("artifact snapshot write made no progress")
-                        view = view[written:]
-                os.fsync(output_fd)
-            finally:
-                os.close(output_fd)
+            while True:
+                chunk = os.read(self.source_fd, min(1024 * 1024, max_bytes - copied + 1))
+                if not chunk:
+                    break
+                copied += len(chunk)
+                if copied > max_bytes or copied > declared_size:
+                    raise EvaluationContractError("artifact exceeded its trusted size bound")
+                digest.update(chunk)
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(self.snapshot_fd, view)
+                    if written <= 0:
+                        raise EvaluationContractError("artifact snapshot write made no progress")
+                    view = view[written:]
             if copied != declared_size:
                 raise EvaluationContractError("artifact changed while snapshotting")
-            os.chmod(self.path, 0o400)
-            self.snapshot_fd = os.open(self.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            os.fsync(self.snapshot_fd)
+            os.fchmod(self.snapshot_fd, 0o400)
+            os.fsync(self.snapshot_fd)
+            os.lseek(self.snapshot_fd, 0, os.SEEK_SET)
             self.snapshot_identity = _file_identity(os.fstat(self.snapshot_fd))
             self.digest, self.size_bytes = digest.hexdigest(), copied
             self.assert_stable()
@@ -221,13 +220,14 @@ class VideoEvaluationService:
             with _ArtifactSnapshot(artifact, max_bytes=self._max_artifact_bytes) as snapshot:
                 digest = snapshot.digest
                 assert snapshot.path is not None
-                raw_probe = self._media_adapter.probe_json(snapshot.path)
+                raw_probe = self._media_adapter.probe_json(snapshot.path, source_fd=snapshot.snapshot_fd)
                 snapshot.assert_stable()
                 format_data = raw_probe.get("format", {}) if isinstance(raw_probe, Mapping) else {}
                 duration_for_frames = float(format_data["duration"])
                 if not math.isfinite(duration_for_frames) or duration_for_frames <= 0:
                     raise EvaluationContractError("trusted probe duration is unavailable")
-                frame_evidence = self._media_adapter.verify_video_frames(snapshot.path, duration_for_frames)
+                frame_evidence = self._media_adapter.verify_video_frames(
+                    snapshot.path, duration_for_frames, source_fd=snapshot.snapshot_fd)
                 snapshot.assert_stable()
         except Exception:
             snapshot_error = True
@@ -323,6 +323,16 @@ class VideoEvaluationService:
         failed_gates = [name for name in (*MEASURED_GATE_ORDER, *SEMANTIC_GATE_ORDER)
                         if gates[name]["status"] in {"failed", "skipped"}]
         unavailable = [name for name in failed_gates if gates[name]["status"] == "skipped"]
+        semantic_skipped = [semantic[name] for name in SEMANTIC_GATE_ORDER
+                            if semantic[name]["status"] == "skipped"]
+        if semantic_skipped:
+            evidence = {gate["evidence"] for gate in semantic_skipped}
+            if evidence == {"semantic binding conflict"}:
+                reasons.add("semantic_binding_conflict")
+            elif evidence == {"semantic evidence invalid"}:
+                reasons.add("semantic_evidence_invalid")
+            else:
+                reasons.add("semantic_evidence_unavailable")
         expected = (binding["project_id"], binding["batch_version"], binding["design_version"],
                     binding["design_fingerprint"], binding["quote_fingerprint"])
         if (quote.get("project_id"), quote.get("quote_version"), quote.get("design_version"),
@@ -378,8 +388,8 @@ class VideoEvaluationService:
             reasons.add("semantic_evaluator_invalid")
             return result, reasons
         provider, model = evaluator.get("provider"), evaluator.get("model")
-        if not isinstance(provider, str) or not 1 <= len(provider) <= 64 \
-                or not isinstance(model, str) or not 1 <= len(model) <= 128:
+        if provider != "codex" or not isinstance(model, str) \
+                or re.fullmatch(r"[A-Za-z0-9._:/-]{1,128}", model) is None:
             reasons.add("semantic_evaluator_invalid")
             return result, reasons
         try:
@@ -397,7 +407,7 @@ class VideoEvaluationService:
     def evaluate(self, artifact: Mapping[str, Any], design_shot: Mapping[str, Any],
                  semantic_payload: Mapping[str, Any], *, binding: Mapping[str, Any], allowance: Mapping[str, Any],
                  quote: Mapping[str, Any], evaluation_id: str, evaluator: Mapping[str, Any],
-                 _created_at: str | None = None, _initial_reasons: set[str] | None = None) -> dict[str, Any]:
+                 _created_at: str | None = None) -> dict[str, Any]:
         trusted_binding = _binding(binding)
         now, issued_at = self._trusted_now()
         if _created_at is not None:
@@ -413,14 +423,19 @@ class VideoEvaluationService:
         profile = quote.get("output_profile", {}) if isinstance(quote.get("output_profile"), Mapping) else {}
         anchor_contract = attempt.get("anchor_contract") if isinstance(attempt, Mapping) else None
         if request.get("mode") in {"frames2video", "multiframe2video"}:
-            references = [entry for entry in request.get("references", [])
-                          if isinstance(entry, Mapping) and entry.get("role") == "frame"]
-            expected_references = (references[0].get("sha256"), references[-1].get("sha256")) \
-                if len(references) >= 2 else (None, None)
-            contract_references = (
+            indexed = [(index, entry) for index, entry in enumerate(request.get("references", []))
+                       if isinstance(entry, Mapping) and entry.get("role") == "frame"]
+            expected_references = ((indexed[0][1].get("sha256"), indexed[0][0], "frame"),
+                                   (indexed[-1][1].get("sha256"), indexed[-1][0], "frame")) \
+                if len(indexed) >= 2 else ((None, None, None), (None, None, None))
+            contract_references = ((
                 anchor_contract.get("start_anchor", {}).get("reference_sha256"),
+                anchor_contract.get("start_anchor", {}).get("reference_index"),
+                anchor_contract.get("start_anchor", {}).get("role")), (
                 anchor_contract.get("end_anchor", {}).get("reference_sha256"),
-            ) if isinstance(anchor_contract, Mapping) else (None, None)
+                anchor_contract.get("end_anchor", {}).get("reference_index"),
+                anchor_contract.get("end_anchor", {}).get("role"),
+            )) if isinstance(anchor_contract, Mapping) else ((None, None, None), (None, None, None))
             if contract_references != expected_references:
                 anchor_contract = None
         expected_media = {"width": profile.get("width"), "height": profile.get("height"),
@@ -429,17 +444,14 @@ class VideoEvaluationService:
                           "anchor_contract": anchor_contract}
         measured = self.measure_clip(artifact, design_shot, binding=trusted_binding, expected_media=expected_media)
         reasons = set(measured["manual_review_reasons"])
-        reasons.update(_initial_reasons or set())
         try:
             semantic = self.validate_semantic_evaluation(semantic_payload)
             if semantic["binding"] != trusted_binding:
-                reasons.add("semantic_binding_conflict")
                 raise EvaluationContractError("semantic binding conflict")
         except EvaluationContractError as exc:
-            if "binding conflict" not in str(exc):
-                reasons.add("semantic_evidence_invalid")
+            fallback = "semantic binding conflict" if "binding conflict" in str(exc) else "semantic evidence invalid"
             semantic = {"binding": trusted_binding, "gates": {
-                name: {"status": "skipped", "evidence": "semantic evidence unavailable"}
+                name: {"status": "skipped", "evidence": fallback}
                 for name in SEMANTIC_GATE_ORDER}}
         evaluator_receipt, evaluator_reasons = self._normalize_evaluator(evaluator, created=now)
         reasons.update(evaluator_reasons)
@@ -467,16 +479,12 @@ class VideoEvaluationService:
                        quote: Mapping[str, Any]) -> dict[str, Any]:
         """Rebuild from one current immutable snapshot and compare every decision field."""
         evaluator = receipt.get("semantic_evaluator", {})
-        decision = receipt.get("decision", {})
-        initial_reasons = set(decision.get("manual_review_reasons", [])) \
-            if isinstance(decision, Mapping) else set()
         rebuilt = self.evaluate(artifact, design_shot,
             {"binding": receipt.get("binding"), "gates": receipt.get("semantic_gates")},
             binding=receipt.get("binding"), allowance=allowance, quote=quote,
             evaluation_id=receipt.get("evaluation_id"), evaluator={
                 "provider": evaluator.get("provider_claim"), "model": evaluator.get("model_claim"),
-                "evaluated_at": evaluator.get("claimed_evaluated_at")}, _created_at=receipt.get("created_at"),
-            _initial_reasons=initial_reasons)
+                "evaluated_at": evaluator.get("claimed_evaluated_at")}, _created_at=receipt.get("created_at"))
         if rebuilt != dict(receipt):
             raise EvaluationContractError("evaluation receipt does not match trusted recomputation")
         return rebuilt

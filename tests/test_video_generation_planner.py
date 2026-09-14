@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import tempfile
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 
 from scripts.json_contracts import canonical_fingerprint, validate_contract
 from scripts.video_service import build_video_request_fingerprint
@@ -11,7 +14,9 @@ try:
     from scripts.video_generation_planner import (
         CostBasisError,
         PlanningError,
+        TrustedAnchorProvider,
         VideoGenerationPlanner,
+        validate_batch_quote,
     )
     from scripts.video_service import UnsupportedCapabilityError
 except ModuleNotFoundError:  # RED: Task 7 module does not exist yet.
@@ -378,17 +383,46 @@ class VideoGenerationPlannerTests(unittest.TestCase):
                 self.snapshot, self.cost)
 
     def test_frame_mode_quote_binds_exact_approved_anchor_frame_digests(self):
+        class AnchorMedia:
+            def verify_image(self, path, *, source_fd=None):
+                self.assert_fd = source_fd
+                return {"sha256": hashlib.sha256((Path(path).name + "-decoded").encode()).hexdigest()}
+        with tempfile.TemporaryDirectory() as root:
+            refs = []
+            for name in ("first.png", "last.png"):
+                target = Path(root) / name
+                target.write_bytes((name + " bytes").encode()); target.chmod(0o600)
+                refs.append({"path": str(target), "role": "frame", "size_bytes": target.stat().st_size,
+                             "sha256": hashlib.sha256(target.read_bytes()).hexdigest()})
+            media = AnchorMedia()
+            planner = VideoGenerationPlanner(reference_policy=_ReferencePolicy(),
+                anchor_provider=TrustedAnchorProvider(media),
+                now=lambda: datetime(2026, 9, 14, 2, tzinfo=timezone.utc))
+            quote = planner._plan_materialized(design([shot(references=refs)]), self.snapshot, self.cost)
+            attempts = quote["items"][0]["attempts"]
+            self.assertEqual(len(attempts), 2)
+            self.assertEqual(attempts[0]["anchor_contract"], attempts[1]["anchor_contract"])
+            contract = attempts[0]["anchor_contract"]
+            self.assertEqual(contract["start_anchor"]["reference_sha256"], refs[0]["sha256"])
+            self.assertEqual(contract["start_anchor"]["reference_index"], 0)
+            self.assertEqual(contract["end_anchor"]["reference_sha256"], refs[1]["sha256"])
+            self.assertEqual(contract["end_anchor"]["reference_index"], 1)
+            self.assertTrue(all("anchor_frame_sha256" not in reference
+                                for attempt in attempts for reference in attempt["request"]["references"]))
+            self.assertIsNotNone(media.assert_fd)
+            forged = copy.deepcopy(quote)
+            forged["items"][0]["attempts"][0].pop("anchor_contract")
+            forged["quote_fingerprint"] = canonical_fingerprint(
+                {key: value for key, value in forged.items() if key != "quote_fingerprint"})
+            with self.assertRaisesRegex(PlanningError, "anchor contract"):
+                validate_batch_quote(forged)
+
+    def test_caller_anchor_digest_cannot_replace_trusted_anchor_provider(self):
         first = ref("first.png", "frame", anchor_frame_sha256="1" * 64)
         last = ref("last.png", "frame", anchor_frame_sha256="2" * 64)
-        quote = self.planner._plan_materialized(
-            design([shot(references=[first, last])]), self.snapshot, self.cost)
-        contract = quote["items"][0]["attempts"][0]["anchor_contract"]
-        self.assertEqual(contract["start_anchor"], {
-            "reference_sha256": first["sha256"], "frame_sha256": "1" * 64})
-        self.assertEqual(contract["end_anchor"], {
-            "reference_sha256": last["sha256"], "frame_sha256": "2" * 64})
-        self.assertTrue(all("anchor_frame_sha256" not in reference
-                            for reference in quote["items"][0]["attempts"][0]["request"]["references"]))
+        with self.assertRaisesRegex(PlanningError, "trusted anchor"):
+            self.planner._plan_materialized(
+                design([shot(references=[first, last])]), self.snapshot, self.cost)
 
 
 if __name__ == "__main__":

@@ -93,10 +93,10 @@ class Adapter:
 
 class TrustedProbeAdapter:
     def __init__(self, width=1280): self.width = width
-    def probe_json(self, path):
+    def probe_json(self, path, *, source_fd=None):
         return {"streams": [{"codec_type": "video", "width": self.width, "height": 720,
                              "codec_name": "h264"}], "format": {"duration": "4.0"}}
-    def verify_video_frames(self, path, duration_seconds):
+    def verify_video_frames(self, path, duration_seconds, *, source_fd=None):
         frame = {"requested_at_seconds": 0.0, "sha256": "7" * 64, "size_bytes": 16}
         return {"readable": True, "start_anchor": frame,
                 "end_anchor": {**frame, "requested_at_seconds": 3.95}}
@@ -431,6 +431,18 @@ class VideoBatchExecutorTests(unittest.TestCase):
         receipt["evaluation_fingerprint"] = canonical_fingerprint(
             {key: value for key, value in receipt.items() if key != "evaluation_fingerprint"})
         with self.assertRaisesRegex(ValueError, "submit"):
+            self.executor.apply_evaluation_decision(receipt)
+
+    def test_manual_review_reasons_are_rederived_not_accepted_from_public_hash(self):
+        self.executor.run_next(PROJECT_ID, "v001", 1)
+        self.adapter.status = "success"; self.adapter.download = True
+        task = self.executor.reconcile(PROJECT_ID, "v001")["tasks"][0]
+        receipt = self.make_receipt(task, malformed=True)
+        receipt["decision"]["manual_review_reasons"].append("quote_binding_conflict")
+        receipt["decision"]["manual_review_reasons"].reverse()
+        receipt["evaluation_fingerprint"] = canonical_fingerprint(
+            {key: value for key, value in receipt.items() if key != "evaluation_fingerprint"})
+        with self.assertRaisesRegex(ValueError, "trusted recomputation"):
             self.executor.apply_evaluation_decision(receipt)
 
     def test_private_evaluation_handoff_rejects_stale_artifact_digest(self):

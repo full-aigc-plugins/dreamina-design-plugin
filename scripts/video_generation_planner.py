@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
+import stat
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from scripts.json_contracts import ContractValidationError, canonical_fingerprint, parse_rfc3339, validate_contract
@@ -50,6 +53,66 @@ def derive_output_dimensions(video_resolution: Any, ratio: Any) -> tuple[int, in
     if numerator >= denominator:
         return ((short_edge * numerator + denominator // 2) // denominator, short_edge)
     return (short_edge, (short_edge * denominator + numerator // 2) // numerator)
+
+
+class TrustedAnchorProvider:
+    """Derive canonical anchor frame evidence from one private durable reference FD."""
+
+    def __init__(self, media_adapter: Any, *, max_reference_bytes: int = 100 * 1024 * 1024) -> None:
+        if not callable(getattr(media_adapter, "verify_image", None)):
+            raise TypeError("trusted anchor provider requires a media adapter")
+        self._media_adapter = media_adapter
+        self._max_reference_bytes = max_reference_bytes
+
+    def capture(self, reference: Mapping[str, Any], *, index: int) -> dict[str, Any]:
+        path = Path(str(reference.get("path", "")))
+        descriptor = None
+        if not path.is_absolute() or reference.get("role") != "frame":
+            raise PlanningError("anchor reference must be one absolute frame")
+        try:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            before = os.fstat(descriptor)
+            declared_size = reference.get("size_bytes")
+            if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() \
+                    or stat.S_IMODE(before.st_mode) & 0o077 \
+                    or isinstance(declared_size, bool) or not isinstance(declared_size, int) \
+                    or declared_size != before.st_size or not 0 < before.st_size <= self._max_reference_bytes:
+                raise PlanningError("anchor reference is not a private bounded regular file")
+            identity = (before.st_dev, before.st_ino, before.st_uid, stat.S_IMODE(before.st_mode),
+                        before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+            digest = hashlib.sha256()
+            observed = 0
+            while True:
+                chunk = os.read(descriptor, min(1024 * 1024, self._max_reference_bytes - observed + 1))
+                if not chunk:
+                    break
+                observed += len(chunk)
+                if observed > self._max_reference_bytes or observed > declared_size:
+                    raise PlanningError("anchor reference exceeded its declared size")
+                digest.update(chunk)
+            if observed != declared_size or digest.hexdigest() != reference.get("sha256"):
+                raise PlanningError("anchor reference digest does not match durable bytes")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            decoded = self._media_adapter.verify_image(path, source_fd=descriptor)
+            after = os.fstat(descriptor)
+            path_after = os.stat(path, follow_symlinks=False)
+            after_identity = (after.st_dev, after.st_ino, after.st_uid, stat.S_IMODE(after.st_mode),
+                              after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+            path_identity = (path_after.st_dev, path_after.st_ino, path_after.st_uid,
+                             stat.S_IMODE(path_after.st_mode), path_after.st_size,
+                             path_after.st_mtime_ns, path_after.st_ctime_ns)
+            if after_identity != identity or path_identity != identity:
+                raise PlanningError("anchor reference changed during trusted decoding")
+            frame_sha256 = decoded.get("sha256") if isinstance(decoded, Mapping) else None
+            if not isinstance(frame_sha256, str) or _DIGEST.fullmatch(frame_sha256) is None:
+                raise PlanningError("trusted anchor decode did not return a frame digest")
+            return {"reference_sha256": digest.hexdigest(), "frame_sha256": frame_sha256,
+                    "reference_index": index, "role": "frame"}
+        except OSError as exc:
+            raise PlanningError("anchor reference cannot be safely opened") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
 
 def _require_rfc3339(value: Any, *, label: str) -> str:
@@ -101,6 +164,20 @@ def validate_batch_quote(quote: Mapping[str, Any]) -> None:
                 attempt["request"].get("video_resolution"), attempt["request"].get("ratio"))
             if derived is not None and derived != profile_dimensions:
                 raise PlanningError("output profile dimensions do not match quoted request")
+            contract = attempt.get("anchor_contract")
+            if item["mode"] in {"frames2video", "multiframe2video"}:
+                references = [(index, reference) for index, reference in enumerate(attempt["request"].get("references", []))
+                              if isinstance(reference, Mapping) and reference.get("role") == "frame"]
+                if len(references) < 2 or not isinstance(contract, Mapping):
+                    raise PlanningError("frame quote requires trusted anchor contract")
+                expected_anchors = (("start_anchor", references[0]), ("end_anchor", references[-1]))
+                for name, (index, reference) in expected_anchors:
+                    anchor = contract.get(name)
+                    if not isinstance(anchor, Mapping) or anchor.get("reference_sha256") != reference.get("sha256") \
+                            or anchor.get("reference_index") != index or anchor.get("role") != "frame":
+                        raise PlanningError("anchor contract does not match quoted durable references")
+            elif contract is not None:
+                raise PlanningError("non-frame quote cannot carry anchor contract")
     core = {key: copy.deepcopy(value) for key, value in quote.items() if key != "quote_fingerprint"}
     if quote["quote_fingerprint"] != canonical_fingerprint(core):
         raise PlanningError("quote_fingerprint does not match quote")
@@ -109,10 +186,16 @@ def validate_batch_quote(quote: Mapping[str, Any]) -> None:
 class VideoGenerationPlanner:
     """Materialize every base/retry request without approving or submitting it."""
 
-    def __init__(self, reference_policy: Any | None = None, *, project_store: Any | None = None, capability_provider_factory: Callable[[], Any] | None = None, now: Any | None = None, snapshot_max_age_seconds: int = 86400) -> None:
+    def __init__(self, reference_policy: Any | None = None, *, project_store: Any | None = None,
+                 capability_provider_factory: Callable[[], Any] | None = None,
+                 anchor_provider: TrustedAnchorProvider | None = None, now: Any | None = None,
+                 snapshot_max_age_seconds: int = 86400) -> None:
         self._reference_policy = reference_policy
         self._project_store = project_store
         self._capability_provider_factory = capability_provider_factory
+        if anchor_provider is not None and type(anchor_provider) is not TrustedAnchorProvider:
+            raise TypeError("anchor_provider must be the trusted production provider")
+        self._anchor_provider = anchor_provider
         self._now = now or (lambda: datetime.now(timezone.utc))
         if isinstance(snapshot_max_age_seconds, bool) or not isinstance(snapshot_max_age_seconds, int) or snapshot_max_age_seconds < 1:
             raise ValueError("snapshot_max_age_seconds must be a positive integer")
@@ -169,25 +252,7 @@ class VideoGenerationPlanner:
             request = service.build_request(**kwargs)
         except DurationOutOfRangeError as exc:
             raise UnsupportedCapabilityError(str(exc)) from exc
-        # Anchor digests bind local evaluation evidence, not the paid provider request.
-        for reference in request.get("references", []):
-            if isinstance(reference, dict):
-                reference.pop("anchor_frame_sha256", None)
-        anchor_contract = None
-        if mode in {"frames2video", "multiframe2video"}:
-            frames = [item for item in references
-                      if isinstance(item, Mapping) and str(item.get("role", "")).lower() == "frame"]
-            if len(frames) >= 2 and all(_DIGEST.fullmatch(str(item.get("sha256", "")))
-                                        and _DIGEST.fullmatch(str(item.get("anchor_frame_sha256", "")))
-                                        for item in (frames[0], frames[-1])):
-                anchor_contract = {
-                    "start_anchor": {"reference_sha256": frames[0]["sha256"],
-                                     "frame_sha256": frames[0]["anchor_frame_sha256"]},
-                    "end_anchor": {"reference_sha256": frames[-1]["sha256"],
-                                   "frame_sha256": frames[-1]["anchor_frame_sha256"]},
-                }
-        return {"shot_id": str(shot.get("id", "")), "mode": mode, "request": request,
-                "anchor_contract": anchor_contract}
+        return {"shot_id": str(shot.get("id", "")), "mode": mode, "request": request}
 
     def _plan_materialized(
         self,
@@ -227,13 +292,25 @@ class VideoGenerationPlanner:
                 raise PlanningError("retry must use a closed repair directive")
 
             planned = self._plan_shot(shot, snapshot)
+            anchor_contract = None
+            if planned["mode"] in {"frames2video", "multiframe2video"}:
+                if self._anchor_provider is None:
+                    raise PlanningError("frame generation requires trusted anchor evidence")
+                frames = [(index, reference) for index, reference in enumerate(planned["request"].get("references", []))
+                          if isinstance(reference, Mapping) and reference.get("role") == "frame"]
+                if len(frames) < 2:
+                    raise PlanningError("frame generation requires two trusted anchors")
+                anchor_contract = {
+                    "start_anchor": self._anchor_provider.capture(frames[0][1], index=frames[0][0]),
+                    "end_anchor": self._anchor_provider.capture(frames[-1][1], index=frames[-1][0]),
+                }
             attempts = [self._attempt(1, None, planned["request"], ceiling,
-                                      anchor_contract=planned["anchor_contract"])]
+                                      anchor_contract=anchor_contract)]
             for index, repair_key in enumerate(repairs, start=2):
                 retry = copy.deepcopy(planned["request"])
                 retry["prompt"] = f'{retry["prompt"]}\n\nRepair directive: {REPAIR_DIRECTIVES[repair_key]}'
                 attempts.append(self._attempt(index, repair_key, retry, ceiling,
-                                              anchor_contract=planned["anchor_contract"]))
+                                              anchor_contract=anchor_contract))
             items.append({
                 "shot_id": planned["shot_id"], "mode": planned["mode"],
                 "credit_ceiling": ceiling,

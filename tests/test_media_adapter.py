@@ -347,6 +347,13 @@ class MediaAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(MediaOutputError, "PNG"):
             self.adapter.verify_video_frames(self.source, 4.0)
 
+    def test_video_frame_verification_rejects_crc_valid_but_undecodable_idat(self) -> None:
+        header = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+        self.runner.frame_bytes = (b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", header)
+            + _png_chunk(b"IDAT", b"not-a-zlib-stream") + _png_chunk(b"IEND", b""))
+        with self.assertRaisesRegex(MediaOutputError, "decodable"):
+            self.adapter.verify_video_frames(self.source, 4.0)
+
     def test_video_frame_verification_rejects_decoder_failure(self) -> None:
         self.runner.exit_code = 1
         with self.assertRaisesRegex(MediaOutputError, "exit 1"):

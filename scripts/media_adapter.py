@@ -20,6 +20,7 @@ from scripts.trusted_media_tools import TrustedMediaToolStore
 
 
 DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+MAX_DECODED_FRAME_BYTES = 64 * 1024 * 1024
 
 
 class MediaAdapterError(RuntimeError):
@@ -40,7 +41,9 @@ def _validate_complete_png(payload: bytes) -> tuple[int, int]:
         raise MediaOutputError("ffmpeg frame output is not a valid PNG")
     offset = 8
     chunks: list[bytes] = []
+    idat_parts: list[bytes] = []
     width = height = 0
+    channels = 0
     while offset < len(payload):
         if len(payload) - offset < 12:
             raise MediaOutputError("ffmpeg frame PNG is truncated")
@@ -60,6 +63,14 @@ def _validate_complete_png(payload: bytes) -> tuple[int, int]:
             width, height = struct.unpack(">II", chunk_data[:8])
             if width <= 0 or height <= 0:
                 raise MediaOutputError("ffmpeg frame PNG dimensions are invalid")
+            bit_depth, color_type, compression, filtering, interlace = chunk_data[8:]
+            channel_counts = {0: 1, 2: 3, 4: 2, 6: 4}
+            if bit_depth != 8 or color_type not in channel_counts \
+                    or compression != 0 or filtering != 0 or interlace != 0:
+                raise MediaOutputError("ffmpeg frame PNG format is unsupported")
+            channels = channel_counts[color_type]
+        if chunk_type == b"IDAT":
+            idat_parts.append(chunk_data)
         offset = end
         if chunk_type == b"IEND":
             if length != 0 or offset != len(payload):
@@ -67,6 +78,20 @@ def _validate_complete_png(payload: bytes) -> tuple[int, int]:
             break
     if not chunks or chunks[-1] != b"IEND" or b"IDAT" not in chunks:
         raise MediaOutputError("ffmpeg frame PNG is incomplete")
+    expected_bytes = height * (1 + width * channels)
+    if expected_bytes <= 0 or expected_bytes > MAX_DECODED_FRAME_BYTES:
+        raise MediaOutputError("ffmpeg frame PNG decoded size is invalid")
+    try:
+        decoder = zlib.decompressobj()
+        pixels = decoder.decompress(b"".join(idat_parts), expected_bytes + 1)
+        pixels += decoder.flush(expected_bytes + 1 - len(pixels))
+    except zlib.error as exc:
+        raise MediaOutputError("ffmpeg frame PNG pixels are not decodable") from exc
+    if len(pixels) != expected_bytes or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+        raise MediaOutputError("ffmpeg frame PNG pixel payload is invalid")
+    stride = 1 + width * channels
+    if any(pixels[offset] > 4 for offset in range(0, len(pixels), stride)):
+        raise MediaOutputError("ffmpeg frame PNG row filter is invalid")
     return width, height
 
 
@@ -102,6 +127,7 @@ class SubprocessMediaRunner:
         stderr_cap: int,
         start_new_session: bool,
         terminate_process_group: bool,
+        pass_fds: Sequence[int] = (),
     ) -> tuple[int, str, str]:
         exit_code, stdout, stderr = self._run_bytes(
             argv,
@@ -112,6 +138,7 @@ class SubprocessMediaRunner:
             stderr_cap=stderr_cap,
             start_new_session=start_new_session,
             terminate_process_group=terminate_process_group,
+            pass_fds=pass_fds,
         )
         return (
             exit_code,
@@ -130,6 +157,7 @@ class SubprocessMediaRunner:
         stderr_cap: int,
         start_new_session: bool,
         terminate_process_group: bool,
+        pass_fds: Sequence[int] = (),
     ) -> tuple[int, bytes, str]:
         """Stream bounded binary stdout without applying text decoding."""
         exit_code, stdout, stderr = self._run_bytes(
@@ -141,6 +169,7 @@ class SubprocessMediaRunner:
             stderr_cap=stderr_cap,
             start_new_session=start_new_session,
             terminate_process_group=terminate_process_group,
+            pass_fds=pass_fds,
         )
         return exit_code, stdout, stderr.decode("utf-8", errors="replace")
 
@@ -155,6 +184,7 @@ class SubprocessMediaRunner:
         stderr_cap: int,
         start_new_session: bool,
         terminate_process_group: bool,
+        pass_fds: Sequence[int] = (),
     ) -> tuple[int, bytes, bytes]:
         process = subprocess.Popen(  # noqa: S603
             list(argv),
@@ -163,6 +193,7 @@ class SubprocessMediaRunner:
             shell=shell,
             env=dict(env),
             start_new_session=start_new_session,
+            pass_fds=tuple(pass_fds),
         )
         selector = None
         buffers = {"stdout": bytearray(), "stderr": bytearray()}
@@ -264,7 +295,8 @@ class MediaAdapter:
         self.max_output_bytes = max_output_bytes
         self.env = self._minimal_environment()
 
-    def run(self, kind: str, argv: Sequence[str], *, timeout_seconds: int) -> MediaResult:
+    def run(self, kind: str, argv: Sequence[str], *, timeout_seconds: int,
+            pass_fds: Sequence[int] = ()) -> MediaResult:
         """Execute one enrolled kind with an argv-only, bounded process."""
         if isinstance(argv, (str, bytes)) or not all(isinstance(arg, str) for arg in argv):
             raise TypeError("argv must be a sequence of strings")
@@ -283,6 +315,7 @@ class MediaAdapter:
                     stderr_cap=self.max_output_bytes,
                     start_new_session=True,
                     terminate_process_group=True,
+                    pass_fds=pass_fds,
                 )
             except (TimeoutError, subprocess.TimeoutExpired) as exc:
                 raise MediaTimeoutError(
@@ -293,7 +326,8 @@ class MediaAdapter:
             self._tool_store.release(tool)
 
     def _run_binary(
-        self, kind: str, argv: Sequence[str], *, timeout_seconds: int
+        self, kind: str, argv: Sequence[str], *, timeout_seconds: int,
+        pass_fds: Sequence[int] = ()
     ) -> _BinaryMediaResult:
         """Execute one enrolled kind with bounded binary stdout for frame decoding."""
         if isinstance(argv, (str, bytes)) or not all(isinstance(arg, str) for arg in argv):
@@ -313,6 +347,7 @@ class MediaAdapter:
                     stderr_cap=self.max_output_bytes,
                     start_new_session=True,
                     terminate_process_group=True,
+                    pass_fds=pass_fds,
                 )
             except (TimeoutError, subprocess.TimeoutExpired) as exc:
                 raise MediaTimeoutError(
@@ -322,15 +357,17 @@ class MediaAdapter:
         finally:
             self._tool_store.release(tool)
 
-    def probe_json(self, path: Path) -> dict[str, object]:
+    def probe_json(self, path: Path, *, source_fd: int | None = None) -> dict[str, object]:
         """Run ffprobe and require exactly one JSON object on stdout."""
         source = Path(path)
         if not source.is_absolute():
             raise MediaOutputError("ffprobe source path must be absolute")
+        source_arg = f"/dev/fd/{source_fd}" if source_fd is not None else str(source)
         result = self.run(
             "ffprobe",
-            ["-v", "error", "-show_streams", "-show_format", "-of", "json", str(source)],
+            ["-v", "error", "-show_streams", "-show_format", "-of", "json", source_arg],
             timeout_seconds=30,
+            pass_fds=() if source_fd is None else (source_fd,),
         )
         if result.exit_code != 0:
             raise MediaOutputError(
@@ -348,16 +385,19 @@ class MediaAdapter:
             raise MediaOutputError("ffprobe JSON output must be an object")
         return payload
 
-    def verify_video_frames(self, path: Path, duration_seconds: float) -> dict[str, object]:
+    def verify_video_frames(self, path: Path, duration_seconds: float, *,
+                            source_fd: int | None = None) -> dict[str, object]:
         """Decode and fingerprint one bounded image at both clip anchors."""
         if not Path(path).is_absolute() or duration_seconds <= 0:
             raise MediaOutputError("video frame verification input is invalid")
         positions = {"start_anchor": 0.0, "end_anchor": max(0.0, duration_seconds - 0.05)}
         decoded: dict[str, object] = {}
+        source_arg = f"/dev/fd/{source_fd}" if source_fd is not None else str(path)
         for name, position in positions.items():
             result = self._run_binary("ffmpeg", ["-v", "error", "-ss", f"{position:.3f}",
-                "-i", str(path), "-map", "0:v:0", "-frames:v", "1",
-                "-f", "image2pipe", "-vcodec", "png", "-"], timeout_seconds=30)
+                "-i", source_arg, "-map", "0:v:0", "-frames:v", "1",
+                "-f", "image2pipe", "-vcodec", "png", "-"], timeout_seconds=30,
+                pass_fds=() if source_fd is None else (source_fd,))
             if result.exit_code != 0:
                 raise MediaOutputError(f"ffmpeg frame decode failed with exit {result.exit_code}")
             frame = result.stdout
@@ -366,6 +406,21 @@ class MediaAdapter:
                              "sha256": hashlib.sha256(frame).hexdigest(),
                              "size_bytes": len(frame)}
         return {"readable": True, **decoded}
+
+    def verify_image(self, path: Path, *, source_fd: int | None = None) -> dict[str, object]:
+        """Decode one image through enrolled ffmpeg and return its canonical PNG identity."""
+        source = Path(path)
+        if not source.is_absolute():
+            raise MediaOutputError("image verification path must be absolute")
+        source_arg = f"/dev/fd/{source_fd}" if source_fd is not None else str(source)
+        result = self._run_binary("ffmpeg", ["-v", "error", "-i", source_arg,
+            "-map", "0:v:0", "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"],
+            timeout_seconds=30, pass_fds=() if source_fd is None else (source_fd,))
+        if result.exit_code != 0:
+            raise MediaOutputError(f"ffmpeg image decode failed with exit {result.exit_code}")
+        width, height = _validate_complete_png(result.stdout)
+        return {"sha256": hashlib.sha256(result.stdout).hexdigest(),
+                "size_bytes": len(result.stdout), "width": width, "height": height}
 
     @staticmethod
     def _minimal_environment() -> dict[str, str]:

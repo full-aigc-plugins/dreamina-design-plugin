@@ -31,13 +31,13 @@
         "action": {"type": "string", "enum": ["accepted", "retry", "rejected", "manual_review"]},
         "repair_directive": {"type": "string", "enum": ["identity_consistency", "camera_match", "remove_text", "temporal_stability"]},
         "request_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-        "manual_review_reasons": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "enum": ["allowance_binding_conflict", "allowance_inactive", "anchor_evidence_unavailable", "artifact_binding_conflict", "artifact_evidence_unavailable", "design_binding_conflict", "measured_evidence_unavailable", "mixed_repair_directives", "quote_binding_conflict", "repair_directive_unavailable", "retry_not_prequoted", "retry_unavailable", "semantic_binding_conflict", "semantic_evaluator_invalid", "semantic_evidence_invalid"]}}
+        "manual_review_reasons": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "enum": ["allowance_binding_conflict", "allowance_inactive", "anchor_evidence_unavailable", "artifact_binding_conflict", "artifact_evidence_unavailable", "design_binding_conflict", "measured_evidence_unavailable", "mixed_repair_directives", "quote_binding_conflict", "repair_directive_unavailable", "retry_not_prequoted", "retry_unavailable", "semantic_binding_conflict", "semantic_evaluator_invalid", "semantic_evidence_invalid", "semantic_evidence_unavailable"]}}
       },
       "allOf": [
         {"if": {"properties": {"action": {"const": "retry"}}}, "then": {"required": ["repair_directive", "request_fingerprint"], "not": {"required": ["manual_review_reasons"]}}, "else": {"not": {"anyOf": [{"required": ["repair_directive"]}, {"required": ["request_fingerprint"]}]}}},
         {"if": {"properties": {"action": {"const": "manual_review"}}}, "then": {"required": ["manual_review_reasons"]}, "else": {"not": {"required": ["manual_review_reasons"]}}}
       ]
     },
-    "semantic_evaluator": {"type": "object", "additionalProperties": false, "required": ["provider_claim", "model_claim", "claimed_evaluated_at", "trust_level"], "properties": {"provider_claim": {"type": "string", "minLength": 1, "maxLength": 64}, "model_claim": {"type": "string", "minLength": 1, "maxLength": 128}, "claimed_evaluated_at": {"type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"}, "trust_level": {"type": "string", "const": "untrusted"}}}
+    "semantic_evaluator": {"type": "object", "additionalProperties": false, "required": ["provider_claim", "model_claim", "claimed_evaluated_at", "trust_level"], "properties": {"provider_claim": {"type": "string", "enum": ["codex", "unavailable"]}, "model_claim": {"type": "string", "pattern": "^(?:unavailable|[A-Za-z0-9._:/-]{1,128})$"}, "claimed_evaluated_at": {"type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"}, "trust_level": {"type": "string", "const": "untrusted"}}}
   }
 }

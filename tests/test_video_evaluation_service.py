@@ -31,8 +31,13 @@ class SyntheticTrustedMediaAdapter:
     def __init__(self):
         self.probe = {"streams": [{"codec_type": "video", "width": 1280, "height": 720,
                       "codec_name": "h264"}], "format": {"duration": "4.0"}}
-    def probe_json(self, path): return copy.deepcopy(self.probe)
-    def verify_video_frames(self, path, duration_seconds):
+        self.probe_source_fd = None
+        self.frame_source_fd = None
+    def probe_json(self, path, *, source_fd=None):
+        self.probe_source_fd = source_fd
+        return copy.deepcopy(self.probe)
+    def verify_video_frames(self, path, duration_seconds, *, source_fd=None):
+        self.frame_source_fd = source_fd
         frame = {"requested_at_seconds": 0.0, "sha256": "7" * 64, "size_bytes": 16}
         return {"readable": True, "start_anchor": frame,
                 "end_anchor": {**frame, "requested_at_seconds": 3.95}}
@@ -160,6 +165,24 @@ class ArtifactSnapshotCleanupTests(unittest.TestCase):
             self.assertEqual(close_attempts, ["snapshot", "source"])
             self.assertEqual(temporary.cleanup_calls, 1)
 
+    def test_snapshot_uses_the_single_exclusive_output_descriptor_without_reopen(self):
+        real_open = __import__("os").open
+        opened = []
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "source.mp4"
+            source.write_bytes(b"private video"); source.chmod(0o600)
+            def recording_open(path, flags, mode=0o777, **kwargs):
+                opened.append((Path(path).name, flags))
+                return real_open(path, flags, mode, **kwargs)
+            with mock.patch("scripts.video_evaluation_service.os.open", side_effect=recording_open):
+                with _ArtifactSnapshot({"path": str(source), "size_bytes": source.stat().st_size},
+                                       max_bytes=1024) as snapshot:
+                    self.assertIsNotNone(snapshot.snapshot_fd)
+            snapshot_opens = [flags for name, flags in opened if name == "artifact.snapshot"]
+            self.assertEqual(len(snapshot_opens), 1)
+            self.assertTrue(snapshot_opens[0] & __import__("os").O_EXCL)
+            self.assertTrue(snapshot_opens[0] & __import__("os").O_RDWR)
+
 
 class VideoEvaluationServiceTests(unittest.TestCase):
     def setUp(self):
@@ -188,6 +211,20 @@ class VideoEvaluationServiceTests(unittest.TestCase):
         result = self.service.measure_clip(self.artifact, self.shot, binding=self.binding)
         self.assertEqual(set(result["gates"]), set(MEASURED))
         self.assertTrue(all(gate["status"] == "passed" for gate in result["gates"].values()))
+        self.assertIsNotNone(self.media.probe_source_fd)
+        self.assertEqual(self.media.probe_source_fd, self.media.frame_source_fd)
+
+    def test_valid_semantic_skip_has_semantic_not_measured_unavailable_reason(self):
+        payload = semantic(self.binding)
+        payload["gates"]["intent"] = {"status": "skipped", "evidence": "model could not determine intent"}
+        allowance = {"allowance_id": self.binding["allowance_id"], "project_id": self.binding["project_id"],
+                     "quote_version": self.binding["batch_version"], "quote_fingerprint": self.binding["quote_fingerprint"],
+                     "design_version": self.binding["design_version"], "design_fingerprint": self.binding["design_fingerprint"],
+                     "state": "active", "requests": [], "reservations": []}
+        receipt = self.service.evaluate(self.artifact, self.shot, payload, binding=self.binding,
+            allowance=allowance, quote=self.quote, evaluation_id="eval_semantic_skip",
+            evaluator={"provider": "codex", "model": "m", "evaluated_at": "2026-09-14T02:00:00Z"})
+        self.assertEqual(receipt["decision"]["manual_review_reasons"], ["semantic_evidence_unavailable"])
 
     def test_semantic_gate_object_rejects_missing_extra_and_wrong_domain(self):
         missing = semantic(self.binding); missing["gates"].pop("intent")
@@ -263,7 +300,7 @@ class VideoEvaluationServiceTests(unittest.TestCase):
         self.assertEqual(receipt["decision"]["action"], "manual_review")
 
     def test_empty_frame_output_is_unavailable_and_requires_manual_review(self):
-        self.media.verify_video_frames = lambda path, duration: {}
+        self.media.verify_video_frames = lambda path, duration, **kwargs: {}
         allowance = {"allowance_id": self.binding["allowance_id"], "project_id": self.binding["project_id"],
                      "quote_version": self.binding["batch_version"], "quote_fingerprint": self.binding["quote_fingerprint"],
                      "design_version": self.binding["design_version"], "design_fingerprint": self.binding["design_fingerprint"],
@@ -352,13 +389,13 @@ class VideoEvaluationServiceTests(unittest.TestCase):
                 self.binding["artifact_sha256"] = hashlib.sha256(original).hexdigest()
                 self.artifact.update(self.binding, sha256=self.binding["artifact_sha256"], size_bytes=len(original))
                 self.shot.update(self.binding)
-                def mutating_probe(path, selected=mutation):
+                def mutating_probe(path, selected=mutation, **kwargs):
                     if selected == "replace":
                         self.clip.rename(self.clip.with_suffix(".old"))
                         self.clip.write_bytes(b"y" * len(original)); self.clip.chmod(0o600)
                     else:
                         self.clip.write_bytes(b"z" * len(original)); self.clip.chmod(0o600)
-                    return original_probe(path)
+                    return original_probe(path, **kwargs)
                 self.media.probe_json = mutating_probe
                 receipt = self.service.evaluate(self.artifact, self.shot, semantic(self.binding),
                     binding=self.binding, allowance=allowance, quote=self.quote,
@@ -396,12 +433,12 @@ class VideoEvaluationServiceTests(unittest.TestCase):
         second = {"binding": copy.deepcopy(self.binding),
                   "gates": dict(reversed(list(first["gates"].items())))}
         kwargs = {"binding": self.binding, "allowance": allowance, "quote": self.quote,
-                  "evaluation_id": "eval_order", "evaluator": {"provider": "caller-claim", "model": "m",
+                  "evaluation_id": "eval_order", "evaluator": {"provider": "codex", "model": "m",
                   "evaluated_at": "2026-09-14T02:00:00Z"}}
         a = self.service.evaluate(self.artifact, self.shot, first, **kwargs)
         b = self.service.evaluate(self.artifact, self.shot, second, **kwargs)
         self.assertEqual(a, b)
-        self.assertEqual(a["semantic_evaluator"]["provider_claim"], "caller-claim")
+        self.assertEqual(a["semantic_evaluator"]["provider_claim"], "codex")
         self.assertEqual(a["semantic_evaluator"]["trust_level"], "untrusted")
 
     def test_binding_conflict_with_passing_gates_has_closed_manual_reason(self):
