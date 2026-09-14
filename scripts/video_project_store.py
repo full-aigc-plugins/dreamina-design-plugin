@@ -161,6 +161,7 @@ class VideoProjectStore:
         *,
         schema_name: str | None = None,
         parent_version_field: str | None = None,
+        version: str | None = None,
     ) -> dict[str, Any]:
         if FAMILY.fullmatch(family) is None:
             raise ValueError("invalid version family")
@@ -174,7 +175,10 @@ class VideoProjectStore:
                 for path in family_root.glob("v*.json")
                 if (match := re.fullmatch(r"v([0-9]{3,})", path.stem)) is not None
             ]
-            version = f"v{max(numbers, default=0) + 1:03d}"
+            if version is None:
+                version = f"v{max(numbers, default=0) + 1:03d}"
+            elif re.fullmatch(r"v[0-9]{3,}", version) is None:
+                raise ValueError("invalid requested version")
             document = dict(payload)
             document["version"] = version
             if parent_version_field is not None:
@@ -193,7 +197,12 @@ class VideoProjectStore:
                 path=target,
                 payload_fingerprint=canonical_fingerprint(document),
             )
-            self._atomic_write(target, document, indeterminate_error=indeterminate)
+            self._atomic_write(
+                target,
+                document,
+                indeterminate_error=indeterminate,
+                no_replace=True,
+            )
             return document
 
     def reconcile_version(
@@ -441,18 +450,26 @@ class VideoProjectStore:
         payload: Mapping[str, Any],
         *,
         indeterminate_error: VersionCommitIndeterminateError | None = None,
+        no_replace: bool = False,
     ) -> None:
         encoded = (json.dumps(dict(payload), sort_keys=True, ensure_ascii=False) + "\n").encode()
         descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-        replaced = False
+        published = False
         try:
             os.fchmod(descriptor, 0o600)
             with os.fdopen(descriptor, "wb") as handle:
                 handle.write(encoded)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary, path)
-            replaced = True
+            if no_replace:
+                # ``link`` is an atomic create-only publication on the same
+                # filesystem.  A foreign path injected between allocation and
+                # publication raises FileExistsError rather than being replaced.
+                os.link(temporary, path, follow_symlinks=False)
+                os.unlink(temporary)
+            else:
+                os.replace(temporary, path)
+            published = True
             os.chmod(path, 0o600)
             directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             try:
@@ -468,7 +485,7 @@ class VideoProjectStore:
                 os.unlink(temporary)
             except FileNotFoundError:
                 pass
-            if replaced and indeterminate_error is not None:
+            if published and indeterminate_error is not None:
                 raise indeterminate_error from exc
             raise
 

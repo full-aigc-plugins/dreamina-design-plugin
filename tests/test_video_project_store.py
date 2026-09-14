@@ -163,6 +163,25 @@ class VideoProjectStoreTests(unittest.TestCase):
         self.assertEqual(json.loads(exact_path.read_text(encoding="utf-8")), expected_document)
         self.assertEqual([path.name for path in exact_path.parent.glob("v*.json")], ["v001.json"])
 
+    def test_requested_version_fails_closed_instead_of_replacing_an_existing_receipt(self) -> None:
+        """Catches version publication overwriting a path injected before commit."""
+        project = self.store.create(
+            title="no-replace", creative_mode="original_redesign", audio_policy="silent"
+        )
+        original = self.store.write_version(
+            project["project_id"], "analysis", {"schema_version": "1.0", "value": "original"}
+        )
+
+        with self.assertRaises(FileExistsError):
+            self.store.write_version(
+                project["project_id"], "analysis", {"schema_version": "1.0", "value": "replacement"},
+                version="v001",
+            )
+
+        self.assertEqual(
+            json.loads((self.root / project["project_id"] / "analysis" / "v001.json").read_text()), original
+        )
+
     def test_reconcile_version_returns_only_exact_private_valid_committed_document(self) -> None:
         """Catches reconciliation allocating a replacement or accepting the wrong receipt."""
         project = self.store.create(
