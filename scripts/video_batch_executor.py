@@ -196,6 +196,14 @@ class VideoBatchExecutor:
                                  and item["attempt"] == planned["attempt_number"] - 1), None)
                 if previous is None or previous["state"] != "evaluation_retryable":
                     continue
+                recorded = previous.get("evaluation_decision")
+                if not isinstance(recorded, dict) or recorded.get("action") != "retry" \
+                        or recorded.get("request_fingerprint") != planned["request_fingerprint"] \
+                        or recorded.get("repair_directive") != planned.get("repair_directive"):
+                    previous["state"] = "manual_review"
+                    previous["error_code"] = "RETRY_DECISION_BINDING_MISMATCH"
+                    self._persist_aggregate(state, quote)
+                    continue
                 previous["state"] = "retry_superseded"
                 previous["retry_consumed_by_attempt"] = planned["attempt_number"]
             task = {"shot_index": planned["shot_index"], "shot_id": planned["shot_id"],
@@ -323,6 +331,18 @@ class VideoBatchExecutor:
                                     artifact_sha256: str, submit_id: str,
                                     evaluation_id: str, evaluation_fingerprint: str,
                                     design_version: str) -> dict[str, Any]:
+        with self._transaction():
+            return self._record_evaluation_decision_locked(
+                project_id, batch_version, shot_id, attempt, decision,
+                artifact_sha256=artifact_sha256, submit_id=submit_id,
+                evaluation_id=evaluation_id, evaluation_fingerprint=evaluation_fingerprint,
+                design_version=design_version)
+
+    def _record_evaluation_decision_locked(self, project_id: str, batch_version: str,
+                                           shot_id: str, attempt: int, decision: str, *,
+                                           artifact_sha256: str, submit_id: str,
+                                           evaluation_id: str, evaluation_fingerprint: str,
+                                           design_version: str) -> dict[str, Any]:
         """Persist a narrow evaluator decision without performing evaluation itself."""
         if decision not in {"accepted", "retry", "rejected", "manual_review"}:
             raise ValueError("unsupported evaluation decision")
@@ -353,11 +373,80 @@ class VideoBatchExecutor:
                    "evaluation_id": evaluation_id, "decision": decision}
         if self._evaluation_fingerprint(binding) != evaluation_fingerprint:
             raise ValueError("evaluation receipt fingerprint mismatch")
-        task["evaluation_decision"] = decision
+        explicit_decision: dict[str, Any] = {"action": decision, "failed_gates": [], "binding": {
+            "project_id": project_id, "batch_version": batch_version, "shot_id": shot_id,
+            "attempt": attempt, "artifact_sha256": artifact_sha256, "design_version": design_version,
+            "design_fingerprint": quote.get("design_fingerprint"),
+            "quote_fingerprint": quote.get("quote_fingerprint"), "allowance_id": self._allowance_id}}
+        if decision == "retry":
+            next_attempt = next((planned for planned in self._ordered_attempts(quote)
+                                 if planned["shot_id"] == shot_id and planned["attempt_number"] == attempt + 1), None)
+            if next_attempt is None or next_attempt.get("repair_directive") not in {
+                    "identity_consistency", "camera_match", "remove_text", "temporal_stability"}:
+                raise ValueError("retry decision has no closed prequoted successor")
+            explicit_decision.update(repair_directive=next_attempt["repair_directive"],
+                                     request_fingerprint=next_attempt["request_fingerprint"])
+        task["evaluation_decision"] = explicit_decision
         task["evaluation_receipt"] = {**binding, "evaluation_fingerprint": evaluation_fingerprint}
         task["state"] = "evaluation_retryable" if decision == "retry" else decision
         self._persist_aggregate(state, quote)
         return state
+
+    def apply_evaluation_decision(self, decision: dict[str, Any]) -> dict[str, Any]:
+        """Persist one fully bound decision after re-verifying its artifact."""
+        if not isinstance(decision, dict) or set(decision) - {
+                "action", "repair_directive", "request_fingerprint", "failed_gates", "binding"}:
+            raise ValueError("evaluation decision must be closed")
+        binding = decision.get("binding")
+        required = {"project_id", "batch_version", "shot_id", "attempt", "artifact_sha256",
+                    "design_version", "design_fingerprint", "quote_fingerprint", "allowance_id"}
+        if not isinstance(binding, dict) or set(binding) != required or binding.get("allowance_id") != self._allowance_id:
+            raise ValueError("evaluation decision binding is incomplete")
+        action = decision.get("action")
+        if action not in {"accepted", "retry", "rejected", "manual_review"}:
+            raise ValueError("unsupported evaluation decision")
+        with self._transaction():
+            quote = self._quote(binding["project_id"], binding["batch_version"])
+            allowance = self._allowance.get(self._allowance_id)
+            if (binding.get("design_version"), binding.get("design_fingerprint"), binding.get("quote_fingerprint")) != (
+                    quote.get("design_version"), quote.get("design_fingerprint"), quote.get("quote_fingerprint")):
+                raise ValueError("evaluation decision quote or design binding is stale")
+            allowance_binding = {"project_id": allowance.get("project_id"),
+                                 "batch_version": allowance.get("quote_version"),
+                                 "design_version": allowance.get("design_version"),
+                                 "design_fingerprint": allowance.get("design_fingerprint"),
+                                 "quote_fingerprint": allowance.get("quote_fingerprint")}
+            if any(allowance_binding.get(name) != binding.get(name) for name in allowance_binding):
+                raise ValueError("evaluation decision allowance binding is stale")
+            state = self._load(binding["project_id"], binding["batch_version"])
+            task = next((item for item in state["tasks"] if item["shot_id"] == binding["shot_id"]
+                         and item["attempt"] == binding["attempt"]), None)
+            if task is None or task.get("state") != "awaiting_evaluation":
+                raise ValueError("evaluation decision requires an artifact awaiting evaluation")
+            artifact = next((item for item in task.get("artifacts", [])
+                             if item.get("sha256") == binding["artifact_sha256"]), None)
+            if artifact is None:
+                raise ValueError("evaluation artifact digest is stale")
+            current = self._tasks.verify_download_dir(str(Path(artifact["path"]).parent))
+            if not any(item.get("sha256") == binding["artifact_sha256"]
+                       and item.get("path") == artifact.get("path") for item in current):
+                raise ValueError("evaluation artifact digest is stale")
+            if action == "retry":
+                planned = next((item for item in self._ordered_attempts(quote)
+                                if item["shot_id"] == binding["shot_id"]
+                                and item["attempt_number"] == binding["attempt"] + 1), None)
+                if planned is None or decision.get("request_fingerprint") != planned.get("request_fingerprint") \
+                        or decision.get("repair_directive") != planned.get("repair_directive"):
+                    raise ValueError("retry decision is not the exact next prequoted request")
+                requests = allowance.get("requests", [])
+                if not any(item.get("shot_id") == binding["shot_id"]
+                           and item.get("attempt") == binding["attempt"] + 1
+                           and item.get("request_fingerprint") == decision["request_fingerprint"] for item in requests):
+                    raise ValueError("retry decision is unavailable in allowance")
+            task["evaluation_decision"] = json.loads(json.dumps(decision))
+            task["state"] = "evaluation_retryable" if action == "retry" else action
+            self._persist_aggregate(state, quote)
+            return state
 
     def resume(self, project_id: str, batch_version: str) -> dict[str, Any]:
         """Reconcile known submit ids; this method never creates a submission."""

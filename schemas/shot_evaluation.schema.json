@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/shot_evaluation.schema.json",
+  "title": "Bound Generated Shot Evaluation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "evaluation_id", "binding", "measured_gates", "semantic_gates", "decision", "failed_gates"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "evaluation_id": {"type": "string", "pattern": "^eval_[A-Za-z0-9_-]{1,120}$"},
+    "binding": {"$ref": "#/$defs/binding"},
+    "measured_gates": {"type": "array", "minItems": 8, "maxItems": 8, "items": {"$ref": "#/$defs/measured_gate"}},
+    "semantic_gates": {"type": "array", "minItems": 8, "maxItems": 8, "items": {"$ref": "#/$defs/semantic_gate"}},
+    "decision": {"type": "string", "enum": ["accepted", "retry", "rejected", "manual_review"]},
+    "repair_directive": {"type": "string", "enum": ["identity_consistency", "camera_match", "remove_text", "temporal_stability"]},
+    "request_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "failed_gates": {"type": "array", "uniqueItems": true, "items": {"type": "string", "enum": ["artifact_integrity", "dimensions", "codec", "duration", "aspect_ratio", "frame_readability", "start_anchor", "end_anchor", "intent", "composition", "identity_continuity", "camera_behavior", "rhythm_function", "temporal_defects", "source_copying", "subtitle_safe_area"]}}
+  },
+  "$defs": {
+    "binding": {"type": "object", "additionalProperties": false, "required": ["project_id", "batch_version", "shot_id", "attempt", "artifact_sha256", "design_version", "design_fingerprint", "quote_fingerprint", "allowance_id"], "properties": {"project_id": {"type": "string", "pattern": "^vp_[a-f0-9]{24}$"}, "batch_version": {"type": "string", "pattern": "^v[0-9]{3,}$"}, "shot_id": {"type": "string", "pattern": "^S[0-9]{2,}$"}, "attempt": {"type": "integer", "minimum": 1, "maximum": 3}, "artifact_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "design_version": {"type": "string", "pattern": "^v[0-9]{3,}$"}, "design_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "quote_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "allowance_id": {"type": "string", "pattern": "^ba_[a-f0-9]{32}$"}}},
+    "gate": {"type": "object", "additionalProperties": false, "required": ["name", "status", "evidence"], "properties": {"name": {"type": "string"}, "status": {"type": "string", "enum": ["passed", "failed", "unavailable"]}, "evidence": {"type": "string", "minLength": 1}}},
+    "measured_gate": {"allOf": [{"$ref": "#/$defs/gate"}, {"properties": {"name": {"enum": ["artifact_integrity", "dimensions", "codec", "duration", "aspect_ratio", "frame_readability", "start_anchor", "end_anchor"]}}}]},
+    "semantic_gate": {"allOf": [{"$ref": "#/$defs/gate"}, {"properties": {"name": {"enum": ["intent", "composition", "identity_continuity", "camera_behavior", "rhythm_function", "temporal_defects", "source_copying", "subtitle_safe_area"]}}}]}
+  }
+}

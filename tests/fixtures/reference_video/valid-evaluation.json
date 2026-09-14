@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0",
+  "evaluation_id": "eval_fixture_1",
+  "binding": {
+    "project_id": "vp_111111111111111111111111",
+    "batch_version": "v001",
+    "shot_id": "S01",
+    "attempt": 1,
+    "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "design_version": "v001",
+    "design_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "quote_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "allowance_id": "ba_dddddddddddddddddddddddddddddddd"
+  },
+  "measured_gates": [
+    {"name": "artifact_integrity", "status": "passed", "evidence": "trusted digest verification"},
+    {"name": "dimensions", "status": "passed", "evidence": "trusted probe dimensions"},
+    {"name": "codec", "status": "passed", "evidence": "trusted probe codec"},
+    {"name": "duration", "status": "passed", "evidence": "trusted probe duration"},
+    {"name": "aspect_ratio", "status": "passed", "evidence": "trusted probe aspect ratio"},
+    {"name": "frame_readability", "status": "passed", "evidence": "trusted decoded frames"},
+    {"name": "start_anchor", "status": "passed", "evidence": "trusted start frame"},
+    {"name": "end_anchor", "status": "passed", "evidence": "trusted end frame"}
+  ],
+  "semantic_gates": [
+    {"name": "intent", "status": "passed", "evidence": "reviewed intent"},
+    {"name": "composition", "status": "passed", "evidence": "reviewed composition"},
+    {"name": "identity_continuity", "status": "passed", "evidence": "reviewed identity"},
+    {"name": "camera_behavior", "status": "passed", "evidence": "reviewed camera"},
+    {"name": "rhythm_function", "status": "passed", "evidence": "reviewed rhythm"},
+    {"name": "temporal_defects", "status": "passed", "evidence": "reviewed temporal stability"},
+    {"name": "source_copying", "status": "passed", "evidence": "reviewed copying and text"},
+    {"name": "subtitle_safe_area", "status": "passed", "evidence": "reviewed subtitle area"}
+  ],
+  "decision": "accepted",
+  "failed_gates": []
+}

@@ -25,9 +25,10 @@ def request(prompt: str) -> dict:
 
 def quote() -> dict:
     one, retry, two = request("shot one"), request("shot one repaired"), request("shot two")
-    return {"project_id": PROJECT_ID, "quote_version": "v001", "design_version": "v001", "items": [
+    return {"project_id": PROJECT_ID, "quote_version": "v001", "design_version": "v001",
+            "design_fingerprint": "b" * 64, "quote_fingerprint": "c" * 64, "items": [
         {"shot_id": "S01", "attempts": [
-          {"attempt_number": 2, "request": retry, "request_fingerprint": build_video_request_fingerprint(retry)},
+          {"attempt_number": 2, "repair_directive": "identity_consistency", "request": retry, "request_fingerprint": build_video_request_fingerprint(retry)},
           {"attempt_number": 1, "request": one, "request_fingerprint": build_video_request_fingerprint(one)}]},
         {"shot_id": "S02", "attempts": [{"attempt_number": 1, "request": two,
           "request_fingerprint": build_video_request_fingerprint(two)}]},
@@ -47,7 +48,10 @@ class Allowance:
     def __init__(self): self.reservations = []; self.ambiguous = []; self.commits = []; self.fail_commit = False
     def get(self, allowance_id):
         return {"allowance_id": allowance_id, "project_id": PROJECT_ID, "quote_version": "v001",
-                "state": "active", "reservations": copy.deepcopy(self.reservations)}
+                "quote_fingerprint": "c" * 64, "design_version": "v001", "design_fingerprint": "b" * 64,
+                "state": "active", "requests": [{"shot_id": "S01", "attempt": 2,
+                "request_fingerprint": build_video_request_fingerprint(request("shot one repaired"))}],
+                "reservations": copy.deepcopy(self.reservations)}
     def reserve(self, allowance_id, *, shot_id, attempt, request_fingerprint):
         reservation = {"reservation_id": f"br_{len(self.reservations)+1:032x}", "allowance_id": allowance_id,
                        "shot_id": shot_id, "attempt": attempt, "request_fingerprint": request_fingerprint, "state": "reserved"}
@@ -352,6 +356,22 @@ class VideoBatchExecutorTests(unittest.TestCase):
                 PROJECT_ID, "v001", "S01", 1, "retry", artifact_sha256="f" * 64,
                 submit_id="submit_1", evaluation_id="eval_1",
                 evaluation_fingerprint="a" * 64, design_version="v001")
+
+    def test_explicit_retry_decision_must_bind_prequoted_fingerprint_before_submission(self):
+        self.executor.run_next(PROJECT_ID, "v001", 1)
+        self.adapter.status = "success"; self.adapter.download = True
+        state = self.executor.reconcile(PROJECT_ID, "v001")
+        task = state["tasks"][0]
+        decision = {"action": "retry", "repair_directive": "identity_consistency",
+                    "request_fingerprint": build_video_request_fingerprint(request("shot one repaired")),
+                    "failed_gates": ["identity_continuity"],
+                    "binding": {"project_id": PROJECT_ID, "batch_version": "v001", "shot_id": "S01",
+                    "attempt": 1, "artifact_sha256": task["artifacts"][0]["sha256"],
+                    "design_version": "v001", "design_fingerprint": "b" * 64,
+                    "quote_fingerprint": "c" * 64, "allowance_id": "ba_" + "2" * 32}}
+        persisted = self.executor.apply_evaluation_decision(decision)
+        self.assertEqual(persisted["tasks"][0]["evaluation_decision"], decision)
+        self.assertEqual(self.executor.run_next(PROJECT_ID, "v001", 1)["new_submissions"], 1)
 
     def test_existing_symlink_broad_or_foreign_download_root_fails_without_mutation(self):
         for kind in ("symlink", "broad", "foreign"):
