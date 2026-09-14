@@ -13,7 +13,7 @@ from scripts.approval_guard import ApprovalGuard
 from scripts.account_service import AccountService
 from scripts.auth_service import AuthFlowStore, AuthService
 from scripts.diagnostic_service import DiagnosticService
-from scripts.dreamina_adapter import DreaminaAdapter
+from scripts.dreamina_adapter import DreaminaAdapter, DreaminaAdapterError
 from scripts.environment_service import EnvironmentService
 from scripts.image_service import ImageService, build_request_fingerprint
 from scripts.native_approval import NativeApprovalProvider
@@ -284,7 +284,8 @@ def _handle(message: Mapping[str, Any], tools: DreaminaMcpTools) -> dict | None:
         except Exception as exc:
             error_type=type(exc).__name__
             requires_user_action=isinstance(exc,(PermissionError,TrustedCliError))
-            structured={"error_type":error_type,"message":str(exc),"retryable":False,"requires_user_action":requires_user_action,"next_action":"request_user_action" if requires_user_action else "correct_request"}
+            query_retryable=str(params.get("name", "")) == "dreamina_query_task" and isinstance(exc, DreaminaAdapterError)
+            structured={"error_type":error_type,"message":str(exc),"retryable":query_retryable,"requires_user_action":requires_user_action,"next_action":"request_user_action" if requires_user_action else "query_same_submit_id" if query_retryable else "correct_request"}
             return _response(request_id, {"content": [{"type": "text", "text": json.dumps(structured, ensure_ascii=False)}], "structuredContent": structured, "isError": True})
     if request_id is not None:
         return _response(request_id, error={"code": -32601, "message": f"method not found: {method}"})

@@ -2,6 +2,7 @@
 from __future__ import annotations
 import re
 import hashlib
+import time
 from pathlib import Path
 from collections.abc import Mapping
 from scripts.output_redactor import redact_value
@@ -9,15 +10,20 @@ from scripts.output_redactor import redact_value
 IDENTIFIER=re.compile(r'^[A-Za-z0-9_-]{1,128}$')
 FILTERS={'gen_status','aigc_type','session'}
 class TaskService:
-    def __init__(self,adapter): self.adapter=adapter
+    def __init__(self,adapter,*,sleeper=time.sleep): self.adapter=adapter; self.sleeper=sleeper
     def query(self,submit_id:str,*,poll_seconds:int=0,download_dir:str|None=None)->dict[str,object]:
         if not IDENTIFIER.fullmatch(str(submit_id)): raise ValueError('unsafe submit_id')
         if not 0<=poll_seconds<=300: raise ValueError('poll_seconds must be between 0 and 300')
-        argv=['query_result','--submit_id',submit_id]
-        if poll_seconds: argv += ['--poll',str(poll_seconds)]
-        if download_dir: argv += ['--download_dir',download_dir]
         before=set(Path(download_dir).iterdir()) if download_dir else set()
-        result=self.adapter.run(argv)
+        result=None
+        for attempt in range(poll_seconds + 1):
+            result=self.adapter.run(['query_result','--submit_id',submit_id])
+            payload=result.payload if isinstance(result.payload,Mapping) else {}
+            if str(payload.get('gen_status','')).lower() not in {'querying','submitted','running','processing','pending'}:
+                break
+            if attempt < poll_seconds: self.sleeper(1)
+        if download_dir and isinstance(result.payload,Mapping) and str(result.payload.get('gen_status','')).lower() == 'success':
+            result=self.adapter.run(['query_result','--submit_id',submit_id,'--download_dir',download_dir])
         payload=redact_value(result.payload if isinstance(result.payload,Mapping) else {})
         artifacts=[]
         if download_dir:

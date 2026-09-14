@@ -8,8 +8,8 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-from scripts.dreamina_adapter import DreaminaResult
-from scripts.dreamina_mcp_server import DreaminaMcpTools, _tool_definitions
+from scripts.dreamina_adapter import DreaminaAdapterError, DreaminaResult
+from scripts.dreamina_mcp_server import DreaminaMcpTools, _handle, _tool_definitions
 from scripts.native_approval import ApprovalDeniedError
 from scripts.trusted_cli import TrustedCliError
 
@@ -53,6 +53,14 @@ class McpConfigurationTests(unittest.TestCase):
 
 
 class McpStdioTests(unittest.TestCase):
+    def test_query_adapter_failure_is_marked_retryable(self) -> None:
+        class BrokenTools:
+            def call(self, name, args):
+                raise DreaminaAdapterError("get_history_by_ids failed: ret=1015")
+        response = _handle({"id": 1, "method": "tools/call", "params": {"name": "dreamina_query_task", "arguments": {"submit_id": "x"}}}, BrokenTools())
+        error = response["result"]["structuredContent"]
+        self.assertTrue(error["retryable"])
+        self.assertEqual(error["next_action"], "query_same_submit_id")
     def test_initialize_and_tools_list_json_rpc(self) -> None:
         messages = [
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}},

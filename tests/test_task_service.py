@@ -14,3 +14,15 @@ class TaskServiceTests(unittest.TestCase):
         self.assertEqual(a.calls,[['list_task','--gen_status','success','--limit','20']])
     def test_unknown_filter_rejected(self):
         with self.assertRaises(ValueError): TaskService(Adapter()).list_tasks({'shell':'x'},limit=20)
+
+    def test_polling_never_passes_unsupported_poll_flag_to_cli(self):
+        class PollingAdapter:
+            def __init__(self): self.calls=[]; self.count=0
+            def run(self,args):
+                self.calls.append(args); self.count += 1
+                status = 'querying' if self.count == 1 else 'success'
+                return type('R',(),{'exit_code':0,'payload':{'gen_status':status}})()
+        adapter=PollingAdapter()
+        result=TaskService(adapter,sleeper=lambda _seconds: None).query('external-1',poll_seconds=2)
+        self.assertEqual(result['result']['gen_status'],'success')
+        self.assertEqual(adapter.calls,[['query_result','--submit_id','external-1'],['query_result','--submit_id','external-1']])
