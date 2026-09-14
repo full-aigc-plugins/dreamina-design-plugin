@@ -215,6 +215,27 @@ def _digest(path: Path) -> str:
     return result.hexdigest()
 
 
+def _verify_private_artifact(path: Path, expected_digest: str, expected_size: int) -> None:
+    """Hash one owned 0400/0600 regular file through a no-follow held descriptor."""
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        before = os.fstat(descriptor)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                or stat.S_IMODE(before.st_mode) not in {0o400, 0o600} or before.st_size != expected_size):
+            raise ContractValidationError("audio artifact owner, mode, type, or size is invalid")
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        current = os.lstat(path)
+        if (digest.hexdigest() != expected_digest
+                or (before.st_dev, before.st_ino, before.st_size) != (after.st_dev, after.st_ino, after.st_size)
+                or (after.st_dev, after.st_ino) != (current.st_dev, current.st_ino)):
+            raise ContractValidationError("audio artifact identity changed during verification")
+    finally:
+        os.close(descriptor)
+
+
 def _artifact_receipt(*, provider: str, path: Path, mime_type: str, artifact_role: str, kind: str,
                       rights_declared: Sequence[str], approved_root: str | None,
                       source: str, voice: str | None, model: str | None, key_store: Any) -> dict[str, Any]:
@@ -263,8 +284,12 @@ def _require_artifact(value: Mapping[str, Any], *, role: str, key_store: Any, re
     if required_right and required_right not in provenance.get("rights_declared", []):
         raise AudioRightsError(f"artifact lacks declared {required_right} rights")
     path = Path(str(value.get("path", "")))
-    if not path.is_absolute() or path.is_symlink() or not path.is_file() or _digest(path) != value.get("sha256") or path.stat().st_size != value.get("size_bytes"):
-        raise ContractValidationError("audio artifact path, digest, or size binding is invalid")
+    if not path.is_absolute():
+        raise ContractValidationError("audio artifact path binding is invalid")
+    try:
+        _verify_private_artifact(path, value.get("sha256"), value.get("size_bytes"))
+    except OSError as exc:
+        raise ContractValidationError("audio artifact cannot be safely opened") from exc
     if provenance.get("kind") == "user_supplied":
         root = Path(str(provenance.get("approved_root", "")))
         if not root.is_absolute() or not path.resolve().is_relative_to(root.resolve()):
@@ -374,6 +399,7 @@ class AudioPlanService:
         requested = set(preserve)
         if not requested <= AUDIO_CLASSES or len(requested) != len(preserve):
             raise AudioRightsError("preserved audio classes must be closed and unique")
+        transcript_value = self._verify_transcript(transcript) if transcript is not None else None
         if creative_mode == "original_redesign" and (source_rights is not None or requested.intersection({"voice", "dialogue", "music"})):
             raise AudioRightsError("original redesign cannot reuse source voice, dialogue, or music")
         if audio_policy in {"preserve_authorized_audio", "subtitles_only"} and requested:
@@ -406,8 +432,18 @@ class AudioPlanService:
                 raise AudioRightsError("full redesign narration must be trusted new narration")
             if audio_policy == "subtitles_only" and narration_value["provider"] != "existing-audio":
                 raise AudioRightsError("subtitle-only mode cannot synthesize new narration")
-        effects_value = [_require_artifact(item, role="effect", key_store=self._key_store, required_right="effects") for item in effects]
-        ambience_value = [_require_artifact(item, role="ambience", key_store=self._key_store, required_right="ambience") for item in ambience]
+        def placed_artifacts(values: Sequence[Mapping[str, Any]], role: str, right: str) -> list[dict[str, Any]]:
+            placed = []
+            for item in values:
+                raw = dict(item); at = raw.pop("at_seconds", None); duration = raw.pop("duration_seconds", None)
+                if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+                       for value in (at, duration)) or at < 0 or duration <= 0 or at + duration > target_duration_seconds:
+                    raise ValueError("effect placement must use bounded at_seconds and duration_seconds")
+                placed.append({**_require_artifact(raw, role=role, key_store=self._key_store, required_right=right),
+                               "at_seconds": float(at), "duration_seconds": float(duration)})
+            return placed
+        effects_value = placed_artifacts(effects, "effect", "effects")
+        ambience_value = placed_artifacts(ambience, "ambience", "ambience")
         subtitles_value = [_require_artifact(item, role=str(item.get("artifact_role", "")), key_store=self._key_store) for item in subtitles]
         music_value = None
         if music is not None:
@@ -458,7 +494,7 @@ class AudioPlanService:
             "design_fingerprint": design_fingerprint, "batch_fingerprint": batch_fingerprint,
             "creative_mode": creative_mode, "audio_policy": audio_policy,
             "target_duration_seconds": float(target_duration_seconds), "source_rights": dict(source_rights) if source_rights else None,
-            "preserve": sorted(requested), "transcript": dict(transcript) if transcript else None,
+            "preserve": sorted(requested), "transcript": transcript_value,
             "rewritten_script": list(rewritten_script), "narration": narration_value,
             "music": music_value, "effects": effects_value, "ambience": ambience_value, "subtitles": subtitles_value,
             "provenance": {"remote_services_used": False, "source_voice_cloned": False},
@@ -515,6 +551,18 @@ class AudioPlanService:
         except Exception as exc:
             raise AudioRightsError("current audio rights scope, expiry, or binding is invalid") from exc
 
+    def _verify_transcript(self, transcript: Mapping[str, Any]) -> dict[str, Any]:
+        if self._project_store is None:
+            raise ContractValidationError("audio plans accept only persisted transcript receipts")
+        value = json.loads(json.dumps(dict(transcript), ensure_ascii=False, allow_nan=False))
+        validate_contract(value, "transcript_receipt.schema.json")
+        persisted = self._project_store.read_version(
+            value["project_id"], "transcript", value["version"], "transcript_receipt.schema.json")
+        core = {key: item for key, item in value.items() if key not in {"version", "transcript_fingerprint"}}
+        if persisted != value or value["transcript_fingerprint"] != canonical_fingerprint(core):
+            raise ContractValidationError("transcript receipt is not the exact persisted evidence")
+        return value
+
     def commit_plan(self, plan: Mapping[str, Any], *, indeterminate_commit: Any | None = None) -> dict[str, Any]:
         """Persist one immutable audio-plan version or reconcile an exact prior commit."""
         if self._project_store is None:
@@ -560,11 +608,14 @@ class AudioPlanService:
         if document["preserve"]:
             self._verify_current_rights(project_id=document["project_id"], design_fingerprint=document["design_fingerprint"],
                 audio_policy=document["audio_policy"], source_rights=document["source_rights"], requested=set(document["preserve"]))
+        if document["transcript"] is not None:
+            self._verify_transcript(document["transcript"])
         artifacts = (([document["narration"]] if document["narration"] else [])
                      + list(document["effects"]) + list(document["ambience"]) + list(document["subtitles"]))
         for artifact in artifacts:
-            _require_artifact(artifact, role=artifact["artifact_role"], key_store=self._key_store,
-                              required_right={"effect": "effects", "ambience": "ambience"}.get(artifact["artifact_role"]))
+            receipt = {key: value for key, value in artifact.items() if key not in {"at_seconds", "duration_seconds"}}
+            _require_artifact(receipt, role=receipt["artifact_role"], key_store=self._key_store,
+                              required_right={"effect": "effects", "ambience": "ambience"}.get(receipt["artifact_role"]))
         if document["music"]:
             music = {key: value for key, value in document["music"].items() if key != "intent"}
             _require_artifact(music, role="music", key_store=self._key_store, required_right="music")

@@ -42,6 +42,7 @@ EXPECTED_SCHEMAS = (
     "video_batch_allowance.schema.json",
     "shot_evaluation.schema.json",
     "audio_plan.schema.json",
+    "transcript_receipt.schema.json",
 )
 
 CREDENTIAL_KEYS = (

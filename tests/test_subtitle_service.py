@@ -13,6 +13,7 @@ from tests.test_narration_service import FakeKeyApproval
 
 class SubtitleServiceTests(unittest.TestCase):
     def setUp(self) -> None:
+        self._old_umask = os.umask(0o077)
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         os.chmod(self.root, 0o700)
@@ -21,6 +22,7 @@ class SubtitleServiceTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
+        os.umask(self._old_umask)
 
     def test_srt_is_deterministic_utf8_and_escapes_markup(self) -> None:
         cues = [{"start": 0, "end": 1.25, "text": "<b>Hello</b>\nworld"}]

@@ -305,6 +305,15 @@ class MediaAdapter:
         self.max_frame_output_bytes = max_frame_output_bytes
         self.env = self._minimal_environment()
 
+    def trusted_identity(self, kind: str) -> dict[str, str]:
+        """Reverify one enrollment and expose only its fixed kind/path/digest identity."""
+        tools = self._tool_store.load_required({kind})
+        tool = tools[kind]
+        try:
+            return {"kind": kind, "path": tool.source_path, "sha256": tool.sha256}
+        finally:
+            self._tool_store.release(tool)
+
     def run(self, kind: str, argv: Sequence[str], *, timeout_seconds: int,
             pass_fds: Sequence[int] = ()) -> MediaResult:
         """Execute one enrolled kind with an argv-only, bounded process."""

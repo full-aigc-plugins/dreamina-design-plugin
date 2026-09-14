@@ -162,6 +162,11 @@ class MediaAdapterTests(unittest.TestCase):
         self.assertIs(self.runner.kwargs["start_new_session"], True)
         self.assertTrue(self.runner.process_group_terminated)
 
+    def test_trusted_identity_returns_exact_enrolled_kind_path_and_digest(self) -> None:
+        identity = self.adapter.trusted_identity("ffmpeg")
+        self.assertEqual(identity, {"kind": "ffmpeg", "path": str(self.ffmpeg.resolve()),
+                                   "sha256": hashlib.sha256(b"trusted ffmpeg").hexdigest()})
+
     def test_run_passes_argv_minimal_environment_timeout_and_output_caps(self) -> None:
         result = self.adapter.run("ffmpeg", ["-version"], timeout_seconds=7)
         self.assertEqual(result.exit_code, 0)

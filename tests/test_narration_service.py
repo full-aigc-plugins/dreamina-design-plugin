@@ -65,6 +65,7 @@ class StubRightsStore:
 
 class NarrationServiceTests(unittest.TestCase):
     def setUp(self) -> None:
+        self._old_umask = os.umask(0o077)
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         os.chmod(self.root, 0o700)
@@ -73,6 +74,7 @@ class NarrationServiceTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
+        os.umask(self._old_umask)
 
     def _authorized_service(self, bindings, requested, *, expires_at="2027-09-14T00:00:00Z",
                             audio_policy="preserve_authorized_audio"):
@@ -128,6 +130,7 @@ class NarrationServiceTests(unittest.TestCase):
     def test_macos_say_rejects_public_root_without_changing_permissions(self) -> None:
         public = self.root / "public-narration"
         public.mkdir(mode=0o755)
+        os.chmod(public, 0o755)
         before = public.stat().st_mode & 0o777
         with self.assertRaises(NarrationProviderError):
             MacOSSayProvider(SyntheticNarrationAdapter(), public, voices={"Samantha"}, key_store=self.keys)
@@ -229,6 +232,7 @@ class NarrationServiceTests(unittest.TestCase):
     def test_key_store_rejects_existing_unsafe_parent_without_mutating_it(self) -> None:
         public = self.root / "public"
         public.mkdir(mode=0o755)
+        os.chmod(public, 0o755)
         before = public.stat().st_mode & 0o777
         with self.assertRaises(PermissionError):
             FileAudioReceiptKeyStore(public / "audio.key")
@@ -236,6 +240,7 @@ class NarrationServiceTests(unittest.TestCase):
 
         target = self.root / "target"
         target.mkdir(mode=0o755)
+        os.chmod(target, 0o755)
         link = self.root / "link"
         link.symlink_to(target, target_is_directory=True)
         with self.assertRaises(PermissionError):
@@ -390,7 +395,8 @@ class NarrationServiceTests(unittest.TestCase):
             path = self.root/name; path.write_bytes(name.encode())
             receipts.append(provider.accept(path, expected_sha256=hashlib.sha256(path.read_bytes()).hexdigest(), rights={"effects":True}))
         bindings = [{"path": item["path"], "sha256": item["sha256"]} for item in reversed(receipts)]
-        base = dict(project_id="vp_"+"1"*24,design_fingerprint="2"*64,batch_fingerprint="3"*64,creative_mode="authorized_replication",audio_policy="preserve_authorized_audio",transcript=None,rewritten_script=[],narration=None,music=None,effects=receipts,subtitles=[],target_duration_seconds=1,preserve=["effects"])
+        placed = [{**item, "at_seconds": 0, "duration_seconds": 1} for item in receipts]
+        base = dict(project_id="vp_"+"1"*24,design_fingerprint="2"*64,batch_fingerprint="3"*64,creative_mode="authorized_replication",audio_policy="preserve_authorized_audio",transcript=None,rewritten_script=[],narration=None,music=None,effects=placed,subtitles=[],target_duration_seconds=1,preserve=["effects"])
         service, source_rights = self._authorized_service({"effects": bindings}, ["effects"])
         service._key_store = keys
         plan = service.create_plan(source_rights=source_rights, **base)
