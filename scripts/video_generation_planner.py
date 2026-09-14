@@ -36,6 +36,20 @@ REPAIR_DIRECTIVES = {
 _RFC3339 = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
 )
+_DIGEST = re.compile(r"[a-f0-9]{64}")
+
+
+def derive_output_dimensions(video_resolution: Any, ratio: Any) -> tuple[int, int] | None:
+    """Derive pixel dimensions from a quoted short-edge resolution and ratio."""
+    resolution_match = re.fullmatch(r"([1-9][0-9]{2,4})[pP]", str(video_resolution))
+    ratio_match = re.fullmatch(r"([1-9][0-9]*):([1-9][0-9]*)", str(ratio))
+    if resolution_match is None or ratio_match is None:
+        return None
+    short_edge = int(resolution_match.group(1))
+    numerator, denominator = int(ratio_match.group(1)), int(ratio_match.group(2))
+    if numerator >= denominator:
+        return ((short_edge * numerator + denominator // 2) // denominator, short_edge)
+    return (short_edge, (short_edge * denominator + numerator // 2) // numerator)
 
 
 def _require_rfc3339(value: Any, *, label: str) -> str:
@@ -73,6 +87,7 @@ def validate_batch_quote(quote: Mapping[str, Any]) -> None:
         raise PlanningError("target_total_duration_seconds does not match base requests")
     if quote["total_credit_ceiling"] != quote_total(items):
         raise PlanningError("total_credit_ceiling does not match attempts")
+    profile_dimensions = (quote["output_profile"].get("width"), quote["output_profile"].get("height"))
     for item in items:
         fingerprints = [attempt["request_fingerprint"] for attempt in item["attempts"]]
         if item["request_fingerprints"] != fingerprints:
@@ -82,6 +97,10 @@ def validate_batch_quote(quote: Mapping[str, Any]) -> None:
                 raise PlanningError("attempt credit_ceiling does not match item")
             if attempt["request_fingerprint"] != build_video_request_fingerprint(attempt["request"]):
                 raise PlanningError("request_fingerprint does not match request")
+            derived = derive_output_dimensions(
+                attempt["request"].get("video_resolution"), attempt["request"].get("ratio"))
+            if derived is not None and derived != profile_dimensions:
+                raise PlanningError("output profile dimensions do not match quoted request")
     core = {key: copy.deepcopy(value) for key, value in quote.items() if key != "quote_fingerprint"}
     if quote["quote_fingerprint"] != canonical_fingerprint(core):
         raise PlanningError("quote_fingerprint does not match quote")
@@ -150,7 +169,25 @@ class VideoGenerationPlanner:
             request = service.build_request(**kwargs)
         except DurationOutOfRangeError as exc:
             raise UnsupportedCapabilityError(str(exc)) from exc
-        return {"shot_id": str(shot.get("id", "")), "mode": mode, "request": request}
+        # Anchor digests bind local evaluation evidence, not the paid provider request.
+        for reference in request.get("references", []):
+            if isinstance(reference, dict):
+                reference.pop("anchor_frame_sha256", None)
+        anchor_contract = None
+        if mode in {"frames2video", "multiframe2video"}:
+            frames = [item for item in references
+                      if isinstance(item, Mapping) and str(item.get("role", "")).lower() == "frame"]
+            if len(frames) >= 2 and all(_DIGEST.fullmatch(str(item.get("sha256", "")))
+                                        and _DIGEST.fullmatch(str(item.get("anchor_frame_sha256", "")))
+                                        for item in (frames[0], frames[-1])):
+                anchor_contract = {
+                    "start_anchor": {"reference_sha256": frames[0]["sha256"],
+                                     "frame_sha256": frames[0]["anchor_frame_sha256"]},
+                    "end_anchor": {"reference_sha256": frames[-1]["sha256"],
+                                   "frame_sha256": frames[-1]["anchor_frame_sha256"]},
+                }
+        return {"shot_id": str(shot.get("id", "")), "mode": mode, "request": request,
+                "anchor_contract": anchor_contract}
 
     def _plan_materialized(
         self,
@@ -169,7 +206,7 @@ class VideoGenerationPlanner:
         shot_ids = [shot.get("id") for shot in shots if isinstance(shot, Mapping)]
         if len(shot_ids) != len(shots) or len(set(shot_ids)) != len(shot_ids):
             raise PlanningError("duplicate shot id or invalid shot entry")
-        output_profile = design.get("output_profile")
+        output_profile = copy.deepcopy(design.get("output_profile"))
         if not isinstance(output_profile, Mapping) or output_profile.get("codec") != "h264":
             raise PlanningError("output profile codec must be h264")
 
@@ -190,17 +227,33 @@ class VideoGenerationPlanner:
                 raise PlanningError("retry must use a closed repair directive")
 
             planned = self._plan_shot(shot, snapshot)
-            attempts = [self._attempt(1, None, planned["request"], ceiling)]
+            attempts = [self._attempt(1, None, planned["request"], ceiling,
+                                      anchor_contract=planned["anchor_contract"])]
             for index, repair_key in enumerate(repairs, start=2):
                 retry = copy.deepcopy(planned["request"])
                 retry["prompt"] = f'{retry["prompt"]}\n\nRepair directive: {REPAIR_DIRECTIVES[repair_key]}'
-                attempts.append(self._attempt(index, repair_key, retry, ceiling))
+                attempts.append(self._attempt(index, repair_key, retry, ceiling,
+                                              anchor_contract=planned["anchor_contract"]))
             items.append({
                 "shot_id": planned["shot_id"], "mode": planned["mode"],
                 "credit_ceiling": ceiling,
                 "request_fingerprints": [entry["request_fingerprint"] for entry in attempts],
                 "attempts": attempts,
             })
+
+        dimensions = {
+            derived for item in items for attempt in item["attempts"]
+            if (derived := derive_output_dimensions(
+                attempt["request"].get("video_resolution"), attempt["request"].get("ratio"))) is not None
+        }
+        explicit_dimensions = (output_profile.get("width"), output_profile.get("height"))
+        if None in explicit_dimensions:
+            if explicit_dimensions != (None, None) or len(dimensions) != 1:
+                raise PlanningError("output profile dimensions must be exact or deterministically derived")
+            derived_width, derived_height = next(iter(dimensions))
+            output_profile = {**dict(output_profile), "width": derived_width, "height": derived_height}
+        elif dimensions and dimensions != {explicit_dimensions}:
+            raise PlanningError("output profile dimensions conflict with quoted requests")
 
         quote: dict[str, Any] = {
             "schema_version": "1.0", "quote_version": "v001",
@@ -212,7 +265,7 @@ class VideoGenerationPlanner:
             "creative_mode": design.get("creative_mode"),
             "audio_policy": design.get("audio_policy"),
             "output_destination": design.get("output_destination"),
-            "output_profile": copy.deepcopy(design.get("output_profile")),
+            "output_profile": copy.deepcopy(dict(output_profile)),
             "capability_snapshot_fingerprint": canonical_fingerprint(snapshot),
             "cost_basis": normalized_cost, "items": items,
             "item_count": len(items),
@@ -389,13 +442,17 @@ class VideoGenerationPlanner:
                 )
 
     @staticmethod
-    def _attempt(number: int, repair_key: str | None, request: Mapping[str, Any], ceiling: int) -> dict[str, Any]:
+    def _attempt(number: int, repair_key: str | None, request: Mapping[str, Any], ceiling: int, *,
+                 anchor_contract: Mapping[str, Any] | None = None) -> dict[str, Any]:
         exact = copy.deepcopy(dict(request))
-        return {
+        attempt = {
             "attempt_number": number, "repair_directive": repair_key,
             "request": exact, "request_fingerprint": build_video_request_fingerprint(exact),
             "credit_ceiling": ceiling,
         }
+        if anchor_contract is not None:
+            attempt["anchor_contract"] = copy.deepcopy(dict(anchor_contract))
+        return attempt
 
     def _resolve_cost(self, snapshot: Mapping[str, Any], cost_basis: Mapping[str, Any] | None) -> tuple[int, dict[str, Any]]:
         if cost_basis is not None:

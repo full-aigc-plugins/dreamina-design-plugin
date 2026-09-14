@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -96,9 +97,9 @@ class TrustedProbeAdapter:
         return {"streams": [{"codec_type": "video", "width": self.width, "height": 720,
                              "codec_name": "h264"}], "format": {"duration": "4.0"}}
     def verify_video_frames(self, path, duration_seconds):
-        frame = {"at_seconds": 0.0, "sha256": "7" * 64, "size_bytes": 16}
+        frame = {"requested_at_seconds": 0.0, "sha256": "7" * 64, "size_bytes": 16}
         return {"readable": True, "start_anchor": frame,
-                "end_anchor": {**frame, "at_seconds": 3.95}}
+                "end_anchor": {**frame, "requested_at_seconds": 3.95}}
 
 
 class TimeoutWithSubmitId(TimeoutError):
@@ -114,7 +115,8 @@ class VideoBatchExecutorTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.store = Store(Path(self.tmp.name)); self.allowance = Allowance(); self.adapter = Adapter()
-        self.evaluation_service = VideoEvaluationService(media_adapter=TrustedProbeAdapter())
+        self.evaluation_service = VideoEvaluationService(media_adapter=TrustedProbeAdapter(),
+            now=lambda: datetime(2026, 9, 14, 2, tzinfo=timezone.utc))
         self.executor = VideoBatchExecutor(project_store=self.store, allowance=self.allowance,
             allowance_id="ba_" + "2" * 32, video_service=None, adapter=self.adapter,
             evaluation_service=self.evaluation_service)

@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import os
 import signal
+import struct
 import sys
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 from unittest import mock
 
@@ -23,6 +25,18 @@ class _Approve:
         return "approved"
 
 
+def _png_chunk(chunk_type: bytes, payload: bytes) -> bytes:
+    return (struct.pack(">I", len(payload)) + chunk_type + payload
+            + struct.pack(">I", zlib.crc32(chunk_type + payload) & 0xFFFFFFFF))
+
+
+def _valid_png() -> bytes:
+    header = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", header)
+            + _png_chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00"))
+            + _png_chunk(b"IEND", b""))
+
+
 class _FakeRunner:
     def __init__(self) -> None:
         self.stdout = ""
@@ -33,7 +47,7 @@ class _FakeRunner:
         self.argv = []
         self.calls = []
         self.process_group_terminated = False
-        self.frame_bytes = b"\x89PNG\r\n\x1a\n" + b"frame"
+        self.frame_bytes = _valid_png()
         self.binary_calls = []
         self.raise_output = False
 
@@ -171,9 +185,9 @@ class MediaAdapterTests(unittest.TestCase):
         result = self.adapter.verify_video_frames(self.source, 4.0)
         digest = hashlib.sha256(self.runner.frame_bytes).hexdigest()
         self.assertEqual(result["readable"], True)
-        self.assertEqual(result["start_anchor"], {"at_seconds": 0.0, "sha256": digest,
+        self.assertEqual(result["start_anchor"], {"requested_at_seconds": 0.0, "sha256": digest,
             "size_bytes": len(self.runner.frame_bytes)})
-        self.assertEqual(result["end_anchor"], {"at_seconds": 3.95, "sha256": digest,
+        self.assertEqual(result["end_anchor"], {"requested_at_seconds": 3.95, "sha256": digest,
             "size_bytes": len(self.runner.frame_bytes)})
         self.assertEqual([call[call.index("-ss") + 1] for call in self.runner.calls], ["0.000", "3.950"])
         self.assertTrue(all(call[call.index("-map") + 1] == "0:v:0" for call in self.runner.calls))
@@ -326,6 +340,11 @@ class MediaAdapterTests(unittest.TestCase):
     def test_video_frame_verification_rejects_empty_success_output(self) -> None:
         self.runner.frame_bytes = b""
         with self.assertRaises(MediaOutputError):
+            self.adapter.verify_video_frames(self.source, 4.0)
+
+    def test_video_frame_verification_rejects_signature_only_png(self) -> None:
+        self.runner.frame_bytes = b"\x89PNG\r\n\x1a\nnot-a-complete-png"
+        with self.assertRaisesRegex(MediaOutputError, "PNG"):
             self.adapter.verify_video_frames(self.source, 4.0)
 
     def test_video_frame_verification_rejects_decoder_failure(self) -> None:

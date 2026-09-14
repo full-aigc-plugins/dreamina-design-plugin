@@ -347,7 +347,8 @@ class VideoGenerationPlannerTests(unittest.TestCase):
         self.assertEqual(quote["source_sha256"], "2" * 64)
         self.assertEqual(quote["audio_policy"], "silent")
         self.assertEqual(quote["output_destination"], "/exports/final.mp4")
-        self.assertEqual(quote["output_profile"], {"container": "mp4", "codec": "h264"})
+        self.assertEqual(quote["output_profile"], {
+            "container": "mp4", "codec": "h264", "width": 1280, "height": 720})
         self.assertNotEqual(quote["items"][0]["attempts"][0]["request"]["prompt"], "tampered")
 
     def test_quote_declares_target_duration_and_reserved_retries(self):
@@ -366,6 +367,28 @@ class VideoGenerationPlannerTests(unittest.TestCase):
                 self.snapshot,
                 self.cost,
             )
+
+    def test_output_dimensions_are_exact_or_derived_from_resolution_and_ratio(self):
+        derived = self.planner._plan_materialized(design(), self.snapshot, self.cost)
+        self.assertEqual((derived["output_profile"]["width"], derived["output_profile"]["height"]),
+                         (1280, 720))
+        with self.assertRaisesRegex(PlanningError, "dimensions"):
+            self.planner._plan_materialized(design(output_profile={
+                "container": "mp4", "codec": "h264", "width": 640, "height": 360}),
+                self.snapshot, self.cost)
+
+    def test_frame_mode_quote_binds_exact_approved_anchor_frame_digests(self):
+        first = ref("first.png", "frame", anchor_frame_sha256="1" * 64)
+        last = ref("last.png", "frame", anchor_frame_sha256="2" * 64)
+        quote = self.planner._plan_materialized(
+            design([shot(references=[first, last])]), self.snapshot, self.cost)
+        contract = quote["items"][0]["attempts"][0]["anchor_contract"]
+        self.assertEqual(contract["start_anchor"], {
+            "reference_sha256": first["sha256"], "frame_sha256": "1" * 64})
+        self.assertEqual(contract["end_anchor"], {
+            "reference_sha256": last["sha256"], "frame_sha256": "2" * 64})
+        self.assertTrue(all("anchor_frame_sha256" not in reference
+                            for reference in quote["items"][0]["attempts"][0]["request"]["references"]))
 
 
 if __name__ == "__main__":

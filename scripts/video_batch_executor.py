@@ -14,6 +14,7 @@ from typing import Any
 from scripts.operation_ledger import OperationLedger
 from scripts.json_contracts import canonical_fingerprint, validate_contract
 from scripts.video_evaluation_service import REPAIR_BY_GATE
+from scripts.video_evaluation_service import MEASURED_GATE_ORDER, SEMANTIC_GATE_ORDER
 from scripts.video_evaluation_service import VideoEvaluationService
 from scripts.media_adapter import MediaAdapter
 from scripts.trusted_media_tools import TrustedMediaToolStore
@@ -344,12 +345,15 @@ class VideoBatchExecutor:
         if binding["allowance_id"] != self._allowance_id:
             raise ValueError("evaluation decision binding is incomplete")
         action = receipt["decision"]["action"]
-        statuses = {name: gate["status"] for name, gate in
-                    {**receipt["measured_gates"], **receipt["semantic_gates"]}.items()}
-        observed_failed = [name for name, status in statuses.items() if status in {"failed", "skipped"}]
-        if set(observed_failed) != set(receipt["failed_gates"]):
+        statuses = {**{name: receipt["measured_gates"][name]["status"] for name in MEASURED_GATE_ORDER},
+                    **{name: receipt["semantic_gates"][name]["status"] for name in SEMANTIC_GATE_ORDER}}
+        observed_failed = [name for name in (*MEASURED_GATE_ORDER, *SEMANTIC_GATE_ORDER)
+                           if statuses[name] in {"failed", "skipped"}]
+        if observed_failed != receipt["failed_gates"]:
             raise ValueError("evaluation failed gates are inconsistent")
-        if (action == "accepted") != (not observed_failed):
+        if action == "accepted" and observed_failed:
+            raise ValueError("evaluation decision is inconsistent with gates")
+        if action in {"retry", "rejected"} and not observed_failed:
             raise ValueError("evaluation decision is inconsistent with gates")
         with self._transaction():
             quote = self._quote(binding["project_id"], binding["batch_version"])

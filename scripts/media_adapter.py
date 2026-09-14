@@ -7,9 +7,11 @@ import json
 import os
 import selectors
 import signal
+import struct
 import subprocess
 import sys
 import time
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -30,6 +32,42 @@ class MediaTimeoutError(MediaAdapterError):
 
 class MediaOutputError(MediaAdapterError):
     """A media process emitted invalid, failed, or oversized output."""
+
+
+def _validate_complete_png(payload: bytes) -> tuple[int, int]:
+    """Validate a complete, CRC-correct PNG and return its declared dimensions."""
+    if not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise MediaOutputError("ffmpeg frame output is not a valid PNG")
+    offset = 8
+    chunks: list[bytes] = []
+    width = height = 0
+    while offset < len(payload):
+        if len(payload) - offset < 12:
+            raise MediaOutputError("ffmpeg frame PNG is truncated")
+        length = struct.unpack(">I", payload[offset:offset + 4])[0]
+        end = offset + 12 + length
+        if end > len(payload):
+            raise MediaOutputError("ffmpeg frame PNG chunk is truncated")
+        chunk_type = payload[offset + 4:offset + 8]
+        chunk_data = payload[offset + 8:offset + 8 + length]
+        expected_crc = struct.unpack(">I", payload[offset + 8 + length:end])[0]
+        if zlib.crc32(chunk_type + chunk_data) & 0xFFFFFFFF != expected_crc:
+            raise MediaOutputError("ffmpeg frame PNG checksum is invalid")
+        chunks.append(chunk_type)
+        if len(chunks) == 1:
+            if chunk_type != b"IHDR" or length != 13:
+                raise MediaOutputError("ffmpeg frame PNG lacks a valid IHDR")
+            width, height = struct.unpack(">II", chunk_data[:8])
+            if width <= 0 or height <= 0:
+                raise MediaOutputError("ffmpeg frame PNG dimensions are invalid")
+        offset = end
+        if chunk_type == b"IEND":
+            if length != 0 or offset != len(payload):
+                raise MediaOutputError("ffmpeg frame PNG has an invalid IEND")
+            break
+    if not chunks or chunks[-1] != b"IEND" or b"IDAT" not in chunks:
+        raise MediaOutputError("ffmpeg frame PNG is incomplete")
+    return width, height
 
 
 @dataclass(frozen=True)
@@ -323,9 +361,8 @@ class MediaAdapter:
             if result.exit_code != 0:
                 raise MediaOutputError(f"ffmpeg frame decode failed with exit {result.exit_code}")
             frame = result.stdout
-            if not frame or not frame.startswith(b"\x89PNG\r\n\x1a\n"):
-                raise MediaOutputError("ffmpeg frame output is not a valid PNG")
-            decoded[name] = {"at_seconds": round(position, 3),
+            _validate_complete_png(frame)
+            decoded[name] = {"requested_at_seconds": round(position, 3),
                              "sha256": hashlib.sha256(frame).hexdigest(),
                              "size_bytes": len(frame)}
         return {"readable": True, **decoded}
