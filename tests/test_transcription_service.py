@@ -95,6 +95,16 @@ class TranscriptionServiceTests(unittest.TestCase):
             plan = self._minimal_plan(transcript)
             validate_contract(plan, "audio_plan.schema.json")
 
+    def test_malformed_or_failed_enrolled_provider_is_degraded_not_blocked(self) -> None:
+        cases = [RecordingAdapter(payload={"language": "en", "segments": [{"start": 2, "end": 1, "text": "x", "confidence": .8}]}), RecordingAdapter(payload={"bad": True})]
+        for adapter in cases:
+            with self.subTest(payload=adapter.payload):
+                result = TranscriptionService(WhisperCliProvider(adapter, self.model, self.root)).transcribe(self.source, language="en")
+                self.assertEqual(result["status"], "degraded")
+                self.assertEqual(result["reason"], "asr_output_invalid")
+                self.assertEqual(result["segments"], [])
+                self.assertNotIn("provider", result)
+
     @staticmethod
     def _minimal_plan(transcript):
         from scripts.json_contracts import canonical_fingerprint

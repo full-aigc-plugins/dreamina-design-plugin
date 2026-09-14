@@ -88,12 +88,11 @@ class SubtitleService:
             os.replace(temporary, output); os.chmod(output, 0o600)
         finally:
             Path(temporary).unlink(missing_ok=True)
-        return {"provider": "subtitle-service", "path": str(output),
-                "sha256": hashlib.sha256(payload).hexdigest(), "size_bytes": len(payload),
-                "mime_type": "application/x-subrip" if format_name == "srt" else "text/x-ssa",
-                "provenance": {"kind": "generated_subtitle", "rights_declared": ["subtitles"],
-                    "approved_root": None, "source": "rewritten_script_or_narration_timing",
-                    "voice": None, "model": None, "source_voice_cloned": False}}
+        from scripts.narration_service import _artifact_receipt
+        return _artifact_receipt(provider="subtitle-service", path=output,
+            mime_type="application/x-subrip" if format_name == "srt" else "text/x-ssa",
+            kind="generated_subtitle", rights_declared=["subtitles"], approved_root=None,
+            source="rewritten_script_or_narration_timing", voice=None, model=None)
 
 
 __all__ = ["SubtitleService", "SubtitleTimelineError"]

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
 import stat
 import tempfile
+import secrets
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -17,6 +19,7 @@ from scripts.json_contracts import ContractValidationError, canonical_fingerprin
 AUDIO_POLICIES = frozenset({"full_redesign", "preserve_authorized_audio", "subtitles_only", "silent"})
 AUDIO_CLASSES = frozenset({"voice", "dialogue", "music", "effects"})
 _DIGEST = re.compile(r"^[a-f0-9]{64}$")
+_ATTESTATION_KEY = secrets.token_bytes(32)
 
 
 class AudioRightsError(PermissionError):
@@ -38,21 +41,27 @@ def _digest(path: Path) -> str:
 def _artifact_receipt(*, provider: str, path: Path, mime_type: str, kind: str,
                       rights_declared: Sequence[str], approved_root: str | None,
                       source: str, voice: str | None, model: str | None) -> dict[str, Any]:
-    return {"provider": provider, "path": str(path), "sha256": _digest(path),
+    core = {"provider": provider, "path": str(path), "sha256": _digest(path),
             "size_bytes": path.stat().st_size, "mime_type": mime_type,
             "provenance": {"kind": kind, "rights_declared": list(rights_declared),
                            "approved_root": approved_root, "source": source,
                            "voice": voice, "model": model, "source_voice_cloned": False}}
+    signature = hmac.new(_ATTESTATION_KEY, json.dumps(core, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()
+    return {**core, "attestation": signature}
 
 
 def _require_artifact(value: Mapping[str, Any], *, allowed_providers: set[str], required_right: str | None = None) -> dict[str, Any]:
-    expected = {"provider", "path", "sha256", "size_bytes", "mime_type", "provenance"}
+    expected = {"provider", "path", "sha256", "size_bytes", "mime_type", "provenance", "attestation"}
     if not isinstance(value, Mapping) or set(value) != expected or value.get("provider") not in allowed_providers:
         raise ContractValidationError("audio artifact receipt is incomplete or provider is forbidden")
     provenance = value.get("provenance")
     pfields = {"kind", "rights_declared", "approved_root", "source", "voice", "model", "source_voice_cloned"}
     if not isinstance(provenance, Mapping) or set(provenance) != pfields or provenance.get("source_voice_cloned") is not False:
         raise ContractValidationError("audio artifact provenance is incomplete")
+    core = {key: value[key] for key in expected if key != "attestation"}
+    wanted = hmac.new(_ATTESTATION_KEY, json.dumps(core, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()
+    if not isinstance(value.get("attestation"), str) or not hmac.compare_digest(value["attestation"], wanted):
+        raise ContractValidationError("audio artifact attestation is invalid")
     if required_right and required_right not in provenance.get("rights_declared", []):
         raise AudioRightsError(f"artifact lacks declared {required_right} rights")
     path = Path(str(value.get("path", "")))
@@ -102,7 +111,7 @@ class MacOSSayProvider:
                 raise NarrationProviderError("local narration generation failed")
             os.chmod(output, 0o600)
             return _artifact_receipt(provider="macos-say", path=output, mime_type="audio/aiff",
-                kind="new_narration", rights_declared=[], approved_root=None,
+                kind="new_narration", rights_declared=["voice"], approved_root=None,
                 source="rewritten_script", voice=voice, model="macos-say")
         finally:
             script.unlink(missing_ok=True)
@@ -181,6 +190,21 @@ class AudioPlanService:
             raw = dict(music)
             intent = {"loop": raw.pop("loop", False), "trim_to_seconds": raw.pop("trim_to_seconds", None)}
             music_value = {**_require_artifact(raw, allowed_providers={"existing-audio"}, required_right="music"), "intent": intent}
+        if audio_policy == "preserve_authorized_audio":
+            concrete = {}
+            if narration_value is not None and narration_value["provider"] == "existing-audio":
+                for name in ("voice", "dialogue"):
+                    if name in narration_value["provenance"]["rights_declared"]:
+                        concrete[name] = narration_value
+            if music_value is not None:
+                concrete["music"] = music_value
+            if effects_value:
+                concrete["effects"] = effects_value[0]
+            if set(concrete) != requested:
+                raise AudioRightsError("preserved classes and concrete source artifacts must match exactly")
+            bindings = source_rights.get("artifact_bindings", {}) if source_rights else {}
+            if set(bindings) != requested or any(bindings[name] != {"path": concrete[name]["path"], "sha256": concrete[name]["sha256"]} for name in requested):
+                raise AudioRightsError("rights receipt artifact bindings do not match preserved sources")
         core = {
             "schema_version": "1.0", "version": "v001", "project_id": project_id,
             "design_fingerprint": design_fingerprint, "batch_fingerprint": batch_fingerprint,

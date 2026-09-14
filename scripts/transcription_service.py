@@ -101,7 +101,11 @@ class TranscriptionService:
     def transcribe(self, audio_path: Path, *, language: str | None) -> dict[str, Any]:
         try:
             segments = self._provider.transcribe(audio_path, language=language)
-        except (TrustedMediaToolError, MediaAdapterError, OSError) as exc:
+        except (MediaOutputError, ValueError, json.JSONDecodeError) as exc:
+            return {"status": "degraded", "reason": "asr_output_invalid", "segments": [], "detail": type(exc).__name__}
+        except (TrustedMediaToolError, OSError) as exc:
+            return {"status": "blocked", "reason": "asr_provider_unavailable", "segments": [], "detail": type(exc).__name__}
+        except MediaAdapterError as exc:
             return {"status": "blocked", "reason": "asr_provider_unavailable", "segments": [], "detail": type(exc).__name__}
         digest = hashlib.sha256(Path(audio_path).read_bytes()).hexdigest()
         return {"status": "complete", "provider": "whisper", "model": str(self._provider._model),

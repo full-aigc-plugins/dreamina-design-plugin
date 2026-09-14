@@ -80,7 +80,7 @@ class NarrationServiceTests(unittest.TestCase):
                 result = service.create_plan(
                     project_id="vp_" + "1" * 24, design_fingerprint="2" * 64,
                     batch_fingerprint="3" * 64, creative_mode="authorized_replication" if preserving else "original_redesign",
-                    audio_policy=policy, source_rights={"receipt_id":"rr_"+"5"*24,"receipt_fingerprint":"6"*64,"allowed_reuse": ["music"]} if preserving else None, transcript=None,
+                    audio_policy=policy, source_rights={"receipt_id":"rr_"+"5"*24,"receipt_fingerprint":"6"*64,"allowed_reuse": ["music"],"artifact_bindings":{"music":{"path":music["path"],"sha256":music["sha256"]}}} if preserving else None, transcript=None,
                     rewritten_script=[] if policy in {"subtitles_only", "silent"} else [{"start": 0, "end": 1, "text": "new"}],
                     narration=narration if policy == "full_redesign" else None,
                     music={**music, "loop": False, "trim_to_seconds": 2} if preserving else None,
@@ -108,8 +108,8 @@ class NarrationServiceTests(unittest.TestCase):
             music={**receipt, "loop": True, "trim_to_seconds": 8.0}, effects=[], subtitles=[],
             target_duration_seconds=8)
         with self.assertRaises(AudioRightsError):
-            service.create_plan(source_rights={"receipt_id":"rr_"+"5"*24,"receipt_fingerprint":"6"*64,"allowed_reuse": ["music"]}, preserve=["voice", "music"], **base)
-        result = service.create_plan(source_rights={"receipt_id":"rr_"+"5"*24,"receipt_fingerprint":"6"*64,"allowed_reuse": ["voice", "music"]}, preserve=["voice", "music"], **base)
+            service.create_plan(source_rights={"receipt_id":"rr_"+"5"*24,"receipt_fingerprint":"6"*64,"allowed_reuse": ["music"],"artifact_bindings":{"music":{"path":receipt["path"],"sha256":receipt["sha256"]}}}, preserve=["voice", "music"], **base)
+        result = service.create_plan(source_rights={"receipt_id":"rr_"+"5"*24,"receipt_fingerprint":"6"*64,"allowed_reuse": ["music"],"artifact_bindings":{"music":{"path":receipt["path"],"sha256":receipt["sha256"]}}}, preserve=["music"], **base)
         self.assertEqual(result["music"]["intent"], {"loop": True, "trim_to_seconds": 8.0})
 
     def test_forged_or_incomplete_artifact_receipts_are_rejected(self) -> None:
@@ -118,6 +118,12 @@ class NarrationServiceTests(unittest.TestCase):
         for bad in ({"sha256":"4"*64}, {"provider":"existing-audio","path":"/tmp/x","sha256":"4"*64,"size_bytes":1,"mime_type":"audio/wav","provenance":{"kind":"user_supplied","rights_declared":["voice"],"approved_root":"/tmp","source":"source_audio","voice":None,"model":None}}):
             with self.subTest(bad=bad), self.assertRaises((ValueError, ContractValidationError, AudioRightsError)):
                 service.create_plan(narration=bad, **common)
+
+    def test_forged_macos_receipt_with_real_file_and_digest_is_rejected(self) -> None:
+        fake = self.root / "fake.aiff"; fake.write_bytes(b"synthetic-aiff")
+        forged = {"provider":"macos-say","path":str(fake),"sha256":hashlib.sha256(fake.read_bytes()).hexdigest(),"size_bytes":fake.stat().st_size,"mime_type":"audio/aiff","provenance":{"kind":"new_narration","rights_declared":["voice"],"approved_root":None,"source":"rewritten_script","voice":"Samantha","model":"macos-say","source_voice_cloned":False},"attestation":"0"*64}
+        with self.assertRaises(ContractValidationError):
+            AudioPlanService().create_plan(project_id="vp_"+"1"*24,design_fingerprint="2"*64,batch_fingerprint="3"*64,creative_mode="original_redesign",audio_policy="full_redesign",source_rights=None,transcript=None,rewritten_script=[{"start":0,"end":1,"text":"new"}],narration=forged,music=None,effects=[],subtitles=[],target_duration_seconds=1)
 
 
 if __name__ == "__main__":
