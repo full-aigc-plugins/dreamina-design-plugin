@@ -82,9 +82,9 @@
 - `schemas/shot_evaluation.schema.json`
 - `schemas/audio_plan.schema.json`
 - `schemas/composition_receipt.schema.json`
-- `skills/codex-dreamina-video-production/SKILL.md`
-- `skills/codex-dreamina-shot-annotator/SKILL.md`
-- `skills/codex-dreamina-video-evaluator/SKILL.md`
+- `skills/dreamina-video-production/SKILL.md`
+- `skills/dreamina-shot-annotator/SKILL.md`
+- `skills/dreamina-video-evaluator/SKILL.md`
 
 ---
 
@@ -1316,11 +1316,11 @@ git commit -m "feat: expose Dreamina video project automation"
 ### Task 15: Add Production, Annotation, and Independent Evaluation Skills
 
 **Files:**
-- Create: `skills/codex-dreamina-video-production/SKILL.md`
-- Create: `skills/codex-dreamina-shot-annotator/SKILL.md`
-- Create: `skills/codex-dreamina-video-evaluator/SKILL.md`
+- Create: `skills/dreamina-video-production/SKILL.md`
+- Create: `skills/dreamina-shot-annotator/SKILL.md`
+- Create: `skills/dreamina-video-evaluator/SKILL.md`
 - Create: `tests/test_video_project_skills.py`
-- Modify: `skills/codex-dreamina-design-use/SKILL.md`
+- Modify: `skills/dreamina-design-use/SKILL.md`
 - Modify: `scripts/router_skill.py`
 - Modify: `tests/test_router_skill.py`
 - Modify: `scripts/verify_skill_snapshot.py`
@@ -1334,12 +1334,12 @@ git commit -m "feat: expose Dreamina video project automation"
 
 ```python
 PLUGIN_OWNED_SKILLS = {
-    "codex-dreamina-design-use", "codex-dreamina-video-production",
-    "codex-dreamina-shot-annotator", "codex-dreamina-video-evaluator",
+    "dreamina-design-use", "dreamina-video-production",
+    "dreamina-shot-annotator", "dreamina-video-evaluator",
 }
 
 def test_reference_video_routes_to_project_orchestrator_without_changing_direct_routes(self):
-    self.assertEqual(Router().route(intent="video_project", mode="reference"), "codex-dreamina-video-production")
+    self.assertEqual(Router().route(intent="video_project", mode="reference"), "dreamina-video-production")
     self.assertEqual(Router().route(intent="video", mode="text2video"), "dreamina-cli-text2video")
 
 def test_annotation_and_evaluation_skills_have_disjoint_output_schemas(self):
@@ -1365,7 +1365,7 @@ Expected: FAIL because the three Skills and new verifier report fields are absen
 
 ```yaml
 ---
-name: codex-dreamina-video-production
+name: dreamina-video-production
 description: Use when creating a complete Dreamina video project from a local reference video, including analysis, redesign or authorized replication, batch generation, evaluation, audio, subtitles, composition, recovery, and verified export.
 ---
 ```
@@ -1383,7 +1383,7 @@ Expected: PASS with thirteen upstream Skills byte-identical and four plugin-owne
 - [x] **Step 5: Commit the additive Skills**
 
 ```bash
-git add skills/codex-dreamina-video-production skills/codex-dreamina-shot-annotator skills/codex-dreamina-video-evaluator skills/codex-dreamina-design-use/SKILL.md scripts/router_skill.py scripts/verify_skill_snapshot.py tests/test_video_project_skills.py tests/test_router_skill.py tests/test_verify_skill_snapshot.py
+git add skills/dreamina-video-production skills/dreamina-shot-annotator skills/dreamina-video-evaluator skills/dreamina-design-use/SKILL.md scripts/router_skill.py scripts/verify_skill_snapshot.py tests/test_video_project_skills.py tests/test_router_skill.py tests/test_verify_skill_snapshot.py
 git commit -m "feat: add Dreamina video production skills"
 ```
 

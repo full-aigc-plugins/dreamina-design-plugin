@@ -20,9 +20,9 @@ UPSTREAM = Path(
     "/Users/wandl/workspaces/workspace-agent-skills/full-aigc-skills-repositories/dreamina-skills"
 )
 
-ORCHESTRATOR = SKILLS_ROOT / "codex-dreamina-video-production" / "SKILL.md"
-ANNOTATOR = SKILLS_ROOT / "codex-dreamina-shot-annotator" / "SKILL.md"
-EVALUATOR = SKILLS_ROOT / "codex-dreamina-video-evaluator" / "SKILL.md"
+ORCHESTRATOR = SKILLS_ROOT / "dreamina-video-production" / "SKILL.md"
+ANNOTATOR = SKILLS_ROOT / "dreamina-shot-annotator" / "SKILL.md"
+EVALUATOR = SKILLS_ROOT / "dreamina-video-evaluator" / "SKILL.md"
 
 
 class SkillPresenceTests(unittest.TestCase):
@@ -40,10 +40,10 @@ class SkillPresenceTests(unittest.TestCase):
         self.assertEqual(
             set(PLUGIN_OWNED_SKILLS),
             {
-                "codex-dreamina-design-use",
-                "codex-dreamina-video-production",
-                "codex-dreamina-shot-annotator",
-                "codex-dreamina-video-evaluator",
+                "dreamina-design-use",
+                "dreamina-video-production",
+                "dreamina-shot-annotator",
+                "dreamina-video-evaluator",
             },
         )
 
@@ -52,7 +52,7 @@ class RouterTests(unittest.TestCase):
     def test_reference_video_routes_to_the_project_orchestrator(self) -> None:
         self.assertEqual(
             Router().route(intent=PROJECT_INTENT, mode="reference"),
-            "codex-dreamina-video-production",
+            "dreamina-video-production",
         )
 
     def test_existing_direct_routes_are_unchanged(self) -> None:

@@ -1,5 +1,5 @@
 ---
-name: codex-dreamina-video-production
+name: dreamina-video-production
 description: Use when creating a complete Dreamina video project from a local reference video, including analysis, redesign or authorized replication, batch generation, evaluation, audio, subtitles, composition, recovery, and verified export.
 ---
 
@@ -8,6 +8,14 @@ description: Use when creating a complete Dreamina video project from a local re
 Orchestrate one reference video into one verified final MP4. Every step below is
 a separate Dreamina tool call; the project ledger is the only source of truth
 for what has already happened.
+
+## Example request
+
+```text
+Use dreamina-video-production with /approved/input.mp4 in original-redesign mode.
+Show the complete storyboard, task count, model specifications, and maximum credit
+ceiling before requesting one whole-batch approval. Do not submit paid work yet.
+```
 
 ## 能力边界说明
 
@@ -40,7 +48,7 @@ for what has already happened.
 3. **Seed and analyze.** `dreamina_analyze_reference_video` with `action=seed` copies the
    source under containment; `frames`, `sheets`, and `recut` derive versions from it.
 4. **Annotate via the specialist.** Hand contact sheets to
-   `codex-dreamina-shot-annotator`. Persist only through
+   `dreamina-shot-annotator`. Persist only through
    `dreamina_validate_shot_analysis`, which refuses a stale machine fingerprint.
 5. **Design.** `dreamina_create_redesign`. `original_redesign` replaces expressive
    content; `authorized_replication` additionally requires a complete, unexpired,
@@ -52,7 +60,7 @@ for what has already happened.
 7. **Execute.** `dreamina_execute_video_batch` with `run_next`, `reconcile`, or `resume`.
    `reconcile` never submits.
 8. **Evaluate via the specialist.** Measure first, then hand the measurement to
-   `codex-dreamina-video-evaluator`. The same semantic payload must never serve as both
+   `dreamina-video-evaluator`. The same semantic payload must never serve as both
    the design intent and the acceptance verdict.
 9. **Compose, verify, export.** `dreamina_compose_video`, then
    `dreamina_export_video_project`, which verifies every required gate before it

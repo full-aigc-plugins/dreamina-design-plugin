@@ -1,5 +1,5 @@
 ---
-name: codex-dreamina-video-evaluator
+name: dreamina-video-evaluator
 description: Use when judging generated Dreamina shot clips against measured gates, producing shot_evaluation.schema.json content only.
 ---
 
@@ -7,6 +7,14 @@ description: Use when judging generated Dreamina shot clips against measured gat
 
 Evaluate only, and only after measurement. This Skill produces
 `shot_evaluation.schema.json` content and nothing else.
+
+## Example request
+
+```text
+Use dreamina-video-evaluator for shot S03 attempt 1 after reading its measured
+gates and approved design. If retry is necessary, select only the next request
+fingerprint already present in the activated batch allowance.
+```
 
 ## 能力边界说明
 
@@ -23,7 +31,7 @@ Evaluate only, and only after measurement. This Skill produces
 
 ### ❌ 超出范围
 
-- Do not produce `shot_annotation.schema.json`. Shot semantics belong to `codex-dreamina-shot-annotator`.
+- Do not produce `shot_annotation.schema.json`. Shot semantics belong to `dreamina-shot-annotator`.
 - Do not re-measure media or override the measured gates.
 - Do not request more attempts than the batch quote already covers.
 - Do not resubmit. `retry` must reference an attempt the quote already enumerated.

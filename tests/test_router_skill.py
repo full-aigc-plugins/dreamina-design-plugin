@@ -31,7 +31,7 @@ from scripts.router_skill import (  # noqa: E402
 )
 
 
-ROUTER_DIR = ROOT / "skills" / "codex-dreamina-design-use"
+ROUTER_DIR = ROOT / "skills" / "dreamina-design-use"
 
 
 class RouterSkillPresenceTests(unittest.TestCase):

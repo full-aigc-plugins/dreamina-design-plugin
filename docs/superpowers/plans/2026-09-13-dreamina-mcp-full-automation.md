@@ -37,7 +37,7 @@
 - `scripts/dreamina_mcp_server.py`: eleven tool definitions and thin handler delegation.
 - `.mcp.json`: explicit per-tool approval modes.
 - `.codex-plugin/plugin.json`, `.agents/plugins/marketplace.json`: `0.3.0` metadata.
-- `skills/codex-dreamina-design-use/SKILL.md`: route users to the executable MCP automation tools.
+- `skills/dreamina-design-use/SKILL.md`: route users to the executable MCP automation tools.
 
 ---
 
@@ -547,7 +547,7 @@ git commit -m "feat: add verified Dreamina CLI installation"
 - Modify: `.mcp.json`
 - Modify: `tests/test_distribution.py`
 - Modify: `tests/test_contracts.py`
-- Modify: `skills/codex-dreamina-design-use/SKILL.md`
+- Modify: `skills/dreamina-design-use/SKILL.md`
 - Modify: `tests/test_router_skill.py`
 
 **Interfaces:**
@@ -601,7 +601,7 @@ Expected: tests pass; `tools/list` returns exactly eleven tools.
 - [x] **Step 5: Commit**
 
 ```bash
-git add scripts/dreamina_mcp_server.py tests/test_dreamina_mcp_server.py .mcp.json tests/test_distribution.py tests/test_contracts.py skills/codex-dreamina-design-use/SKILL.md tests/test_router_skill.py
+git add scripts/dreamina_mcp_server.py tests/test_dreamina_mcp_server.py .mcp.json tests/test_distribution.py tests/test_contracts.py skills/dreamina-design-use/SKILL.md tests/test_router_skill.py
 git commit -m "feat: expose complete Dreamina MCP automation"
 ```
 
@@ -680,7 +680,7 @@ High, or production-blocking Medium findings.
 - [x] **Step 7: Commit and push release**
 
 ```bash
-git add .codex-plugin/plugin.json .agents/plugins/marketplace.json README.md README.zh-CN.md docs tests scripts skills/codex-dreamina-design-use/SKILL.md .mcp.json
+git add .codex-plugin/plugin.json .agents/plugins/marketplace.json README.md README.zh-CN.md docs tests scripts skills/dreamina-design-use/SKILL.md .mcp.json
 git commit -m "release: publish Dreamina automation 0.3.0"
 git push origin main
 ```

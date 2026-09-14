@@ -3,7 +3,7 @@
   "overall_status": "FAIL",
   "passed_skills": 0,
   "skill_results": {
-    "codex-dreamina-design-use": {
+    "dreamina-design-use": {
       "body_errors": [],
       "body_status": "PASS",
       "examples_errors": [
@@ -14,8 +14,8 @@
       "frontmatter_status": "PASS",
       "links_errors": [],
       "links_status": "PASS",
-      "skill_md_path": "/Users/wandl/workspaces/workspace-partme-ai/codex-dreamina-design-plugin-wt/skills/codex-dreamina-design-use/SKILL.md",
-      "skill_name": "codex-dreamina-design-use"
+      "skill_md_path": "/Users/wandl/workspaces/workspace-partme-ai/codex-dreamina-design-plugin-wt/skills/dreamina-design-use/SKILL.md",
+      "skill_name": "dreamina-design-use"
     },
     "dreamina-cli": {
       "body_errors": [],

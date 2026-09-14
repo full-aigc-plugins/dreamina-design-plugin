@@ -1,4 +1,4 @@
-"""Router Skill code path for ``codex-dreamina-design-use``.
+"""Router Skill code path for ``dreamina-design-use``.
 
 This module backs the router Skill. It does *not* embed any prompt or
 CLI invocation body — it only selects between the packaged Skills and
@@ -69,7 +69,7 @@ ROUTING_TABLE = _RoutingTable(
 # route can be shadowed by the project workflow.
 PROJECT_INTENT = "video_project"
 PROJECT_INTENTS = {
-    "reference": "codex-dreamina-video-production",
+    "reference": "dreamina-video-production",
 }
 
 

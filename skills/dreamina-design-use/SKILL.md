@@ -1,12 +1,12 @@
 ---
-name: codex-dreamina-design-use
+name: dreamina-design-use
 description: |
   Thin router Skill for Dreamina Design image and video workflows.
   Selects between the 13 packaged Dreamina Skills (dreamina-cli-* and
   dreamina-prompt-*) and never duplicates their prompt or CLI bodies.
 ---
 
-# codex-dreamina-design-use
+# dreamina-design-use
 
 This Skill is the **router** for `codex-dreamina-design`. It does **not**
 contain prompt templates, CLI invocation recipes, or model catalogs of its

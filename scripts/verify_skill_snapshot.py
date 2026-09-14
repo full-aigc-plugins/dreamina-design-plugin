@@ -34,10 +34,10 @@ from typing import Iterable
 # Additive Skills owned by this plugin. They are reported separately and are
 # never counted toward the thirteen canonical upstream Skills.
 PLUGIN_OWNED_SKILLS: tuple[str, ...] = (
-    "codex-dreamina-design-use",
-    "codex-dreamina-video-production",
-    "codex-dreamina-shot-annotator",
-    "codex-dreamina-video-evaluator",
+    "dreamina-design-use",
+    "dreamina-video-production",
+    "dreamina-shot-annotator",
+    "dreamina-video-evaluator",
 )
 
 

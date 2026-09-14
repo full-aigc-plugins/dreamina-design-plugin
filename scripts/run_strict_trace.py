@@ -262,7 +262,7 @@ class StrictTracer:
         # ``upstream_commit_sha`` is a packaging contract for *local* Skills
         # only. Upstream Skills legitimately omit it; when we trace the
         # upstream source of truth, the field is not required.
-        if require_packaged_pin and skill_name != "codex-dreamina-design-use":
+        if require_packaged_pin and skill_name != "dreamina-design-use":
             missing_sha = [
                 f for f in self._additional_required_for_packaged if not frontmatter.get(f)
             ]

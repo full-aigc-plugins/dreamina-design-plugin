@@ -151,7 +151,7 @@ def capability_snapshot() -> dict: ...
 
 ### Task 6 — router and packaged Skill quality
 
-**Files:** `skills/codex-dreamina-design-use/SKILL.md`, packaged Skill snapshot, `tests/scenarios/`, `scripts/verify_skill_snapshot.py`.
+**Files:** `skills/dreamina-design-use/SKILL.md`, packaged Skill snapshot, `tests/scenarios/`, `scripts/verify_skill_snapshot.py`.
 
 - [x] Baseline ambiguous routing, hard-coded catalogs, silent login, web-prerequisite bypass, approval reuse and blind retry scenarios.
 - [x] Create a thin router that chooses existing migrated Skills and never duplicates their prompt/CLI instructions.

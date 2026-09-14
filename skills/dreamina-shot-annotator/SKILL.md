@@ -1,5 +1,5 @@
 ---
-name: codex-dreamina-shot-annotator
+name: dreamina-shot-annotator
 description: Use when labelling contact sheets or keyframes with shot semantics before a Dreamina redesign, producing shot_annotation.schema.json content only.
 ---
 
@@ -7,6 +7,14 @@ description: Use when labelling contact sheets or keyframes with shot semantics 
 
 Annotate only. This Skill produces `shot_annotation.schema.json` content and
 nothing else.
+
+## Example request
+
+```text
+Use dreamina-shot-annotator on the supplied contact sheet and analysis version.
+Return only a shot_annotation.schema.json payload; do not change measured timings
+or make an acceptance decision.
+```
 
 ## 能力边界说明
 
@@ -23,7 +31,7 @@ nothing else.
 
 ### ❌ 超出范围
 
-- Do not produce `shot_evaluation.schema.json`. Accept-or-reject decisions belong to `codex-dreamina-video-evaluator`.
+- Do not produce `shot_evaluation.schema.json`. Accept-or-reject decisions belong to `dreamina-video-evaluator`.
 - Do not edit measured timestamps, motion, media identity, or boundary provenance.
 - Do not assert rights.
 
