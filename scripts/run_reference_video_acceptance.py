@@ -117,6 +117,77 @@ def _default_probe_runtime_tools() -> Mapping[str, str]:
     return found
 
 
+def _map_ci_run(payload: Mapping[str, Any] | None) -> Mapping[str, str]:
+    """Map a `gh run list` entry to the gate's status vocabulary.
+
+    Pure, so it can be tested without a network. `_run_remote_ci_gate`
+    understands: ``success`` opens the gate; ``queued`` / ``in_progress``
+    keep it NOT_RUN as still running; anything else keeps it NOT_RUN with
+    the reason recorded.
+    """
+    if not payload:
+        return {"status": "none", "reason": "no workflow run targets this commit"}
+    status = str(payload.get("status", "") or "").lower()
+    conclusion = str(payload.get("conclusion", "") or "").lower()
+    out: dict[str, str] = {}
+    if payload.get("url"):
+        out["url"] = str(payload["url"])
+    if payload.get("databaseId"):
+        out["run_id"] = str(payload["databaseId"])
+    if payload.get("workflowName"):
+        out["workflow"] = str(payload["workflowName"])
+    if status in {"queued", "in_progress", "requested", "waiting", "pending"}:
+        out["status"] = "queued" if status in {"queued", "waiting", "pending", "requested"} else "in_progress"
+        out["reason"] = f"workflow run is {status}"
+        return out
+    if status == "completed":
+        if conclusion == "success":
+            out["status"] = "success"
+            out["reason"] = "workflow run completed successfully"
+        else:
+            out["status"] = conclusion or "completed"
+            out["reason"] = f"workflow run completed with conclusion {conclusion or 'unknown'}"
+        return out
+    out["status"] = status or "none"
+    out["reason"] = f"workflow run status {status or 'unknown'}"
+    return out
+
+
+def _default_head_sha() -> str:
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=False
+    )
+    return completed.stdout.strip()
+
+
+def _default_remote_ci_for_sha(sha: str) -> Mapping[str, str]:
+    """Probe the workflow runs targeting ``sha`` through the GitHub CLI.
+
+    Fails closed: a missing, unauthenticated or slow `gh` yields ``none``
+    with the reason recorded, never a pass.
+    """
+    if not sha:
+        return {"status": "none", "reason": "no head SHA to query"}
+    try:
+        completed = subprocess.run(
+            ["gh", "run", "list", "--commit", sha, "--limit", "1",
+             "--json", "status,conclusion,url,databaseId,workflowName"],
+            cwd=ROOT, capture_output=True, text=True, timeout=60, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"status": "none", "reason": f"gh probe unavailable: {type(exc).__name__}"}
+    if completed.returncode != 0:
+        lines = (completed.stderr or "").strip().splitlines()
+        return {"status": "none", "reason": f"gh failed: {lines[-1] if lines else 'unknown'}"}
+    try:
+        runs = json.loads(completed.stdout or "[]")
+    except json.JSONDecodeError:
+        return {"status": "none", "reason": "gh returned unparseable JSON"}
+    if not isinstance(runs, list) or not runs:
+        return {"status": "none", "reason": f"no workflow run targets {sha[:12]}"}
+    return _map_ci_run(runs[0])
+
+
 def _default_sha_equality() -> tuple[bool, str]:
     def _rev(target: str) -> str:
         completed = subprocess.run(
@@ -320,6 +391,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_offline_suite=_default_offline_suite,
         probe_runtime_tools=_default_probe_runtime_tools,
         sha_equality=_default_sha_equality,
+        head_sha=_default_head_sha,
+        remote_ci_for_sha=_default_remote_ci_for_sha,
     )
     runner = AcceptanceRunner(dependencies)
     report = runner.run(allow_paid=False, allow_publish=False)

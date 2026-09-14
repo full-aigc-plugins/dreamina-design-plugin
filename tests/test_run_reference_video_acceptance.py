@@ -232,3 +232,43 @@ class RecursionGuardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RemoteCiProbeTests(unittest.TestCase):
+    """The remote-CI probe must map GitHub run states faithfully and fail closed."""
+
+    def test_missing_run_is_none(self):
+        from scripts.run_reference_video_acceptance import _map_ci_run
+        self.assertEqual(_map_ci_run(None)["status"], "none")
+        self.assertEqual(_map_ci_run({})["status"], "none")
+
+    def test_completed_success_is_success(self):
+        from scripts.run_reference_video_acceptance import _map_ci_run
+        mapped = _map_ci_run({"status": "completed", "conclusion": "success",
+                              "url": "https://x/1", "databaseId": 7, "workflowName": "CI"})
+        self.assertEqual(mapped["status"], "success")
+        self.assertEqual(mapped["url"], "https://x/1")
+        self.assertEqual(mapped["run_id"], "7")
+
+    def test_completed_failure_is_not_success(self):
+        from scripts.run_reference_video_acceptance import _map_ci_run
+        mapped = _map_ci_run({"status": "completed", "conclusion": "failure"})
+        self.assertNotEqual(mapped["status"], "success")
+        self.assertIn("failure", mapped["reason"])
+
+    def test_in_progress_stays_not_run(self):
+        from scripts.run_reference_video_acceptance import _map_ci_run
+        for gh_status in ("queued", "in_progress", "waiting", "requested", "pending"):
+            with self.subTest(gh_status=gh_status):
+                mapped = _map_ci_run({"status": gh_status})
+                self.assertIn(mapped["status"], {"queued", "in_progress"})
+
+    def test_unknown_status_is_never_success(self):
+        from scripts.run_reference_video_acceptance import _map_ci_run
+        self.assertNotEqual(_map_ci_run({"status": "weird"})["status"], "success")
+
+    def test_unavailable_gh_fails_closed(self):
+        from scripts.run_reference_video_acceptance import _default_remote_ci_for_sha
+        probe = _default_remote_ci_for_sha("0" * 40)
+        self.assertNotEqual(probe["status"], "success")   # fail closed either way
+        self.assertIn("reason", probe)
