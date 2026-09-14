@@ -15,10 +15,14 @@ class SubtitleTimelineError(ValueError):
 
 
 class SubtitleService:
-    def __init__(self, *, max_text_length: int = 500) -> None:
+    def __init__(self, *, max_text_length: int = 500, key_store: Any | None = None) -> None:
         if not isinstance(max_text_length, int) or max_text_length <= 0:
             raise ValueError("max text length must be positive")
         self._max_text_length = max_text_length
+        from scripts.narration_service import FileAudioReceiptKeyStore
+        self._key_store = key_store or FileAudioReceiptKeyStore()
+        if hasattr(self._key_store, "initialize"):
+            self._key_store.initialize()
 
     def from_source(self, cues: Sequence[Mapping[str, Any]], *, source: str) -> list[dict[str, Any]]:
         if source not in {"rewritten_script", "narration_timing"}:
@@ -42,11 +46,11 @@ class SubtitleService:
             lines.append(f"Dialogue: 0,{self._ass_time(cue['start'])},{self._ass_time(cue['end'])},Default,{safe}")
         return header + "\n".join(lines) + ("\n" if lines else "")
 
-    def write_srt(self, cues: Sequence[Mapping[str, Any]], output_path: Path, *, target_duration_seconds: float) -> dict[str, Any]:
-        return self._write(self.render_srt(cues, target_duration_seconds=target_duration_seconds), output_path, "srt")
+    def write_srt(self, cues: Sequence[Mapping[str, Any]], output_path: Path, *, target_duration_seconds: float, source: str = "rewritten_script") -> dict[str, Any]:
+        return self._write(self.render_srt(cues, target_duration_seconds=target_duration_seconds), output_path, "srt", source)
 
-    def write_ass(self, cues: Sequence[Mapping[str, Any]], output_path: Path, *, target_duration_seconds: float) -> dict[str, Any]:
-        return self._write(self.render_ass(cues, target_duration_seconds=target_duration_seconds), output_path, "ass")
+    def write_ass(self, cues: Sequence[Mapping[str, Any]], output_path: Path, *, target_duration_seconds: float, source: str = "rewritten_script") -> dict[str, Any]:
+        return self._write(self.render_ass(cues, target_duration_seconds=target_duration_seconds), output_path, "ass", source)
 
     def _validate(self, cues: Sequence[Mapping[str, Any]], target: float | None) -> list[dict[str, Any]]:
         if target is not None and (isinstance(target, bool) or not isinstance(target, (int, float)) or not math.isfinite(target) or target <= 0):
@@ -74,8 +78,9 @@ class SubtitleService:
         centis = round(value * 100); hours, rem = divmod(centis, 360000); minutes, rem = divmod(rem, 6000); seconds, cs = divmod(rem, 100)
         return f"{hours}:{minutes:02d}:{seconds:02d}.{cs:02d}"
 
-    @staticmethod
-    def _write(content: str, output_path: Path, format_name: str) -> dict[str, Any]:
+    def _write(self, content: str, output_path: Path, format_name: str, source: str) -> dict[str, Any]:
+        if source not in {"rewritten_script", "narration_timing"}:
+            raise SubtitleTimelineError("subtitle receipt source is not approved")
         output = Path(output_path)
         if not output.is_absolute() or output.is_symlink() or not output.parent.is_dir():
             raise SubtitleTimelineError("subtitle output must be in an existing absolute directory")
@@ -88,12 +93,11 @@ class SubtitleService:
             os.replace(temporary, output); os.chmod(output, 0o600)
         finally:
             Path(temporary).unlink(missing_ok=True)
-        from scripts.narration_service import FileAudioReceiptKeyStore, _artifact_receipt
+        from scripts.narration_service import _artifact_receipt
         return _artifact_receipt(provider="subtitle-service", path=output,
             mime_type="application/x-subrip" if format_name == "srt" else "text/x-ssa",
             kind="generated_subtitle", rights_declared=["subtitles"], approved_root=None,
-            source="rewritten_script_or_narration_timing", voice=None, model=None,
-            key_store=FileAudioReceiptKeyStore())
+            source=source, voice=None, model=None, key_store=self._key_store)
 
 
 __all__ = ["SubtitleService", "SubtitleTimelineError"]

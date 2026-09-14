@@ -10,6 +10,7 @@ import re
 import stat
 import tempfile
 import secrets
+import fcntl
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -29,43 +30,146 @@ class AudioReceiptKeyUnavailableError(PermissionError):
 class FileAudioReceiptKeyStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = Path(path) if path else Path.home() / ".config/codex-dreamina-design/audio-receipt.key"
-        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.path.parent, 0o700)
+        self.marker_path = self.path.with_name(self.path.name + ".initialized")
+        self._ensure_private_parent()
+        parent = self._validate_dir(self.path.parent, exact_private=True)
+        self._parent_identity = (parent.st_dev, parent.st_ino)
 
-    def load(self, *, allow_create: bool) -> bytes:
-        parent = self.path.parent
-        pstat = parent.lstat()
-        if parent.is_symlink() or pstat.st_uid != os.getuid() or stat.S_IMODE(pstat.st_mode) != 0o700:
-            raise AudioReceiptKeyUnavailableError("audio key directory is unsafe")
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    @staticmethod
+    def _validate_dir(path: Path, *, exact_private: bool) -> os.stat_result:
         try:
-            fd = os.open(self.path, flags)
-        except FileNotFoundError:
-            if not allow_create:
-                raise AudioReceiptKeyUnavailableError("audio receipt key is missing")
-            key = secrets.token_bytes(32)
-            try:
-                fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-                try:
-                    os.write(fd, key); os.fsync(fd)
-                finally:
-                    os.close(fd)
-            except FileExistsError:
-                return self.load(allow_create=False)
-            return key
+            value = path.lstat()
         except OSError as exc:
-            raise AudioReceiptKeyUnavailableError("audio receipt key cannot be opened") from exc
+            raise AudioReceiptKeyUnavailableError("audio key directory cannot be inspected") from exc
+        if (not stat.S_ISDIR(value.st_mode) or path.is_symlink() or value.st_uid != os.getuid() or
+                (exact_private and stat.S_IMODE(value.st_mode) != 0o700)):
+            raise AudioReceiptKeyUnavailableError("audio key directory is unsafe")
+        return value
+
+    def _ensure_private_parent(self) -> None:
+        parent = self.path.parent
+        if parent.exists() or parent.is_symlink():
+            self._validate_dir(parent, exact_private=True)
+            return
+        missing = []
+        cursor = parent
+        while not cursor.exists() and not cursor.is_symlink():
+            missing.append(cursor.name)
+            cursor = cursor.parent
+        self._validate_dir(cursor, exact_private=False)
+        descriptor = os.open(cursor, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
         try:
-            before = os.fstat(fd); key = os.read(fd, 33); after = os.fstat(fd)
+            for name in reversed(missing):
+                try:
+                    os.mkdir(name, 0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+                child = os.open(name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = child
+                current = os.fstat(descriptor)
+                if current.st_uid != os.getuid() or stat.S_IMODE(current.st_mode) != 0o700:
+                    raise AudioReceiptKeyUnavailableError("audio key directory is unsafe")
+        except OSError as exc:
+            raise AudioReceiptKeyUnavailableError("audio key directory cannot be created safely") from exc
+        finally:
+            os.close(descriptor)
+
+    def _read_private_file(self, path: Path, *, maximum: int) -> bytes:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        parent_fd = os.open(self.path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            parent_stat = os.fstat(parent_fd)
+            if (parent_stat.st_dev, parent_stat.st_ino) != self._parent_identity:
+                raise AudioReceiptKeyUnavailableError("audio key directory identity changed")
+            fd = os.open(path.name, flags, dir_fd=parent_fd)
+        except FileNotFoundError as exc:
+            os.close(parent_fd)
+            raise AudioReceiptKeyUnavailableError("audio receipt initialization state is missing") from exc
+        except OSError as exc:
+            os.close(parent_fd)
+            raise AudioReceiptKeyUnavailableError("audio receipt initialization state cannot be opened") from exc
+        try:
+            before = os.fstat(fd); data = os.read(fd, maximum + 1); after = os.fstat(fd)
+            current = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
         finally:
             os.close(fd)
-        current = self.path.lstat()
+            os.close(parent_fd)
         if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or
-                stat.S_IMODE(before.st_mode) != 0o600 or len(key) != 32 or
+                stat.S_IMODE(before.st_mode) != 0o600 or len(data) > maximum or
                 (before.st_dev, before.st_ino, before.st_size) != (after.st_dev, after.st_ino, after.st_size) or
                 (current.st_dev, current.st_ino) != (after.st_dev, after.st_ino)):
-            raise AudioReceiptKeyUnavailableError("audio receipt key identity or permissions are unsafe")
+            raise AudioReceiptKeyUnavailableError("audio receipt initialization state is unsafe")
+        return data
+
+    def load_existing(self) -> bytes:
+        parent = self._validate_dir(self.path.parent, exact_private=True)
+        if (parent.st_dev, parent.st_ino) != self._parent_identity:
+            raise AudioReceiptKeyUnavailableError("audio key directory identity changed")
+        key = self._read_private_file(self.path, maximum=32)
+        if len(key) != 32:
+            raise AudioReceiptKeyUnavailableError("audio receipt key is invalid")
+        marker = self._read_private_file(self.marker_path, maximum=512)
+        key_id = hashlib.sha256(key).hexdigest()
+        expected = hmac.new(key, b"codex-dreamina-design/audio-key-marker/v1\x00" + key_id.encode(), hashlib.sha256).hexdigest()
+        try:
+            payload = json.loads(marker.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AudioReceiptKeyUnavailableError("audio receipt initialization marker is invalid") from exc
+        if payload != {"version": 1, "key_id": key_id, "seal": expected}:
+            raise AudioReceiptKeyUnavailableError("audio receipt initialization marker does not match key")
         return key
+
+    def initialize(self) -> bytes:
+        self._validate_dir(self.path.parent, exact_private=True)
+        lock_fd = os.open(self.path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            parent_stat = os.fstat(lock_fd)
+            if (parent_stat.st_dev, parent_stat.st_ino) != self._parent_identity:
+                raise AudioReceiptKeyUnavailableError("audio key directory identity changed")
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            def exists(name: str) -> bool:
+                try:
+                    os.stat(name, dir_fd=lock_fd, follow_symlinks=False)
+                    return True
+                except FileNotFoundError:
+                    return False
+            key_exists = exists(self.path.name)
+            marker_exists = exists(self.marker_path.name)
+            if key_exists or marker_exists:
+                if not (key_exists and marker_exists):
+                    raise AudioReceiptKeyUnavailableError("audio receipt initialization state is incomplete")
+                return self.load_existing()
+            key = secrets.token_bytes(32)
+            key_id = hashlib.sha256(key).hexdigest()
+            seal = hmac.new(key, b"codex-dreamina-design/audio-key-marker/v1\x00" + key_id.encode(), hashlib.sha256).hexdigest()
+            marker = json.dumps({"version": 1, "key_id": key_id, "seal": seal}, sort_keys=True, separators=(",", ":")).encode()
+            created = []
+            try:
+                for name, data in ((self.path.name, key), (self.marker_path.name, marker)):
+                    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=lock_fd)
+                    created.append(name)
+                    try:
+                        os.write(fd, data); os.fsync(fd)
+                    finally:
+                        os.close(fd)
+                os.fsync(lock_fd)
+            except Exception:
+                for name in reversed(created):
+                    try:
+                        os.unlink(name, dir_fd=lock_fd)
+                    except FileNotFoundError:
+                        pass
+                raise
+            return self.load_existing()
+        finally:
+            os.close(lock_fd)
+
+    def load(self, *, allow_create: bool) -> bytes:
+        """Compatibility shim; creation is permitted only through initialize()."""
+        if allow_create:
+            raise AudioReceiptKeyUnavailableError("audio receipt key requires explicit initialization")
+        return self.load_existing()
 
 
 class AudioRightsError(PermissionError):
@@ -92,7 +196,7 @@ def _artifact_receipt(*, provider: str, path: Path, mime_type: str, kind: str,
             "provenance": {"kind": kind, "rights_declared": list(rights_declared),
                            "approved_root": approved_root, "source": source,
                            "voice": voice, "model": model, "source_voice_cloned": False}}
-    key = key_store.load(allow_create=True)
+    key = key_store.load_existing() if hasattr(key_store, "load_existing") else key_store.load(allow_create=False)
     key_id = hashlib.sha256(key).hexdigest()
     signed = {**core, "attestation_version": 1, "attestation_key_id": key_id}
     signature = hmac.new(key, _ATTESTATION_DOMAIN + json.dumps(signed, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()
@@ -110,12 +214,12 @@ def _require_artifact(value: Mapping[str, Any], *, role: str, key_store: Any, re
     valid_role = {
         "new_narration": value.get("provider") == "macos-say" and value.get("mime_type") == "audio/aiff" and provenance.get("kind") == "new_narration" and provenance.get("source") == "rewritten_script" and isinstance(provenance.get("voice"), str) and bool(provenance.get("voice")) and provenance.get("model") == "macos-say" and "voice" in provenance.get("rights_declared", []),
         "existing_audio": value.get("provider") == "existing-audio" and value.get("mime_type") == "audio/wav" and provenance.get("kind") == "user_supplied" and provenance.get("source") == "user_supplied" and provenance.get("voice") is None and provenance.get("model") is None,
-        "subtitle": value.get("provider") == "subtitle-service" and value.get("mime_type") in {"application/x-subrip", "text/x-ssa"} and provenance.get("kind") == "generated_subtitle" and provenance.get("voice") is None and provenance.get("model") is None,
+        "subtitle": value.get("provider") == "subtitle-service" and value.get("mime_type") in {"application/x-subrip", "text/x-ssa"} and provenance.get("kind") == "generated_subtitle" and provenance.get("source") in {"rewritten_script", "narration_timing"} and provenance.get("voice") is None and provenance.get("model") is None,
     }.get(role, False)
     if not valid_role:
         raise ContractValidationError("audio artifact role fields are inconsistent")
     core = {key: value[key] for key in expected if key != "attestation"}
-    key = key_store.load(allow_create=False)
+    key = key_store.load_existing() if hasattr(key_store, "load_existing") else key_store.load(allow_create=False)
     if value.get("attestation_version") != 1 or value.get("attestation_key_id") != hashlib.sha256(key).hexdigest():
         raise AudioReceiptKeyUnavailableError("audio receipt was signed by another key")
     wanted = hmac.new(key, _ATTESTATION_DOMAIN + json.dumps(core, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()
@@ -141,6 +245,8 @@ class MacOSSayProvider:
         self._root = Path(private_root)
         self._voices = frozenset(voices)
         self._key_store = key_store or FileAudioReceiptKeyStore()
+        if hasattr(self._key_store, "initialize"):
+            self._key_store.initialize()
         if not self._root.is_absolute() or self._root.is_symlink() or not self._root.is_dir():
             raise NarrationProviderError("narration root must be an absolute private directory")
         os.chmod(self._root, 0o700)
@@ -191,6 +297,8 @@ class ExistingAudioProvider:
             raise AudioRightsError("at least one approved audio root is required")
         self._roots = tuple(roots)
         self._key_store = key_store or FileAudioReceiptKeyStore()
+        if hasattr(self._key_store, "initialize"):
+            self._key_store.initialize()
 
     def accept(self, path: Path, *, expected_sha256: str, rights: Mapping[str, bool]) -> dict[str, Any]:
         source = Path(path)

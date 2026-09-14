@@ -165,6 +165,39 @@ class ClosedSchemaTests(unittest.TestCase):
             "authorized_replication", "original_redesign",
         ])
 
+    def test_audio_plan_artifact_roles_are_closed_and_not_interchangeable(self) -> None:
+        schema = load_json(SCHEMAS_DIR / "audio_plan.schema.json")
+        self.assertEqual(schema["properties"]["narration"]["anyOf"][1]["$ref"], "#/$defs/newNarrationArtifact")
+        self.assertEqual(schema["properties"]["narration"]["anyOf"][2]["$ref"], "#/$defs/existingVoiceArtifact")
+        self.assertEqual(schema["properties"]["music"]["anyOf"][1]["$ref"], "#/$defs/musicArtifact")
+        self.assertEqual(schema["properties"]["effects"]["items"]["$ref"], "#/$defs/effectArtifact")
+        self.assertEqual(schema["properties"]["subtitles"]["items"]["oneOf"][0]["$ref"], "#/$defs/subtitleSrtArtifact")
+        self.assertEqual(schema["properties"]["subtitles"]["items"]["oneOf"][1]["$ref"], "#/$defs/subtitleAssArtifact")
+
+    def test_audio_plan_schema_rejects_cross_role_artifact_fields(self) -> None:
+        def artifact(provider, mime, kind, source, rights, voice=None, model=None):
+            return {"provider":provider,"path":"/tmp/artifact","sha256":"a"*64,"size_bytes":1,
+                "mime_type":mime,"provenance":{"kind":kind,"rights_declared":rights,
+                "approved_root":"/tmp" if kind == "user_supplied" else None,"source":source,
+                "voice":voice,"model":model,"source_voice_cloned":False},"attestation_version":1,
+                "attestation_key_id":"b"*64,"attestation":"c"*64}
+        base = {"schema_version":"1.0","version":"v001","project_id":"vp_"+"1"*24,
+            "design_fingerprint":"2"*64,"batch_fingerprint":"3"*64,
+            "creative_mode":"original_redesign","audio_policy":"subtitles_only",
+            "target_duration_seconds":1,"source_rights":None,"preserve":[],"transcript":None,
+            "rewritten_script":[],"narration":None,"music":None,"effects":[],"subtitles":[],
+            "provenance":{"remote_services_used":False,"source_voice_cloned":False},
+            "plan_fingerprint":"4"*64}
+        invalid = [
+            {**base, "subtitles":[artifact("macos-say","application/x-subrip","generated_subtitle","rewritten_script",["subtitles"],"Samantha","macos-say")]},
+            {**base, "subtitles":[artifact("subtitle-service","audio/wav","generated_subtitle","rewritten_script",["subtitles"])]},
+            {**base, "narration":artifact("existing-audio","audio/wav","new_narration","rewritten_script",["voice"])},
+            {**base, "subtitles":[artifact("subtitle-service","application/x-subrip","user_supplied","user_supplied",["subtitles"])]},
+        ]
+        for payload in invalid:
+            with self.subTest(payload=payload), self.assertRaises(ContractValidationError):
+                validate_contract(payload, "audio_plan.schema.json")
+
     def test_each_schema_rejects_unknown_properties(self) -> None:
         for name in EXPECTED_SCHEMAS:
             schema = load_json(SCHEMAS_DIR / name)

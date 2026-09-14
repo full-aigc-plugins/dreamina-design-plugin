@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts.media_adapter import MediaResult
 from scripts.narration_service import (
@@ -38,6 +40,8 @@ class NarrationServiceTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         os.chmod(self.root, 0o700)
+        self.keys = FileAudioReceiptKeyStore(self.root / "receipt-keys" / "audio.key")
+        self.keys.initialize()
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -45,7 +49,7 @@ class NarrationServiceTests(unittest.TestCase):
     def test_macos_say_uses_closed_voice_allowlist_and_private_script(self) -> None:
         adapter = SyntheticNarrationAdapter()
         output = self.root / "narration.aiff"
-        provider = MacOSSayProvider(adapter, self.root, voices={"Ting-Ting", "Samantha"})
+        provider = MacOSSayProvider(adapter, self.root, voices={"Ting-Ting", "Samantha"}, key_store=self.keys)
         receipt = provider.synthesize([{"start": 0, "end": 1, "text": "你好"}], voice="Ting-Ting", output_path=output)
         kind, argv, timeout = adapter.calls[0]
         self.assertEqual(kind, "narration")
@@ -65,7 +69,7 @@ class NarrationServiceTests(unittest.TestCase):
     def test_existing_audio_requires_private_approved_digest_and_rights(self) -> None:
         track = self.root / "licensed.wav"
         track.write_bytes(b"licensed")
-        provider = ExistingAudioProvider([self.root])
+        provider = ExistingAudioProvider([self.root], key_store=self.keys)
         receipt = provider.accept(track, expected_sha256=hashlib.sha256(b"licensed").hexdigest(), rights={"music": True})
         self.assertEqual(receipt["provenance"]["rights_declared"], ["music"])
         with self.assertRaises(AudioRightsError):
@@ -74,12 +78,12 @@ class NarrationServiceTests(unittest.TestCase):
             provider.accept(track, expected_sha256=hashlib.sha256(b"licensed").hexdigest(), rights={})
 
     def test_four_audio_policies_are_closed_and_original_redesign_replaces_source_audio(self) -> None:
-        service = AudioPlanService()
+        service = AudioPlanService(key_store=self.keys)
         adapter = SyntheticNarrationAdapter()
-        narration = MacOSSayProvider(adapter, self.root, voices={"Samantha"}).synthesize(
+        narration = MacOSSayProvider(adapter, self.root, voices={"Samantha"}, key_store=self.keys).synthesize(
             [{"start": 0, "end": 1, "text": "new"}], voice="Samantha", output_path=self.root / "new.aiff")
         music_path = self.root / "music.wav"; music_path.write_bytes(b"music")
-        music = ExistingAudioProvider([self.root]).accept(music_path, expected_sha256=hashlib.sha256(b"music").hexdigest(), rights={"music": True})
+        music = ExistingAudioProvider([self.root], key_store=self.keys).accept(music_path, expected_sha256=hashlib.sha256(b"music").hexdigest(), rights={"music": True})
         for policy in ("full_redesign", "preserve_authorized_audio", "subtitles_only", "silent"):
             with self.subTest(policy=policy):
                 preserving = policy == "preserve_authorized_audio"
@@ -105,9 +109,9 @@ class NarrationServiceTests(unittest.TestCase):
                 narration=None, music=None, effects=[], subtitles=[], target_duration_seconds=2)
 
     def test_authorized_preserve_requires_every_requested_class_and_music_intent(self) -> None:
-        service = AudioPlanService()
+        service = AudioPlanService(key_store=self.keys)
         music_path = self.root / "licensed-music.wav"; music_path.write_bytes(b"licensed-music")
-        receipt = ExistingAudioProvider([self.root]).accept(music_path, expected_sha256=hashlib.sha256(b"licensed-music").hexdigest(), rights={"music": True})
+        receipt = ExistingAudioProvider([self.root], key_store=self.keys).accept(music_path, expected_sha256=hashlib.sha256(b"licensed-music").hexdigest(), rights={"music": True})
         base = dict(project_id="vp_" + "1" * 24, design_fingerprint="2" * 64,
             batch_fingerprint="3" * 64, creative_mode="authorized_replication",
             audio_policy="preserve_authorized_audio", transcript=None, rewritten_script=[], narration=None,
@@ -142,13 +146,93 @@ class NarrationServiceTests(unittest.TestCase):
 
     def test_file_key_store_is_private_durable_and_never_rotates_when_missing(self) -> None:
         key_path = self.root / "keys" / "audio.key"
-        first = FileAudioReceiptKeyStore(key_path).load(allow_create=True)
-        second = FileAudioReceiptKeyStore(key_path).load(allow_create=False)
+        store = FileAudioReceiptKeyStore(key_path)
+        first = store.initialize()
+        second = store.load_existing()
         self.assertEqual(first, second)
         self.assertEqual(key_path.stat().st_mode & 0o777, 0o600)
         key_path.unlink()
         with self.assertRaises(PermissionError):
-            FileAudioReceiptKeyStore(key_path).load(allow_create=False)
+            FileAudioReceiptKeyStore(key_path).load_existing()
+
+    def test_key_store_rejects_existing_unsafe_parent_without_mutating_it(self) -> None:
+        public = self.root / "public"
+        public.mkdir(mode=0o755)
+        before = public.stat().st_mode & 0o777
+        with self.assertRaises(PermissionError):
+            FileAudioReceiptKeyStore(public / "audio.key")
+        self.assertEqual(public.stat().st_mode & 0o777, before)
+
+        target = self.root / "target"
+        target.mkdir(mode=0o755)
+        link = self.root / "link"
+        link.symlink_to(target, target_is_directory=True)
+        with self.assertRaises(PermissionError):
+            FileAudioReceiptKeyStore(link / "audio.key")
+        self.assertEqual(target.stat().st_mode & 0o777, 0o755)
+
+    def test_key_store_marker_detects_deleted_or_changed_state(self) -> None:
+        key_path = self.root / "state" / "audio.key"
+        store = FileAudioReceiptKeyStore(key_path)
+        original = store.initialize()
+        marker = store.marker_path
+        self.assertEqual(store.initialize(), original)
+        key_path.unlink()
+        with self.assertRaises(PermissionError):
+            store.initialize()
+        key_path.write_bytes(original)
+        os.chmod(key_path, 0o600)
+        marker.unlink()
+        with self.assertRaises(PermissionError):
+            store.initialize()
+        marker.write_text("corrupt", encoding="utf-8")
+        os.chmod(marker, 0o600)
+        with self.assertRaises(PermissionError):
+            store.load_existing()
+
+    def test_key_store_concurrent_initialize_is_idempotent(self) -> None:
+        store = FileAudioReceiptKeyStore(self.root / "concurrent" / "audio.key")
+        keys, errors = [], []
+        def initialize() -> None:
+            try:
+                keys.append(store.initialize())
+            except Exception as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+        threads = [threading.Thread(target=initialize) for _ in range(8)]
+        for thread in threads: thread.start()
+        for thread in threads: thread.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(len(set(keys)), 1)
+        self.assertEqual(store.load_existing(), keys[0])
+
+    def test_key_store_load_fails_if_key_path_is_swapped_during_read(self) -> None:
+        key_path = self.root / "race" / "audio.key"
+        store = FileAudioReceiptKeyStore(key_path)
+        store.initialize()
+        original_read = os.read
+        swapped = False
+        def racing_read(fd, size):
+            nonlocal swapped
+            data = original_read(fd, size)
+            if not swapped:
+                swapped = True
+                replacement = key_path.with_suffix(".replacement")
+                replacement.write_bytes(b"z" * 32)
+                os.chmod(replacement, 0o600)
+                os.replace(replacement, key_path)
+            return data
+        with mock.patch("scripts.narration_service.os.read", side_effect=racing_read):
+            with self.assertRaises(PermissionError):
+                store.load_existing()
+
+    def test_signing_never_recreates_deleted_initialized_key(self) -> None:
+        key_path = self.root / "deleted" / "audio.key"
+        store = FileAudioReceiptKeyStore(key_path)
+        provider = MacOSSayProvider(SyntheticNarrationAdapter(), self.root, voices={"Samantha"}, key_store=store)
+        key_path.unlink()
+        with self.assertRaises(PermissionError):
+            provider.synthesize([{"start":0,"end":1,"text":"new"}], voice="Samantha", output_path=self.root/"deleted.aiff")
+        self.assertFalse(key_path.exists())
 
     def test_preserved_effects_require_exact_order_independent_member_set(self) -> None:
         keys = FixedKeyStore(); provider = ExistingAudioProvider([self.root], key_store=keys)

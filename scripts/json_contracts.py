@@ -104,6 +104,13 @@ def _validate(
         value, schema["anyOf"], path=path, document=document, schema_name=schema_name
     ):
         raise ContractValidationError(f"{path} does not match any allowed schema")
+    if "oneOf" in schema:
+        matches = sum(
+            _matches(value, item, path=path, document=document, schema_name=schema_name)
+            for item in schema["oneOf"]
+        )
+        if matches != 1:
+            raise ContractValidationError(f"{path} must match exactly one allowed schema")
     if "not" in schema and _matches(
         value, schema["not"], path=path, document=document, schema_name=schema_name
     ):
@@ -169,6 +176,11 @@ def _validate(
                     document=document,
                     schema_name=schema_name,
                 )
+        if "contains" in schema and not any(
+            _matches(item, schema["contains"], path=f"{path}[{index}]", document=document, schema_name=schema_name)
+            for index, item in enumerate(value)
+        ):
+            raise ContractValidationError(f"{path} does not contain a required item")
 
     if isinstance(value, str):
         if len(value) < int(schema.get("minLength", 0)):
