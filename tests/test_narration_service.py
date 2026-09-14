@@ -18,7 +18,8 @@ from scripts.narration_service import (
     NarrationProviderError,
     _require_artifact,
 )
-from scripts.json_contracts import ContractValidationError, validate_contract
+from scripts.json_contracts import ContractValidationError, canonical_fingerprint, validate_contract
+from scripts.video_project_store import VersionCommitIndeterminateError, VideoProjectStore
 
 
 class SyntheticNarrationAdapter:
@@ -48,6 +49,19 @@ class FakeKeyApproval:
         return "native-audio-receipt-key-confirmed"
 
 
+class StubRightsStore:
+    def __init__(self, receipt, design):
+        self.receipt = receipt
+        self.design = design
+
+    def get(self, project_id):
+        return {"project_id": project_id, "creative_mode": "authorized_replication",
+                "audio_policy": "preserve_authorized_audio"}
+
+    def find_version_by_field(self, project_id, family, **kwargs):
+        return self.receipt if family == "rights_receipt" else self.design
+
+
 class NarrationServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -58,6 +72,36 @@ class NarrationServiceTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
+
+    def _authorized_service(self, bindings, requested, *, expires_at="2027-09-14T00:00:00Z"):
+        allowed_reuse = sorted(set(requested).difference({"effects"})) or ["audio_beats"]
+        receipt = {
+            "schema_version": "1.0", "version": "v001", "receipt_id": "rr_" + "5" * 24,
+            "project_id": "vp_" + "1" * 24, "source_sha256": "a" * 64,
+            "creative_mode": "authorized_replication", "design_fingerprint": "2" * 64,
+            "declarant": "rights-holder@example.test", "rights_basis": "written license",
+            "evidence": [{"reference": "license", "sha256": "b" * 64}],
+            "allowed_media": ["audio"], "allowed_reuse": allowed_reuse,
+            "purpose": "campaign remake", "audience": "registered customers", "territory": "US",
+            "expires_at": expires_at, "asserted_at": "2026-09-14T00:00:00Z",
+            "native_confirmation": "native-video-rights-confirmed",
+            "disclaimer": "User-supplied assertion recorded as engineering authorization evidence; not ownership verification or legal advice.",
+        }
+        design = {
+            "project_id": receipt["project_id"], "source_sha256": receipt["source_sha256"],
+            "creative_mode": "authorized_replication", "design_fingerprint": receipt["design_fingerprint"],
+            "rights_receipt_id": receipt["receipt_id"],
+            "payload": {"required_media": ["audio"], "purpose": receipt["purpose"],
+                        "audience": receipt["audience"], "territory": receipt["territory"]},
+        }
+        source_rights = {
+            "receipt_id": receipt["receipt_id"], "receipt_fingerprint": canonical_fingerprint(receipt),
+            "allowed_reuse": sorted(requested), "artifact_bindings": bindings,
+        }
+        return AudioPlanService(
+            key_store=self.keys, project_store=StubRightsStore(receipt, design),
+            now=lambda: "2026-09-14T01:00:00Z",
+        ), source_rights
 
     def test_macos_say_uses_closed_voice_allowlist_and_private_script(self) -> None:
         adapter = SyntheticNarrationAdapter()
@@ -108,10 +152,12 @@ class NarrationServiceTests(unittest.TestCase):
         for policy in ("full_redesign", "preserve_authorized_audio", "subtitles_only", "silent"):
             with self.subTest(policy=policy):
                 preserving = policy == "preserve_authorized_audio"
-                result = service.create_plan(
+                bindings = {"music": {"path": music["path"], "sha256": music["sha256"]}}
+                selected_service, source_rights = self._authorized_service(bindings, ["music"]) if preserving else (service, None)
+                result = selected_service.create_plan(
                     project_id="vp_" + "1" * 24, design_fingerprint="2" * 64,
                     batch_fingerprint="3" * 64, creative_mode="authorized_replication" if preserving else "original_redesign",
-                    audio_policy=policy, source_rights={"receipt_id":"rr_"+"5"*24,"receipt_fingerprint":"6"*64,"allowed_reuse": ["music"],"artifact_bindings":{"music":{"path":music["path"],"sha256":music["sha256"]}}} if preserving else None, transcript=None,
+                    audio_policy=policy, source_rights=source_rights, transcript=None,
                     rewritten_script=[] if policy in {"subtitles_only", "silent"} else [{"start": 0, "end": 1, "text": "new"}],
                     narration=narration if policy == "full_redesign" else None,
                     music={**music, "loop": False, "trim_to_seconds": 2} if preserving else None,
@@ -130,17 +176,18 @@ class NarrationServiceTests(unittest.TestCase):
                 narration=None, music=None, effects=[], subtitles=[], target_duration_seconds=2)
 
     def test_authorized_preserve_requires_every_requested_class_and_music_intent(self) -> None:
-        service = AudioPlanService(key_store=self.keys)
         music_path = self.root / "licensed-music.wav"; music_path.write_bytes(b"licensed-music")
         receipt = ExistingAudioProvider([self.root], key_store=self.keys).accept(music_path, expected_sha256=hashlib.sha256(b"licensed-music").hexdigest(), rights={"music": True})
+        bindings = {"music": {"path": receipt["path"], "sha256": receipt["sha256"]}}
+        service, source_rights = self._authorized_service(bindings, ["music"])
         base = dict(project_id="vp_" + "1" * 24, design_fingerprint="2" * 64,
             batch_fingerprint="3" * 64, creative_mode="authorized_replication",
             audio_policy="preserve_authorized_audio", transcript=None, rewritten_script=[], narration=None,
             music={**receipt, "loop": True, "trim_to_seconds": 8.0}, effects=[], subtitles=[],
             target_duration_seconds=8)
         with self.assertRaises(AudioRightsError):
-            service.create_plan(source_rights={"receipt_id":"rr_"+"5"*24,"receipt_fingerprint":"6"*64,"allowed_reuse": ["music"],"artifact_bindings":{"music":{"path":receipt["path"],"sha256":receipt["sha256"]}}}, preserve=["voice", "music"], **base)
-        result = service.create_plan(source_rights={"receipt_id":"rr_"+"5"*24,"receipt_fingerprint":"6"*64,"allowed_reuse": ["music"],"artifact_bindings":{"music":{"path":receipt["path"],"sha256":receipt["sha256"]}}}, preserve=["music"], **base)
+            service.create_plan(source_rights=source_rights, preserve=["voice", "music"], **base)
+        result = service.create_plan(source_rights=source_rights, preserve=["music"], **base)
         self.assertEqual(result["music"]["intent"], {"loop": True, "trim_to_seconds": 8.0})
 
     def test_forged_or_incomplete_artifact_receipts_are_rejected(self) -> None:
@@ -341,10 +388,54 @@ class NarrationServiceTests(unittest.TestCase):
             receipts.append(provider.accept(path, expected_sha256=hashlib.sha256(path.read_bytes()).hexdigest(), rights={"effects":True}))
         bindings = [{"path": item["path"], "sha256": item["sha256"]} for item in reversed(receipts)]
         base = dict(project_id="vp_"+"1"*24,design_fingerprint="2"*64,batch_fingerprint="3"*64,creative_mode="authorized_replication",audio_policy="preserve_authorized_audio",transcript=None,rewritten_script=[],narration=None,music=None,effects=receipts,subtitles=[],target_duration_seconds=1,preserve=["effects"])
-        plan = AudioPlanService(key_store=keys).create_plan(source_rights={"receipt_id":"rr_"+"5"*24,"receipt_fingerprint":"6"*64,"allowed_reuse":["effects"],"artifact_bindings":{"effects":bindings}}, **base)
+        service, source_rights = self._authorized_service({"effects": bindings}, ["effects"])
+        service._key_store = keys
+        plan = service.create_plan(source_rights=source_rights, **base)
         self.assertEqual(len(plan["effects"]), 2)
         with self.assertRaises(AudioRightsError):
-            AudioPlanService(key_store=keys).create_plan(source_rights={"receipt_id":"rr_"+"5"*24,"receipt_fingerprint":"6"*64,"allowed_reuse":["effects"],"artifact_bindings":{"effects":bindings[:1]}}, **base)
+            service.create_plan(source_rights={**source_rights, "artifact_bindings": {"effects": bindings[:1]}}, **base)
+
+    def test_preserve_reloads_current_rights_and_fails_closed_on_expiry_or_fingerprint_drift(self) -> None:
+        track = self.root / "current.wav"
+        track.write_bytes(b"current")
+        music = ExistingAudioProvider([self.root], key_store=self.keys).accept(
+            track, expected_sha256=hashlib.sha256(track.read_bytes()).hexdigest(), rights={"music": True})
+        bindings = {"music": {"path": music["path"], "sha256": music["sha256"]}}
+        service, source_rights = self._authorized_service(bindings, ["music"])
+        base = dict(
+            project_id="vp_" + "1" * 24, design_fingerprint="2" * 64,
+            batch_fingerprint="3" * 64, creative_mode="authorized_replication",
+            audio_policy="preserve_authorized_audio", transcript=None, rewritten_script=[],
+            narration=None, music={**music, "loop": False, "trim_to_seconds": 1}, effects=[],
+            subtitles=[], target_duration_seconds=1, preserve=["music"],
+        )
+        self.assertEqual(service.create_plan(source_rights=source_rights, **base)["preserve"], ["music"])
+        with self.assertRaises(AudioRightsError):
+            service.create_plan(source_rights={**source_rights, "receipt_fingerprint": "0" * 64}, **base)
+        expired, expired_rights = self._authorized_service(bindings, ["music"], expires_at="2026-09-14T00:30:00Z")
+        with self.assertRaises(AudioRightsError):
+            expired.create_plan(source_rights=expired_rights, **base)
+
+    def test_audio_plans_commit_as_immutable_versions_and_reconcile_exact_indeterminate_commit(self) -> None:
+        store = VideoProjectStore(self.root / "projects")
+        project = store.create(title="silent", creative_mode="original_redesign", audio_policy="silent")
+        service = AudioPlanService(key_store=self.keys, project_store=store)
+        plan = service.create_plan(
+            project_id=project["project_id"], design_fingerprint="2" * 64,
+            batch_fingerprint="3" * 64, creative_mode="original_redesign", audio_policy="silent",
+            source_rights=None, transcript=None, rewritten_script=[], narration=None,
+            music=None, effects=[], subtitles=[], target_duration_seconds=1,
+        )
+        first = service.commit_plan(plan)
+        second = service.commit_plan(plan)
+        self.assertEqual((first["version"], second["version"]), ("v001", "v002"))
+        self.assertEqual(first["plan_fingerprint"], second["plan_fingerprint"])
+        commit = VersionCommitIndeterminateError(
+            project_id=project["project_id"], family="audio_plan",
+            version="v001", path=store.project_root(project["project_id"]) / "audio_plan" / "v001.json",
+            payload_fingerprint=canonical_fingerprint(first),
+        )
+        self.assertEqual(service.commit_plan(plan, indeterminate_commit=commit), first)
 
     def test_full_redesign_is_default_and_silent_allows_optional_subtitles(self) -> None:
         narration = MacOSSayProvider(
