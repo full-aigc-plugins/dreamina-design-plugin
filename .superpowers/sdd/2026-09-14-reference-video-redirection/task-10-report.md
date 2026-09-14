@@ -36,7 +36,7 @@
 - Removed the action-only private persistence shape. `VideoBatchExecutor.apply_evaluation_decision` validates the full receipt and fingerprint, reloads quote and allowance, re-verifies the artifact immediately before the decision, checks decision/gate/directive consistency, and persists the whole receipt once.
 - Carried the Task 9 ruling into `TaskService`: only `^\.verified-[a-f0-9]{32}\.tmp$` is cleanup-owned. Valid media named `clip.tmp` or `.verified-output.mp4` is verified and canonicalized without deletion; unsupported provider names fail without deletion.
 - RED evidence: valid `.tmp`/`.verified-*` media was deleted; unsupported `.tmp` data was silently deleted; keyed-gate/evaluate APIs were absent; and executor rejected the required complete receipt shape.
-- Final Task 10/9/8/7 focused regression: 182 tests passed in 0.844 seconds.
+- Final post-commit Task 10/9/8/7 focused regression: 184 tests passed in 0.866 seconds.
 - Final full regression: 532 tests passed in 17.035 seconds.
 - Python compilation, all-schema JSON parsing, shared contract validation, fixture fingerprint validation, distribution validation, secret-scan tests, and `git diff --check` passed.
 - All evidence remained synthetic/local; no network, real Dreamina, paid request, native production approval, release, or publication occurred.
