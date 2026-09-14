@@ -51,3 +51,15 @@
 - RED evidence: the service had no trusted media-adapter/binding API; binding conflicts raised instead of returning manual receipts; and executor previously trusted a schema-valid public-hash receipt without media recomputation.
 - Final Task 10/9/8/7 focused regression: 188 tests passed in 0.898 seconds.
 - Final full regression: 536 tests passed in 21.438 seconds.
+
+## Fix Round 2 Resume: Decoded Anchor Evidence and Final Verification
+
+- Preserved the inherited five-file fix-round diff and completed its evidence trail without moving shared HEAD `ee56326`.
+- Added enrolled-`ffmpeg` decoding at the start and end anchors. `frame_readability`, `start_anchor`, and `end_anchor` now come from actual decoder results rather than the mere presence of probe metadata; decoder errors remain bounded unavailable evidence.
+- TDD RED: a temporary `git archive HEAD` with only the new behavior test failed 1/1 with `AttributeError: 'MediaAdapter' object has no attribute 'verify_video_frames'` (`RED_EXIT=1`). The same test passes against the working implementation.
+- Immediate focused GREEN: `python3 -m unittest tests.test_media_adapter tests.test_video_evaluation_service tests.test_video_batch_executor -v` passed 41 tests in 0.228 seconds.
+- Task 10/9/8/7 regression: `python3 -m unittest tests.test_video_evaluation_service tests.test_video_batch_executor tests.test_video_generation_planner tests.test_video_batch_allowance tests.test_video_service tests.test_task_service tests.test_operation_ledger tests.test_media_adapter -v` passed 180 tests in 0.885 seconds.
+- Fresh full regression: `python3 -m unittest discover -s tests` passed 537 tests in 26.367 seconds.
+- `py_compile` passed for the three affected production modules and their three focused test modules. The shot-evaluation schema and fixture parsed with `json.tool`; the shared fixture/schema/fingerprint contract test passed; distribution validation passed; both secret-scan tests passed; and `git diff --check` passed.
+- Post-commit verification repeated the focused suite (41 tests in 0.270 seconds), full discovery (537 tests in 18.319 seconds), compilation, schema/fixture parsing, the contract plus secret-scan tests (3 tests in 0.053 seconds), distribution validation, `git diff --check`, and clean-worktree inspection.
+- All verification remained synthetic/local. No network, provider request, credits, native approval, release, or publication occurred.

@@ -80,7 +80,11 @@ class VideoEvaluationService:
         width, height, codec = stream.get("width"), stream.get("height"), stream.get("codec_name")
         try: duration = float(format_data["duration"])
         except (KeyError, TypeError, ValueError): duration = None
-        readable = True if stream and isinstance(duration, float) and duration > 0 else None
+        try:
+            frame_evidence = self._media_adapter.verify_video_frames(Path(str(artifact["path"])), duration)
+        except Exception:
+            frame_evidence = {}
+        readable = frame_evidence.get("readable") if isinstance(frame_evidence.get("readable"), bool) else None
 
         def gate(passed: bool | None, evidence: str) -> dict[str, str]:
             return {"status": "skipped" if passed is None else "passed" if passed else "failed",
@@ -97,11 +101,12 @@ class VideoEvaluationService:
             "duration": gate(None if not isinstance(duration, (int, float)) or not isinstance(expected_duration, (int, float)) else abs(duration - expected_duration) <= 0.1, "trusted probe duration"),
             "aspect_ratio": gate(None if ratio is None or expected_ratio is None else abs(ratio - expected_ratio) <= 0.001, "trusted probe aspect ratio"),
             "frame_readability": gate(readable, "trusted media probe readability"),
-            "start_anchor": gate(readable, "trusted media start anchor"),
-            "end_anchor": gate(readable, "trusted media end anchor"),
+            "start_anchor": gate(frame_evidence.get("start_anchor") if isinstance(frame_evidence.get("start_anchor"), bool) else None, "trusted decoded start anchor"),
+            "end_anchor": gate(frame_evidence.get("end_anchor") if isinstance(frame_evidence.get("end_anchor"), bool) else None, "trusted decoded end anchor"),
         }
         evidence = {"width": width, "height": height, "codec": codec, "duration_seconds": duration,
-                    "readable": readable, "start_anchor": readable, "end_anchor": readable}
+                    "readable": readable, "start_anchor": frame_evidence.get("start_anchor"),
+                    "end_anchor": frame_evidence.get("end_anchor")}
         return {"binding": trusted_binding, "gates": gates, "evidence": evidence}
 
     def validate_semantic_evaluation(self, payload: Mapping[str, Any]) -> dict[str, Any]:

@@ -178,6 +178,18 @@ class MediaAdapter:
             raise MediaOutputError("ffprobe JSON output must be an object")
         return payload
 
+    def verify_video_frames(self, path: Path, duration_seconds: float) -> dict[str, bool]:
+        """Decode one frame at both clip anchors through the enrolled ffmpeg."""
+        if not Path(path).is_absolute() or duration_seconds <= 0:
+            raise MediaOutputError("video frame verification input is invalid")
+        positions = {"start_anchor": 0.0, "end_anchor": max(0.0, duration_seconds - 0.05)}
+        decoded = {}
+        for name, position in positions.items():
+            result = self.run("ffmpeg", ["-v", "error", "-ss", f"{position:.3f}", "-i", str(path),
+                "-frames:v", "1", "-f", "null", "-"], timeout_seconds=30)
+            decoded[name] = result.exit_code == 0
+        return {"readable": all(decoded.values()), **decoded}
+
     @staticmethod
     def _minimal_environment() -> dict[str, str]:
         allowed = ("HOME", "TMPDIR", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR")
