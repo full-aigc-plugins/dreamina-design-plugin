@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from scripts import reelbench_workspace as ws
 from scripts.json_contracts import canonical_fingerprint
+from scripts.reelbench_contracts import validate_reelbench_evidence
 from scripts.reelbench_operation import OperationJournal, ReelBenchRecoveryRequiredError
 from scripts.video_project_store import VersionCommitIndeterminateError
 from tests import test_reelbench_round3 as prior
@@ -200,8 +201,9 @@ class ReelBenchRoundFiveTests(unittest.TestCase):
                     elif corrupt == 'semantic':
                         # Re-sign both fingerprints so only real receipt/artifact semantics reject it.
                         payload = json.loads(receipt.read_text())
-                        payload['shot_ids'] = ['unbacked']
+                        payload['shots']['ids'] = ['S01', 'S02']
                         payload['evidence_fingerprint'] = canonical_fingerprint({k: v for k, v in payload.items() if k != 'evidence_fingerprint'})
+                        validate_reelbench_evidence(payload)
                         receipt.write_text(json.dumps(payload))
                         with case.service._locked_project(case.project_id) as (store, project, root, guard):
                             journal = OperationJournal(store, project, case.project_id, root)
