@@ -1,0 +1,9 @@
+[
+  "-hide_banner", "-nostdin", "-y",
+  "-i", "{render_root}/clip-001.mp4",
+  "-i", "{render_root}/clip-002.mp4",
+  "-filter_complex",
+  "[0:v]fps=25,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p,setpts=PTS-STARTPTS[v0];[1:v]fps=25,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p,setpts=PTS-STARTPTS[v1];[v0][v1]xfade=transition=fade:duration=0.25:offset=1.75[vx1]",
+  "-map", "[vx1]", "-an", "-r", "25", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+  "-movflags", "+faststart", "-t", "3.75", "{output}"
+]
