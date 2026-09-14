@@ -40,6 +40,7 @@ EXPECTED_SCHEMAS = (
     "video_redesign.schema.json",
     "video_batch_quote.schema.json",
     "video_batch_allowance.schema.json",
+    "composition_receipt.schema.json",
     "shot_evaluation.schema.json",
     "audio_plan.schema.json",
     "transcript_receipt.schema.json",
