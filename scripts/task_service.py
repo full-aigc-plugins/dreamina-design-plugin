@@ -5,6 +5,7 @@ import os
 import re
 import secrets
 import stat
+import time
 from pathlib import Path
 from collections.abc import Mapping
 from scripts.output_redactor import redact_value
@@ -18,7 +19,9 @@ STATUS_MAP = {"querying": "querying", "queued": "querying", "pending": "querying
 MAX_ARTIFACT_BYTES = 512 * 1024 * 1024
 
 class TaskService:
-    def __init__(self, adapter): self.adapter = adapter
+    def __init__(self, adapter, *, sleeper=time.sleep):
+        self.adapter = adapter
+        self.sleeper = sleeper
 
     @staticmethod
     def _open_download_directory(target: Path) -> tuple[int, int, str]:
@@ -51,22 +54,34 @@ class TaskService:
     def query(self, submit_id: str, *, poll_seconds: int = 0, download_dir: str | None = None) -> dict[str, object]:
         if not IDENTIFIER.fullmatch(str(submit_id)): raise ValueError("unsafe submit_id")
         if isinstance(poll_seconds, bool) or not isinstance(poll_seconds, int) or not 0 <= poll_seconds <= 300: raise ValueError("poll_seconds must be between 0 and 300")
-        argv = ["query_result", "--submit_id", submit_id]
-        if poll_seconds: argv += ["--poll", str(poll_seconds)]
         parent_fd = directory_fd = None
         directory_name = None
+        target = None
         before: set[str] = set()
         if download_dir:
             target = Path(download_dir)
             parent_fd, directory_fd, directory_name = self._open_download_directory(target)
-            before = set(os.listdir(directory_fd)); argv += ["--download_dir", str(target)]
+            before = set(os.listdir(directory_fd))
         try:
-            result = self.adapter.run(argv)
-            if isinstance(result.exit_code, bool) or not isinstance(result.exit_code, int) or result.exit_code != 0: raise ValueError("query_result returned nonzero exit code")
-            payload = redact_value(result.payload if isinstance(result.payload, Mapping) else {})
-            raw_status = payload.get("gen_status") if isinstance(payload, Mapping) else None
-            status_value = STATUS_MAP.get(str(raw_status).strip().lower()) if isinstance(raw_status, str) else None
-            if status_value is None: raise ValueError("query_result returned unknown external status")
+            # The CLI has no --poll flag, so poll client-side via the injected
+            # sleeper. Only the query is repeated; the run is not resubmitted.
+            result = None
+            payload: Mapping[str, object] = {}
+            status_value: str | None = None
+            for attempt in range(poll_seconds + 1):
+                result = self.adapter.run(["query_result", "--submit_id", submit_id])
+                if isinstance(result.exit_code, bool) or not isinstance(result.exit_code, int) or result.exit_code != 0: raise ValueError("query_result returned nonzero exit code")
+                payload = result.payload if isinstance(result.payload, Mapping) else {}
+                raw_status = payload.get("gen_status")
+                status_value = STATUS_MAP.get(str(raw_status).strip().lower()) if isinstance(raw_status, str) else None
+                if status_value is None: raise ValueError("query_result returned unknown external status")
+                if status_value != "querying": break
+                if attempt < poll_seconds: self.sleeper(1)
+            if target is not None and status_value == "success":
+                result = self.adapter.run(["query_result", "--submit_id", submit_id, "--download_dir", str(target)])
+                if isinstance(result.exit_code, bool) or not isinstance(result.exit_code, int) or result.exit_code != 0: raise ValueError("query_result returned nonzero exit code")
+                payload = result.payload if isinstance(result.payload, Mapping) else {}
+            payload = redact_value(payload)
             payload = dict(payload); payload["gen_status"] = status_value
             artifacts = self._verified_artifacts(directory_fd, before, Path(download_dir), parent_fd, directory_name) if directory_fd is not None else []
             return {"submit_id": submit_id, "provenance": "externally-queried", "exit_code": 0,

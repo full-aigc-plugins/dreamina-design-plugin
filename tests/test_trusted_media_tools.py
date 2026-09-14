@@ -65,7 +65,11 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
                 Path,
                 "stat",
                 autospec=True,
-                side_effect=lambda path: root_stat if path == self.ffmpeg else original_stat(path),
+                # Path.lstat() calls self.stat(follow_symlinks=False), so the
+                # stub has to accept and forward that keyword argument.
+                side_effect=lambda path, **kwargs: (
+                    root_stat if path == self.ffmpeg else original_stat(path, **kwargs)
+                ),
             ),
         ):
             with self.assertRaises(TrustedMediaToolError):

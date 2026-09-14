@@ -159,3 +159,14 @@ class TaskServiceTests(unittest.TestCase):
             disguised.write_bytes(media); disguised.chmod(0o400)
             with self.assertRaisesRegex(ValueError, "collision"):
                 TaskService(Adapter()).verify_download_dir(str(target))
+    def test_polling_never_passes_unsupported_poll_flag_to_cli(self):
+        class PollingAdapter:
+            def __init__(self): self.calls=[]; self.count=0
+            def run(self,args):
+                self.calls.append(args); self.count += 1
+                status = 'querying' if self.count == 1 else 'success'
+                return type('R',(),{'exit_code':0,'payload':{'gen_status':status}})()
+        adapter=PollingAdapter()
+        result=TaskService(adapter,sleeper=lambda _seconds: None).query('external-1',poll_seconds=2)
+        self.assertEqual(result['result']['gen_status'],'success')
+        self.assertEqual(adapter.calls,[['query_result','--submit_id','external-1'],['query_result','--submit_id','external-1']])
