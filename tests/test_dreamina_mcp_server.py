@@ -26,7 +26,22 @@ class McpConfigurationTests(unittest.TestCase):
         self.assertEqual(server["tools"]["dreamina_capability_snapshot"]["approval_mode"], "approve")
         self.assertEqual(server["tools"]["dreamina_submit_image"]["approval_mode"], "prompt")
         self.assertEqual(server["tools"]["dreamina_submit_video"]["approval_mode"], "prompt")
-        self.assertEqual(len(server["tools"]), 11)
+        self.assertEqual(len(server["tools"]), 21)
+        # The ten additive project tools are registered with the same
+        # contract: only the read-only quote is pre-approved.
+        self.assertEqual(server["tools"]["dreamina_quote_video_batch"]["approval_mode"], "approve")
+        for name in (
+            "dreamina_video_project",
+            "dreamina_analyze_reference_video",
+            "dreamina_validate_shot_analysis",
+            "dreamina_create_redesign",
+            "dreamina_approve_video_batch",
+            "dreamina_execute_video_batch",
+            "dreamina_evaluate_video_batch",
+            "dreamina_compose_video",
+            "dreamina_export_video_project",
+        ):
+            self.assertEqual(server["tools"][name]["approval_mode"], "prompt", name)
         manifest = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["mcpServers"], "./.mcp.json")
 
@@ -85,7 +100,13 @@ class McpStdioTests(unittest.TestCase):
         responses = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual(responses[0]["result"]["protocolVersion"], "2025-06-18")
         names = {tool["name"] for tool in responses[1]["result"]["tools"]}
-        self.assertEqual(names, {"dreamina_capability_snapshot", "dreamina_cli_status", "dreamina_cli_install_or_upgrade", "dreamina_auth", "dreamina_account", "dreamina_submit_image", "dreamina_submit_video", "dreamina_query_task", "dreamina_list_tasks", "dreamina_session", "dreamina_diagnose"})
+        from scripts.video_project_mcp import PROJECT_TOOL_NAMES
+
+        legacy = {"dreamina_capability_snapshot", "dreamina_cli_status",
+                  "dreamina_cli_install_or_upgrade", "dreamina_auth", "dreamina_account",
+                  "dreamina_submit_image", "dreamina_submit_video", "dreamina_query_task",
+                  "dreamina_list_tasks", "dreamina_session", "dreamina_diagnose"}
+        self.assertEqual(names, legacy | set(PROJECT_TOOL_NAMES))
 
     def test_tool_errors_are_structured_for_automation(self) -> None:
         message={"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"dreamina_account","arguments":{"unknown":True}}}

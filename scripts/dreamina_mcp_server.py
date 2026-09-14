@@ -14,6 +14,7 @@ from scripts.account_service import AccountService
 from scripts.auth_service import AuthFlowStore, AuthService
 from scripts.diagnostic_service import DiagnosticService
 from scripts.dreamina_adapter import DreaminaAdapter, DreaminaAdapterError
+from scripts.video_project_mcp import project_tool_definitions
 from scripts.environment_service import EnvironmentService
 from scripts.image_service import ImageService, build_request_fingerprint
 from scripts.native_approval import NativeApprovalProvider
@@ -86,7 +87,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
         _tool("dreamina_session", "Create, list, search, rename, or delete a Dreamina Session.", {"action":{"type":"string","enum":["create","list","search","rename","delete"]},"name":{"type":"string","minLength":1,"maxLength":200},"session_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,128}$"},"query":{"type":"string","minLength":1,"maxLength":200}}, required=["action"], destructive=True),
         _tool("dreamina_diagnose", "Read bounded redacted Dreamina CLI logs from the fixed log directory.", {"command":{"type":"string","maxLength":4096},"error":{"type":"string","maxLength":16384},"submit_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,128}$"},"since_minutes":{"type":"integer","minimum":1,"maximum":1440,"default":60},"max_files":{"type":"integer","minimum":1,"maximum":10,"default":3}}, required=["command","error"], read_only=True),
     ]
-    return tools
+    # The ten additive video-project tools extend the eleven legacy tools.
+    return [*tools, *project_tool_definitions()]
 
 
 def _tool(name: str, description: str, properties: Mapping[str, Any], *, required: list[str] | None = None, read_only: bool = False, destructive: bool = False) -> dict[str, Any]:
