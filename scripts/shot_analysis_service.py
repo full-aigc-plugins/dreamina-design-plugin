@@ -55,6 +55,7 @@ class ShotAnalysisService:
         *,
         indeterminate_commit: VersionCommitIndeterminateError | None = None,
         comparison_version: str | None = None,
+        binding_indeterminate_commit: VersionCommitIndeterminateError | None = None,
     ) -> dict[str, Any]:
         analysis = self._load_analysis(project_id, analysis_version)
         try:
@@ -160,13 +161,17 @@ class ShotAnalysisService:
                 )
             result["annotation_version"] = persisted["version"]
             if comparison_version is not None:
-                from scripts.reelbench_binding_service import ReelBenchBindingService
-                result["comparison_binding"] = ReelBenchBindingService(self._store).bind(
-                    project_id,
-                    subject_family="annotation",
-                    subject_version=persisted["version"],
-                    comparison_version=comparison_version,
-                )
+                from scripts.reelbench_binding_service import CompositeBindingIndeterminateError, ReelBenchBindingService
+                try:
+                    result["comparison_binding"] = ReelBenchBindingService(self._store).bind(
+                        project_id, subject_family="annotation", subject_version=persisted["version"],
+                        comparison_version=comparison_version, indeterminate_commit=binding_indeterminate_commit,
+                    )
+                except VersionCommitIndeterminateError as exc:
+                    raise CompositeBindingIndeterminateError(
+                        subject_family="annotation", subject_version=persisted["version"],
+                        subject_fingerprint=canonical_fingerprint(persisted), binding_error=exc,
+                    ) from exc
             if self._store.get(project_id)["state"] == "analyzing":
                 self._store.transition(project_id, expected="analyzing", next_state="analysis_review", evidence={"analysis_version": analysis_version, "annotation_version": persisted["version"], "machine_fingerprint": analysis["machine_fingerprint"]})
         return result

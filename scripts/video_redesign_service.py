@@ -89,6 +89,7 @@ class VideoRedesignService:
         *,
         indeterminate_commit: VersionCommitIndeterminateError | None = None,
         comparison_version: str | None = None,
+        binding_indeterminate_commit: VersionCommitIndeterminateError | None = None,
     ) -> dict[str, Any]:
         project_id = candidate.get("project_id")
         if not isinstance(project_id, str):
@@ -118,9 +119,16 @@ class VideoRedesignService:
         elif rights_receipt_id is not None:
             raise RedesignBindingError("original redesign must not attach a replication receipt")
         if indeterminate_commit is not None:
-            return self._reconcile_indeterminate(
+            design = self._reconcile_indeterminate(
                 candidate, rights_receipt_id, indeterminate_commit
             )
+            if comparison_version is not None:
+                from scripts.reelbench_binding_service import ReelBenchBindingService
+                ReelBenchBindingService(self._store).bind(
+                    project_id, subject_family="video_design", subject_version=design["version"],
+                    comparison_version=comparison_version, indeterminate_commit=binding_indeterminate_commit,
+                )
+            return design
         document = {
             **core, "rights_receipt_id": rights_receipt_id,
             "design_fingerprint": fingerprint,
@@ -140,6 +148,7 @@ class VideoRedesignService:
                 subject_family="video_design",
                 subject_version=design["version"],
                 comparison_version=comparison_version,
+                indeterminate_commit=binding_indeterminate_commit,
             )
         return design
 

@@ -16,6 +16,18 @@ def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+class CompositeBindingIndeterminateError(RuntimeError):
+    """Subject publication succeeded but its exact corroboration sidecar is uncertain."""
+
+    def __init__(self, *, subject_family: str, subject_version: str, subject_fingerprint: str,
+                 binding_error: VersionCommitIndeterminateError) -> None:
+        self.subject_family = subject_family
+        self.subject_version = subject_version
+        self.subject_fingerprint = subject_fingerprint
+        self.binding_error = binding_error
+        super().__init__(f"{subject_family}/{subject_version} published; ReelBench binding is indeterminate")
+
+
 class ReelBenchBindingService:
     """Bind a durable legacy subject to a fully revalidated comparison receipt."""
 
@@ -126,4 +138,4 @@ class ReelBenchBindingService:
         return f"v{max(numbers, default=0) + 1:03d}"
 
 
-__all__ = ["ReelBenchBindingService"]
+__all__ = ["CompositeBindingIndeterminateError", "ReelBenchBindingService"]
