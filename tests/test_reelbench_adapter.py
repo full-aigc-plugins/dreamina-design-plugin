@@ -64,6 +64,22 @@ class ReelBenchAdapterTests(unittest.TestCase):
         self.assertNotIn("shell", self.calls[0][1])
         self.assertIn("Reference; never a shell fragment", result.argv)
 
+    def test_sync_plan_uses_only_the_pinned_sync_entrypoint_and_relative_paths(self) -> None:
+        sync_root = Path(self.temp.name) / "sync-workspace"
+        sync_root.mkdir(mode=0o700)
+        sync_fd = os.open(sync_root, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, sync_fd)
+        sync_path = Path(f"/dev/fd/{sync_fd}")
+        with self.adapter.execution_workspace(sync_fd, workflow="sync"):
+            result = self.adapter.sync_plan(
+                shots=sync_path / "inputs" / "shots.json",
+                source=sync_path / "source.mp4",
+            )
+
+        self.assertEqual(result.argv[:3], ["tools/node", "script/video-sync.mjs", "plan"])
+        self.assertEqual(result.argv[3:], ["inputs/shots.json", "--video", "source.mp4"])
+        self.assertFalse(result.shell)
+
     def test_rejects_paths_outside_the_project_and_invalid_threshold(self) -> None:
         with self.assertRaises(ValueError):
             self.adapter.seed(

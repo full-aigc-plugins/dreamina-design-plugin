@@ -21,6 +21,10 @@ from scripts.trusted_media_tools import TrustedExecutable, TrustedMediaToolStore
 from scripts import reelbench_workspace as workspace
 from scripts.reelbench_exec_helper import HELPER_CODE
 
+# The upstream entrypoint is fixed by this module, not caller input.  Its
+# descriptor launcher differs only in the one allowed pinned program name.
+SYNC_HELPER_CODE = HELPER_CODE.replace("script/video-shots.mjs", "script/video-sync.mjs")
+
 
 MAX_STDOUT_BYTES = 8 * 1024 * 1024
 MAX_STDERR_BYTES = 1024 * 1024
@@ -66,6 +70,7 @@ class ReelBenchAdapter:
         *,
         project_root: Path,
         shots_script: Path,
+        sync_script: Path | None = None,
         tools: Mapping[str, TrustedExecutable],
         tool_store: TrustedMediaToolStore | None = None,
         runner: Callable[..., BoundedProcessResult] = run_bounded,
@@ -76,6 +81,11 @@ class ReelBenchAdapter:
         self._shots_script = Path(shots_script).resolve(strict=True)
         if not self._shots_script.is_file() or self._shots_script.is_symlink() or self._shots_script.name != "video-shots.mjs":
             raise ValueError("shots script must be the packaged pinned entrypoint")
+        self._sync_script = Path(sync_script).resolve(strict=True) if sync_script is not None else (
+            self._shots_script.parents[2] / "dreamina-video-sync" / "scripts" / "video-sync.mjs"
+        ).resolve(strict=True)
+        if not self._sync_script.is_file() or self._sync_script.is_symlink() or self._sync_script.name != "video-sync.mjs":
+            raise ValueError("sync script must be the packaged pinned entrypoint")
         if set(tools) != {"node", "ffmpeg", "ffprobe"}:
             raise ValueError("ReelBench requires exactly trusted node, ffmpeg, and ffprobe tools")
         if any(tool.kind != kind or not Path(tool.source_path).is_absolute() or tool.size_bytes < 1 for kind, tool in tools.items()):
@@ -89,8 +99,10 @@ class ReelBenchAdapter:
         self._workspace = ContextVar("reelbench_workspace", default=None)
 
     @contextmanager
-    def execution_workspace(self, descriptor: int, consumed=()):
+    def execution_workspace(self, descriptor: int, consumed=(), *, workflow: str = "shots"):
         """Stage tools once for the complete action; release every acquired handle."""
+        if workflow not in {"shots", "sync"}:
+            raise ValueError("unknown pinned ReelBench workflow")
         staged = {}
         token = None
         manifest = {item["workspace_path"]: {key: item[key] for key in ("size_bytes", "sha256")} for item in consumed}
@@ -111,9 +123,10 @@ class ReelBenchAdapter:
                 identities.append({"kind": kind, "source_path": target, "owner_uid": info.st_uid,
                     "mode": stat.S_IMODE(info.st_mode), "device": info.st_dev, "inode": info.st_ino, **record})
                 manifest[target] = {**record, "inode": info.st_ino, "device": info.st_dev, "mode": stat.S_IMODE(info.st_mode)}
-            script_parent = workspace.open_absolute(self._shots_script.parent)
+            selected_script = self._shots_script if workflow == "shots" else self._sync_script
+            script_parent = workspace.open_absolute(selected_script.parent)
             try:
-                script = workspace.read(script_parent, self._shots_script.name)
+                script = workspace.read(script_parent, selected_script.name)
             finally:
                 workspace._close_owned([script_parent])
             lock_parent = workspace.open_absolute(self._shots_script.parents[3] / "upstream")
@@ -121,27 +134,30 @@ class ReelBenchAdapter:
                 lock = json.loads(workspace.read(lock_parent, "reelbench.lock.json"))
             finally:
                 workspace._close_owned([lock_parent])
-            expected = lock["files"]["video-shots/scripts/video-shots.mjs"]["packaged_sha256"]
+            lock_key = f"video-{workflow}/scripts/{selected_script.name}"
+            expected = lock["files"][lock_key]["packaged_sha256"]
             if hashlib.sha256(script).hexdigest() != expected:
                 raise ReelBenchAdapterError("packaged ReelBench script differs from its lock")
-            if (hashlib.sha256(script).hexdigest(), len(script)) != _PINNED_SHOTS_SCRIPTS['script/video-shots.mjs']:
+            if workflow == "shots" and (hashlib.sha256(script).hexdigest(), len(script)) != _PINNED_SHOTS_SCRIPTS['script/video-shots.mjs']:
                 raise ValueError('packaged script differs from independent pinned digest')
-            workspace.write(descriptor, "script/video-shots.mjs", script, mode=0o400, quota=True)
-            manifest["script/video-shots.mjs"] = {"size_bytes": len(script), "sha256": hashlib.sha256(script).hexdigest()}
-            for filename in ("report.css", "report.js"):
-                asset_parent = workspace.open_absolute(self._shots_script.parent)
+            script_target = f"script/{selected_script.name}"
+            workspace.write(descriptor, script_target, script, mode=0o400, quota=True)
+            manifest[script_target] = {"size_bytes": len(script), "sha256": hashlib.sha256(script).hexdigest()}
+            asset_names = ("report.css", "report.js") if workflow == "shots" else ("panel.css", "panel.html")
+            for filename in asset_names:
+                asset_parent = workspace.open_absolute(selected_script.parent)
                 try:
                     content = workspace.read(asset_parent, filename)
                 finally:
                     workspace._close_owned([asset_parent])
-                expected = lock["files"][f"video-shots/scripts/{filename}"]["packaged_sha256"]
+                expected = lock["files"][f"video-{workflow}/scripts/{filename}"]["packaged_sha256"]
                 if hashlib.sha256(content).hexdigest() != expected:
                     raise ReelBenchAdapterError("packaged report asset differs from its lock")
-                if (hashlib.sha256(content).hexdigest(), len(content)) != _PINNED_SHOTS_SCRIPTS['script/' + filename]:
+                if workflow == "shots" and (hashlib.sha256(content).hexdigest(), len(content)) != _PINNED_SHOTS_SCRIPTS['script/' + filename]:
                     raise ValueError('packaged report asset differs from independent pinned digest')
                 workspace.write(descriptor, "script/" + filename, content, mode=0o400, quota=True)
                 manifest["script/" + filename] = {"size_bytes": len(content), "sha256": expected}
-            token = self._workspace.set((descriptor, identities, manifest))
+            token = self._workspace.set((descriptor, identities, manifest, workflow))
             yield
         finally:
             primary = sys.exc_info()[1]
@@ -201,12 +217,34 @@ class ReelBenchAdapter:
         shots_path, track_path, frames_path, source_path = self._paths(shots, track, frames_dir, source)
         return self._run("render", [str(shots_path), f"--{mode}", "--track", str(track_path), "--frames", str(frames_path), "--video", str(source_path)])
 
-    def _run(self, action: str, rest: Sequence[str], *, allow_failure: bool = False) -> ReelBenchAdapterResult:
+    def sync_plan(self, *, shots: Path, source: Path) -> ReelBenchAdapterResult:
+        """Run the immutable upstream sync layout planner in its owned workspace."""
+        shots_path, source_path = self._paths(shots, source)
+        return self._run("plan", [str(shots_path), "--video", str(source_path)], workflow="sync")
+
+    def sync_panels(self, *, shots: Path, source: Path, panels_dir: Path, browser: str) -> ReelBenchAdapterResult:
+        """Render the upstream's three review panels using an already verified browser identity."""
+        if not isinstance(browser, str) or not browser.startswith("/") or "\x00" in browser:
+            raise ValueError("browser executable identity is required")
+        shots_path, source_path, panels_path = self._paths(shots, source, panels_dir)
+        return self._run("panels", [str(shots_path), "--video", str(source_path), "--out", str(panels_path), "--chrome", browser], workflow="sync")
+
+    def sync_export(self, *, shots: Path, source: Path, panels_dir: Path, output: Path, browser: str) -> ReelBenchAdapterResult:
+        """Run the unchanged one-shot upstream export with fixed, service-owned paths."""
+        if not isinstance(browser, str) or not browser.startswith("/") or "\x00" in browser:
+            raise ValueError("browser executable identity is required")
+        shots_path, source_path, panels_path, output_path = self._paths(shots, source, panels_dir, output)
+        return self._run("export", [str(shots_path), "--video", str(source_path), "--panels", str(panels_path), "-o", str(output_path), "--chrome", browser], workflow="sync")
+
+    def _run(self, action: str, rest: Sequence[str], *, allow_failure: bool = False, workflow: str = "shots") -> ReelBenchAdapterResult:
         active = self._workspace.get()
         if active is None:
             raise ReelBenchAdapterError("production execution requires an owned action workspace")
+        if active[3] != workflow:
+            raise ReelBenchAdapterError("pinned workflow does not match its staged workspace")
         identities = tuple(active[1] if active else self.tool_identities)
-        logical = ["tools/node", "script/video-shots.mjs", action, *rest]
+        script_name = "video-shots.mjs" if workflow == "shots" else "video-sync.mjs"
+        logical = ["tools/node", "script/" + script_name, action, *rest]
         descriptor = active[0]
         manifest = dict(active[2])
         # Bound every input available to the unchanged upstream script. Output
@@ -217,7 +255,7 @@ class ReelBenchAdapter:
                     max_bytes=2 * 1024 * 1024 * 1024, file_maximum=2 * 1024 * 1024 * 1024).items()})
             except FileNotFoundError:
                 pass
-        argv = ["/usr/bin/python3", "-I", "-c", HELPER_CODE, str(descriptor),
+        argv = ["/usr/bin/python3", "-I", "-c", HELPER_CODE if workflow == "shots" else SYNC_HELPER_CODE, str(descriptor),
                 json.dumps(manifest, sort_keys=True), *logical]
         environment = {"PATH": "tools/bin", "LANG": "C", "LC_ALL": "C"}
         try:
