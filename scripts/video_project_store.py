@@ -204,6 +204,63 @@ class VideoProjectStore:
             self._atomic_write(target, document, indeterminate_error=indeterminate)
             return document
 
+    def reserve_version(
+        self, project_id: str, family: str, payload: Mapping[str, Any], *, schema_name: str,
+        operation_id: str,
+    ) -> dict[str, Any]:
+        """Durably reserve one exact create-only version without publishing it."""
+        if FAMILY.fullmatch(family) is None or re.fullmatch(r"[a-f0-9]{32,64}", operation_id) is None:
+            raise ValueError("invalid reservation identity")
+        with self._exclusive_lock(project_id):
+            self.get(project_id)
+            root = self.project_root(project_id)
+            family_root = root / family
+            family_root.mkdir(mode=0o700, exist_ok=True)
+            numbers = [int(match.group(1)) for path in family_root.glob("v*.json")
+                       if (match := re.fullmatch(r"v([0-9]{3,})", path.stem))]
+            version = f"v{max(numbers, default=0) + 1:03d}"
+            document = dict(payload); document["version"] = version
+            validate_contract(document, schema_name)
+            record = {"operation_id": operation_id, "family": family, "version": version,
+                      "payload_fingerprint": canonical_fingerprint(document), "schema_name": schema_name}
+            reservations = root / ".reservations"
+            reservations.mkdir(mode=0o700, exist_ok=True)
+            target = reservations / f"{operation_id}.json"
+            if target.exists():
+                existing = json.loads(target.read_text(encoding="utf-8"))
+                if existing != record:
+                    raise VersionReconciliationError(project_id=project_id, family=family, version=version,
+                        path=target, reason="reservation differs from exact operation")
+                return {**record, "payload": document}
+            self._atomic_write(target, record)
+            return {**record, "payload": document}
+
+    def publish_reserved_version(self, project_id: str, reservation: Mapping[str, Any]) -> dict[str, Any]:
+        """Publish exactly a sealed reservation, never allocating a replacement version."""
+        operation_id = reservation.get("operation_id")
+        if not isinstance(operation_id, str):
+            raise ValueError("reservation operation identity is absent")
+        with self._exclusive_lock(project_id):
+            target = self.project_root(project_id) / ".reservations" / f"{operation_id}.json"
+            try:
+                sealed = json.loads(target.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise VersionReconciliationError(project_id=project_id, family=str(reservation.get("family")),
+                    version=str(reservation.get("version")), path=target, reason="sealed reservation unavailable") from exc
+            if any(sealed.get(key) != reservation.get(key) for key in ("operation_id", "family", "version", "payload_fingerprint", "schema_name")):
+                raise VersionReconciliationError(project_id=project_id, family=sealed["family"], version=sealed["version"],
+                    path=target, reason="reservation was forged or changed")
+            payload = dict(reservation.get("payload") or {})
+            if canonical_fingerprint(payload) != sealed["payload_fingerprint"]:
+                raise VersionReconciliationError(project_id=project_id, family=sealed["family"], version=sealed["version"],
+                    path=target, reason="reserved payload fingerprint differs")
+            return self.write_version(project_id, sealed["family"], payload, schema_name=sealed["schema_name"], version=sealed["version"])
+
+    def reconcile_reserved_version(self, project_id: str, reservation: Mapping[str, Any]) -> dict[str, Any]:
+        """Read only the exact durable subject reserved by one operation."""
+        return self.reconcile_version(project_id, reservation["family"], reservation["version"],
+                                      reservation["payload_fingerprint"], reservation["schema_name"])
+
     def reconcile_version(
         self,
         project_id: str,
