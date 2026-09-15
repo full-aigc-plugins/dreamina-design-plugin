@@ -7,7 +7,7 @@ import re
 import secrets
 import stat
 import sys
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from scripts import reelbench_workspace as ws
 from scripts.json_contracts import canonical_fingerprint, validate_contract, parse_rfc3339
@@ -65,7 +65,8 @@ class ReelBenchSyncService(ReelBenchProjectService):
         elif sync_version is not None: raise ReelBenchSyncError('sync_version is only valid for verify')
         if action != 'export' and audio_policy is not None:
             raise ReelBenchSyncError('audio policy is only valid for export')
-        with self._locked_project(project_id) as (store_fd, fd, root, guard):
+        outcome=[]
+        with self._publication_scope(project_id,outcome) as (store_fd, fd, root, guard):
             journal = SyncOperationJournal(store_fd, fd, project_id, root)
             journal.recover(self, guard)
             evidence = self._read_version(fd, 'reelbench_evidence', reelbench_evidence_version)
@@ -96,11 +97,23 @@ class ReelBenchSyncService(ReelBenchProjectService):
                     result = self._execute_sync(fd, root, project_id, action, source, evidence,
                         shots, audio_policy, previous, browser, guard, journal)
                     guard()
+                if action in {'panels','export'}: outcome.append(result)
                 return result
             except BaseException as exc:
                 if result is not None and action in {'panels', 'export'}:
                     raise self._indeterminate(root, result) from exc
                 raise
+
+    @contextmanager
+    def _publication_scope(self, project_id, outcome):
+        """Keep exact recovery evidence through the outermost descriptor cleanup."""
+        try:
+            with self._locked_project(project_id) as handles:
+                yield handles
+        except BaseException as exc:
+            if outcome:
+                raise self._indeterminate(self._store._root/project_id,outcome[-1]) from exc
+            raise
 
     def _execute_sync(self, fd, root, project_id, action, source, evidence, shots, policy, previous, browser, guard, journal):
         latest = self._latest(fd)

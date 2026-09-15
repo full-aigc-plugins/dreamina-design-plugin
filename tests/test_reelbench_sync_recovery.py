@@ -158,3 +158,14 @@ class SyncRecoveryTests(unittest.TestCase):
         self.f.adapter._shots_script=root/'skills/dreamina-video-shots/scripts/video-shots.mjs'
         self.f.adapter._sync_script=root/'skills/dreamina-video-sync/scripts/video-sync.mjs'
         with self.assertRaisesRegex(ValueError,'independent pinned'): self.f.service.plan(*self.f.args)
+
+    def test_outer_project_cleanup_failure_retains_exact_published_receipt(self):
+        original=self.f.service._locked_project
+        @contextmanager
+        def fail(project_id):
+            with original(project_id) as handles: yield handles
+            raise OSError('outer project close failed')
+        with patch.object(self.f.service,'_locked_project',fail):
+            with self.assertRaises(VersionCommitIndeterminateError) as caught:
+                self.f.service.panels(*self.f.args)
+        self.assertEqual(self.f.service.reconcile_indeterminate(caught.exception)['version'],'v001')
