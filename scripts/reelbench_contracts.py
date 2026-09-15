@@ -103,6 +103,24 @@ def validate_reelbench_comparison(receipt: Mapping[str, Any]) -> None:
     verdicts = {domain["verdict"] for domain in receipt["domains"].values()}
     required = "manual_review" if "manual_review" in verdicts else "matched"
     if receipt["overall"] != required: raise ContractValidationError("comparison overall must match every domain verdict")
+    domain_order = {name: index for index, name in enumerate(
+        ("source_identity", "duration", "timeline_continuity", "shot_count", "boundaries", "motion")
+    )}
+    mismatches = receipt["mismatches"]
+    ordered = sorted(
+        mismatches,
+        key=lambda item: (domain_order[item["domain"]], item["shot_id"] or "", item["code"], item["expected"], item["observed"]),
+    )
+    if mismatches != ordered:
+        raise ContractValidationError("comparison mismatches must use canonical stable ordering")
+    if any(receipt["domains"][item["domain"]]["verdict"] != "manual_review" for item in mismatches):
+        raise ContractValidationError("comparison mismatches require a manual-review domain")
+
+
+def validate_reelbench_binding(receipt: Mapping[str, Any]) -> None:
+    """Validate a closed corroboration sidecar and its canonical fingerprint."""
+    validate_contract(receipt, "reelbench_binding.schema.json")
+    _assert_fingerprint(receipt, "binding_fingerprint")
 
 
 def _assert_fingerprint(receipt: Mapping[str, Any], key: str) -> None:
@@ -206,4 +224,4 @@ def _assert_relative_artifact_path(value: Any) -> None:
         raise ContractValidationError("artifact path must be canonical project-relative")
 
 
-__all__ = ["REELBENCH_VALIDATE_GATES", "validate_reelbench_comparison", "validate_reelbench_evidence"]
+__all__ = ["REELBENCH_VALIDATE_GATES", "validate_reelbench_binding", "validate_reelbench_comparison", "validate_reelbench_evidence"]

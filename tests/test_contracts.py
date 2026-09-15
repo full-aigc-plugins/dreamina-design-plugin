@@ -46,6 +46,7 @@ EXPECTED_SCHEMAS = (
     "transcript_receipt.schema.json",
     "reelbench_evidence.schema.json",
     "reelbench_comparison.schema.json",
+    "reelbench_binding.schema.json",
 )
 
 CREDENTIAL_KEYS = (
@@ -179,6 +180,7 @@ class ClosedSchemaTests(unittest.TestCase):
                 name: {"verdict": "matched", "reasons": []}
                 for name in ("source_identity", "duration", "timeline_continuity", "shot_count", "boundaries", "motion")
             },
+            "mismatches": [],
             "overall": "matched",
             "compared_at": "2026-09-15T00:00:00Z",
             "comparison_fingerprint": "5" * 64,

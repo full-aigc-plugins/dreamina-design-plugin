@@ -87,9 +87,7 @@ class ShotAnalysisService:
                 "comparison_binding": None,
             }
 
-        comparison_binding = self._comparison_binding(
-            project_id, analysis, comparison_version,
-        )
+        self._comparison_binding(project_id, analysis, comparison_version)
 
         checks: list[tuple[str, Callable[[], Sequence[str]]]] = [
             ("schema", lambda: ()),
@@ -118,7 +116,7 @@ class ShotAnalysisService:
             "status": "failed" if blocking else "passed",
             "gates": [asdict(g) for g in gates],
             "annotation_version": None,
-            "comparison_binding": comparison_binding,
+            "comparison_binding": None,
         }
         if not blocking:
             document = {**candidate, "analysis_version": analysis_version}
@@ -161,6 +159,14 @@ class ShotAnalysisService:
                     "shot_annotation.schema.json",
                 )
             result["annotation_version"] = persisted["version"]
+            if comparison_version is not None:
+                from scripts.reelbench_binding_service import ReelBenchBindingService
+                result["comparison_binding"] = ReelBenchBindingService(self._store).bind(
+                    project_id,
+                    subject_family="annotation",
+                    subject_version=persisted["version"],
+                    comparison_version=comparison_version,
+                )
             if self._store.get(project_id)["state"] == "analyzing":
                 self._store.transition(project_id, expected="analyzing", next_state="analysis_review", evidence={"analysis_version": analysis_version, "annotation_version": persisted["version"], "machine_fingerprint": analysis["machine_fingerprint"]})
         return result
@@ -185,13 +191,9 @@ class ShotAnalysisService:
             or comparison["source_sha256"] != analysis["source"]["source_sha256"]
         ):
             raise ValueError("comparison receipt is not bound to the exact native analysis")
-        # The annotation schema deliberately stays closed: semantic annotation
-        # never absorbs ReelBench measurements. Downstream callers may retain
-        # only this immutable receipt identity alongside their workflow state.
-        return {
-            "version": comparison["version"],
-            "comparison_fingerprint": comparison["comparison_fingerprint"],
-        }
+        # The legacy annotation stays closed. Durable corroboration is written
+        # only after the immutable annotation version exists.
+        return None
 
     def _load_analysis(self, project_id: str, version: str) -> dict[str, Any]:
         if re.fullmatch(r"v[0-9]{3,}", version) is None:

@@ -21,6 +21,7 @@ from scripts import reelbench_workspace as ws
 from scripts.json_contracts import canonical_fingerprint, validate_contract
 from scripts.reelbench_adapter import ReelBenchAdapter
 from scripts.reelbench_contracts import validate_reelbench_comparison, validate_reelbench_evidence
+from scripts.reference_video_service import ReferenceVideoService
 from scripts.video_project_store import VersionCommitIndeterminateError, VideoProjectStore
 from scripts.reelbench_operation import OperationJournal
 
@@ -46,12 +47,14 @@ class ReelBenchProjectIdentityError(ValueError):
 class ReelBenchProjectService:
     """Serialize an action on the project directory inode, never a replaceable lockfile."""
 
-    def __init__(self, store: VideoProjectStore, adapter: ReelBenchAdapter) -> None:
+    def __init__(self, store: VideoProjectStore, adapter: ReelBenchAdapter | None) -> None:
         self._store = store
         self._adapter = adapter
 
     def run(self, project_id: str, *, action: str, expected_parent: str | None,
             source_receipt_version: str, **options: Any) -> dict[str, Any]:
+        if self._adapter is None:
+            raise RuntimeError("an adapter is required to execute ReelBench actions")
         if action not in {"seed", "evidence", "validate", "render"}:
             raise ValueError("unsupported ReelBench action")
         self._version(expected_parent, nullable=True)
@@ -88,27 +91,14 @@ class ReelBenchProjectService:
             analysis = self._store.read_version(
                 project_id, "analysis", analysis_version, "shot_analysis.schema.json",
             )
-            evidence = self._store.read_version(
-                project_id, "reelbench_evidence", reelbench_version,
-                "reelbench_evidence.schema.json",
+            validated = self._validated_evidence_locked(project_fd, project_id, reelbench_version)
+            evidence, source, reelbench = (
+                validated["evidence"], validated["source"], validated["reelbench"]
             )
             if analysis["project_id"] != project_id or evidence["project_id"] != project_id:
                 raise ValueError("comparison receipt project mismatch")
-            validate_reelbench_evidence(evidence)
-            source = self._store.read_version(
-                project_id, "source_receipt", evidence["source_receipt_version"],
-                "source_receipt.schema.json",
-            )
-            lineage = self._lineage(project_fd, project_id, reelbench_version, source)
-            if not lineage or lineage[0]["version"] != reelbench_version:
-                raise ValueError("ReelBench evidence lineage is incomplete")
-            if evidence["action"] != "validate" or any(
-                gate["status"] == "FAIL" for gate in evidence["gates"]
-            ):
-                raise ValueError("comparison requires an exact validated ReelBench evidence version")
-
-            reelbench = self._comparison_reelbench_documents(project_fd, evidence)
-            domains = self._compare_domains(analysis, evidence, reelbench)
+            ReferenceVideoService.validate_analysis_fingerprint(analysis, source)
+            domains, mismatches = self._compare(analysis, evidence, reelbench)
             receipt = {
                 "schema_version": "1.0",
                 "version": self._next_version(project_fd, "reelbench_comparison"),
@@ -120,6 +110,7 @@ class ReelBenchProjectService:
                 "reelbench_evidence_fingerprint": evidence["evidence_fingerprint"],
                 "tolerances": dict(_COMPARISON_TOLERANCES),
                 "domains": domains,
+                "mismatches": mismatches,
                 "overall": "manual_review" if any(
                     domain["verdict"] == "manual_review" for domain in domains.values()
                 ) else "matched",
@@ -139,6 +130,37 @@ class ReelBenchProjectService:
             validate_reelbench_comparison(persisted)
             guard()
             return persisted
+
+    def validate_evidence_lineage(self, project_id: str, reelbench_version: str) -> dict[str, Any]:
+        """Public Task 3 verifier for one exact, validated ReelBench evidence lineage."""
+        self._version(reelbench_version)
+        with self._locked_project(project_id) as (_store_fd, project_fd, _root, guard):
+            result = self._validated_evidence_locked(project_fd, project_id, reelbench_version)
+            guard()
+            return result
+
+    def _validated_evidence_locked(self, project_fd, project_id, reelbench_version):
+        evidence = self._store.read_version(
+            project_id, "reelbench_evidence", reelbench_version,
+            "reelbench_evidence.schema.json",
+        )
+        validate_reelbench_evidence(evidence)
+        source = self._store.read_version(
+            project_id, "source_receipt", evidence["source_receipt_version"],
+            "source_receipt.schema.json",
+        )
+        lineage = self._lineage(project_fd, project_id, reelbench_version, source)
+        if not lineage or lineage[0]["version"] != reelbench_version:
+            raise ValueError("ReelBench evidence lineage is incomplete")
+        if evidence["action"] != "validate" or any(
+            gate["status"] == "FAIL" for gate in evidence["gates"]
+        ):
+            raise ValueError("comparison requires an exact validated ReelBench evidence version")
+        return {
+            "evidence": evidence,
+            "source": source,
+            "reelbench": self._comparison_reelbench_documents(project_fd, evidence),
+        }
 
     def _comparison_reelbench_documents(self, project_fd, evidence):
         """Load exactly the immutable source documents consumed by validation."""
@@ -165,16 +187,27 @@ class ReelBenchProjectService:
             for value in values
         ):
             raise ValueError("invalid ReelBench motion samples")
+        motions = []
         for index, shot in enumerate(shots["shots"], 1):
+            if (
+                not self._finite_number(shot.get("start"))
+                or not self._finite_number(shot.get("end"))
+                or shot["end"] <= shot["start"]
+            ):
+                raise ValueError(f"ReelBench shot {index} has invalid measured boundaries")
             motion = shot.get("motion")
             if "motion" not in shot or (
                 motion is not None and not self._finite_number(motion)
             ):
                 raise ValueError(f"ReelBench shot {index} lacks measured motion evidence")
-        return {"shots": shots, "track": track}
+            measured, covered = self._upstream_median_motion(track, shot["start"], shot["end"])
+            if covered and not self._same_motion(motion, measured):
+                raise ValueError(f"ReelBench shot {index} motion does not match immutable track")
+            motions.append({"motion": measured, "covered": covered})
+        return {"shots": shots, "track": track, "motions": motions}
 
     @classmethod
-    def _compare_domains(cls, analysis, evidence, reelbench):
+    def _compare(cls, analysis, evidence, reelbench):
         native_shots = analysis["shots"]
         reel_shots = reelbench["shots"]["shots"]
         duration_tolerance = _COMPARISON_TOLERANCES["duration_seconds"]
@@ -184,62 +217,78 @@ class ReelBenchProjectService:
             "source_identity": [], "duration": [], "timeline_continuity": [],
             "shot_count": [], "boundaries": [], "motion": [],
         }
+        mismatches = []
+
+        def mismatch(domain, code, expected, observed, shot_id=None):
+            expected_text, observed_text = str(expected), str(observed)
+            domains[domain].append(f"{code}: expected={expected_text}; observed={observed_text}")
+            mismatches.append({"domain": domain, "shot_id": shot_id, "code": code,
+                               "expected": expected_text, "observed": observed_text})
+
         native_source = analysis["source"]
         if native_source["source_sha256"] != evidence["source_sha256"]:
-            domains["source_identity"].append("native and ReelBench source SHA-256 differ")
+            mismatch("source_identity", "source_sha256", native_source["source_sha256"], evidence["source_sha256"])
         if native_source["version"] != evidence["source_receipt_version"]:
-            domains["source_identity"].append("native and ReelBench source receipt versions differ")
+            mismatch("source_identity", "source_receipt_version", native_source["version"], evidence["source_receipt_version"])
         reel_duration = reelbench["shots"]["meta"]["durationSeconds"]
         native_duration = native_source["duration_seconds"]
-        if not math.isclose(native_duration, reel_duration, abs_tol=duration_tolerance):
-            domains["duration"].append(
-                f"total duration differs: native={native_duration:.6f}, reelbench={reel_duration:.6f}"
-            )
-        domains["timeline_continuity"].extend(cls._timeline_mismatches(
-            native_shots, native_duration, "native",
-        ))
-        domains["timeline_continuity"].extend(cls._timeline_mismatches(
-            reel_shots, reel_duration, "reelbench",
-        ))
+        if not math.isclose(native_duration, reel_duration, rel_tol=0.0, abs_tol=duration_tolerance):
+            mismatch("duration", "duration", f"{native_duration:.6f}", f"{reel_duration:.6f}")
+        for index, reason in enumerate(cls._timeline_mismatches(native_shots, native_duration, "native"), 1):
+            mismatch("timeline_continuity", "native_timeline", "continuous timeline", reason, f"S{index:02d}")
+        for index, reason in enumerate(cls._timeline_mismatches(reel_shots, reel_duration, "reelbench"), 1):
+            mismatch("timeline_continuity", "reelbench_timeline", "continuous timeline", reason, f"S{index:02d}")
         if len(native_shots) != len(reel_shots):
-            domains["shot_count"].append(
-                f"shot count differs: native={len(native_shots)}, reelbench={len(reel_shots)}"
-            )
+            mismatch("shot_count", "shot_count", len(native_shots), len(reel_shots))
+        for native in native_shots[len(reel_shots):]:
+            mismatch("shot_count", "reelbench_shot_missing", native["id"], "missing", native["id"])
+        for reel in reel_shots[len(native_shots):]:
+            mismatch("shot_count", "native_shot_missing", "missing", reel["id"], reel["id"])
         for index, (native, reel) in enumerate(zip(native_shots, reel_shots), 1):
             native_measured = native["measured"]
             native_id = native["id"]
             reel_id = reel.get("id")
             if native_id != reel_id:
-                domains["boundaries"].append(
-                    f"shot {index} order differs: native={native_id}, reelbench={reel_id}"
-                )
+                mismatch("boundaries", "shot_order", native_id, reel_id, native_id)
             for field, native_value, reel_value in (
                 ("start", native_measured["start_seconds"], reel.get("start")),
                 ("end", native_measured["end_seconds"], reel.get("end")),
             ):
                 if not cls._finite_number(reel_value) or not math.isclose(
-                    native_value, reel_value, abs_tol=boundary_tolerance,
+                    native_value, reel_value, rel_tol=0.0, abs_tol=boundary_tolerance,
                 ):
-                    domains["boundaries"].append(
-                        f"shot {index} {field} differs: native={native_value:.6f}, reelbench={reel_value!r}"
-                    )
+                    mismatch("boundaries", f"boundary_{field}", f"{native_value:.6f}", reel_value, native_id)
             native_motion = native_measured["motion_median"]
-            reel_motion = reel.get("motion")
+            motion_check = reelbench["motions"][index - 1]
+            if not motion_check["covered"]:
+                mismatch("motion", "track_coverage", "complete samples", "missing samples", native_id)
+                continue
+            reel_motion = motion_check["motion"]
             if native_motion is None and reel_motion is None:
                 continue
             if not cls._finite_number(native_motion) or not cls._finite_number(reel_motion) or not math.isclose(
-                native_motion, reel_motion, abs_tol=motion_tolerance,
+                native_motion, reel_motion, rel_tol=0.0, abs_tol=motion_tolerance,
             ):
-                domains["motion"].append(
-                    f"shot {index} motion differs: native={native_motion!r}, reelbench={reel_motion!r}"
-                )
-        return {
+                mismatch("motion", "motion_median", native_motion, reel_motion, native_id)
+        domains = {
             name: {
                 "verdict": "manual_review" if reasons else "matched",
                 "reasons": cls._receipt_reasons(reasons),
             }
             for name, reasons in domains.items()
         }
+        domain_order = {
+            name: index for index, name in enumerate(
+                ("source_identity", "duration", "timeline_continuity", "shot_count", "boundaries", "motion")
+            )
+        }
+        mismatches.sort(key=lambda item: (domain_order[item["domain"]], item["shot_id"] or "", item["code"], item["expected"], item["observed"]))
+        return domains, mismatches
+
+    @classmethod
+    def _compare_domains(cls, analysis, evidence, reelbench):
+        """Compatibility helper for focused domain-only callers."""
+        return cls._compare(analysis, evidence, reelbench)[0]
 
     @classmethod
     def _timeline_mismatches(cls, shots, total_duration, label):
@@ -252,12 +301,12 @@ class ReelBenchProjectService:
             if not cls._finite_number(start) or not cls._finite_number(end) or end <= start:
                 reasons.append(f"{label} shot {index} has invalid boundaries")
                 continue
-            if not math.isclose(start, previous_end, abs_tol=0.001):
+            if not math.isclose(start, previous_end, rel_tol=0.0, abs_tol=0.001):
                 reasons.append(
                     f"{label} shot {index} is discontinuous: start={start:.6f}, expected={previous_end:.6f}"
                 )
             previous_end = end
-        if not math.isclose(previous_end, total_duration, abs_tol=0.001):
+        if not math.isclose(previous_end, total_duration, rel_tol=0.0, abs_tol=0.001):
             reasons.append(
                 f"{label} timeline end differs from duration: end={previous_end:.6f}, duration={total_duration:.6f}"
             )
@@ -266,6 +315,34 @@ class ReelBenchProjectService:
     @staticmethod
     def _finite_number(value):
         return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+    @classmethod
+    def _upstream_median_motion(cls, track, start, end):
+        """Parity implementation of pinned video-shots.mjs `medianMotion`."""
+        hz, values = track["hz"], track["values"]
+        span = end - start
+        if span <= 0:
+            return None, True
+        edge = min(0.4, max(0.1, span * 0.15))
+        start_index = math.ceil((start + edge) * hz)
+        end_index = math.floor((end - edge) * hz)
+        if end_index >= len(values):
+            return None, False
+        samples = [value for value in values[max(0, start_index):max(0, end_index) + 1]
+                   if cls._finite_number(value)]
+        if not samples:
+            return None, True
+        samples.sort()
+        middle = len(samples) // 2
+        median = samples[middle] if len(samples) % 2 else (samples[middle - 1] + samples[middle]) / 2
+        # JS Math.round for non-negative signalstats values, followed by /100.
+        return math.floor(median * 100 + 0.5) / 100, True
+
+    @staticmethod
+    def _same_motion(actual, expected):
+        if actual is None or expected is None:
+            return actual is expected
+        return math.isclose(actual, expected, rel_tol=0.0, abs_tol=0.000001)
 
     @staticmethod
     def _receipt_reasons(reasons):
@@ -684,12 +761,13 @@ class ReelBenchProjectService:
                 error.project_id, "source_receipt", evidence["source_receipt_version"],
                 "source_receipt.schema.json",
             )
+            ReferenceVideoService.validate_analysis_fingerprint(analysis, source)
             self._lineage(project_fd, error.project_id, evidence["version"], source)
             if evidence["action"] != "validate" or any(
                 gate["status"] == "FAIL" for gate in evidence["gates"]
             ):
                 raise ValueError("comparison recovery evidence is no longer validated")
-            expected_domains = self._compare_domains(
+            expected_domains, expected_mismatches = self._compare(
                 analysis, evidence, self._comparison_reelbench_documents(project_fd, evidence),
             )
             expected_overall = "manual_review" if any(
@@ -698,6 +776,7 @@ class ReelBenchProjectService:
             if (
                 receipt["tolerances"] != _COMPARISON_TOLERANCES
                 or receipt["domains"] != expected_domains
+                or receipt["mismatches"] != expected_mismatches
                 or receipt["overall"] != expected_overall
             ):
                 raise ValueError("comparison recovery does not match current immutable inputs")

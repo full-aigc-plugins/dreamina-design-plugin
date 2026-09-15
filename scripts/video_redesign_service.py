@@ -88,6 +88,7 @@ class VideoRedesignService:
         rights_receipt_id: str | None,
         *,
         indeterminate_commit: VersionCommitIndeterminateError | None = None,
+        comparison_version: str | None = None,
     ) -> dict[str, Any]:
         project_id = candidate.get("project_id")
         if not isinstance(project_id, str):
@@ -125,13 +126,22 @@ class VideoRedesignService:
             "design_fingerprint": fingerprint,
             "committed_at": _now(),
         }
-        return self._store.write_version(
+        design = self._store.write_version(
             project_id,
             "redesign",
             document,
             schema_name="video_redesign.schema.json",
             parent_version_field="parent_version",
         )
+        if comparison_version is not None:
+            from scripts.reelbench_binding_service import ReelBenchBindingService
+            ReelBenchBindingService(self._store).bind(
+                project_id,
+                subject_family="video_design",
+                subject_version=design["version"],
+                comparison_version=comparison_version,
+            )
+        return design
 
     def _validate_closed_candidate(self, candidate: Mapping[str, Any]) -> None:
         payload = candidate.get("payload")

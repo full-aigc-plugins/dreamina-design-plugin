@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import copy
+import json
 import os
+import subprocess
 import tempfile
 import unittest
 import fcntl
@@ -104,7 +107,7 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
             argv = fixture_argv(argv)
             if argv[2] == "seed":
                 track = Path(argv[argv.index("--track") + 1])
-                track.write_text('{"hz": 5, "values": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}\n', encoding="utf-8")
+                track.write_text('{"hz": 5, "values": [' + ', '.join(['0'] * 50) + ']}\n', encoding="utf-8")
                 return BoundedProcessResult(0, '{"meta":{"durationSeconds":8},"shots":[{"id":"S01","start":0,"end":8,"seconds":8,"motion":0}]}\n', "")
             if argv[2] == "frames":
                 target = Path(argv[argv.index("--dir") + 1])
@@ -173,8 +176,13 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
                 for index, shot in enumerate(shots, 1)
             ],
             "track_path": "/private/track.json", "frame_checksums": {},
-            "machine_fingerprint": "f" * 64,
         }
+        payload["machine_fingerprint"] = canonical_fingerprint({
+            "source": payload["source"], "parameters": payload["parameters"],
+            "cuts": payload["cuts"],
+            "measured_shots": [shot["measured"] for shot in payload["shots"]],
+            "frame_checksums": payload["frame_checksums"],
+        })
         return self.store.write_version(
             self.project_id, "analysis", payload, schema_name="shot_analysis.schema.json",
         )
@@ -289,6 +297,7 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
         result = self.service.compare_native(self.project_id, analysis["version"], reelbench["version"])
 
         self.assertEqual(result["overall"], "matched")
+        self.assertEqual(result["mismatches"], [])
         self.assertEqual(
             self.store.read_version(
                 self.project_id, "reelbench_comparison", result["version"],
@@ -305,7 +314,7 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
         reelbench = self._validated_reelbench()
         analysis = self._write_native_analysis([
             {"start_seconds": 0.0, "end_seconds": 7.0, "motion_median": 0.0},
-        ], source_sha256="b" * 64)
+        ])
         before = self.store.read_version(
             self.project_id, "analysis", analysis["version"], "shot_analysis.schema.json",
         )
@@ -313,13 +322,239 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
         result = self.service.compare_native(self.project_id, analysis["version"], reelbench["version"])
 
         self.assertEqual(result["overall"], "manual_review")
-        self.assertEqual(result["domains"]["source_identity"]["verdict"], "manual_review")
+        self.assertEqual(result["domains"]["source_identity"]["verdict"], "matched")
         self.assertEqual(result["domains"]["boundaries"]["verdict"], "manual_review")
+        self.assertEqual(
+            [entry["code"] for entry in result["mismatches"]],
+            ["native_timeline", "boundary_end"],
+        )
         self.assertEqual(
             self.store.read_version(
                 self.project_id, "analysis", analysis["version"], "shot_analysis.schema.json",
             ),
             before,
+        )
+
+    def test_comparison_rejects_a_forged_native_machine_fingerprint(self) -> None:
+        reelbench = self._validated_reelbench()
+        analysis = self._write_native_analysis([
+            {"start_seconds": 0.0, "end_seconds": 8.0, "motion_median": 0.0},
+        ])
+        path = self.store.project_root(self.project_id) / "analysis" / f"{analysis['version']}.json"
+        forged = copy.deepcopy(analysis)
+        forged["machine_fingerprint"] = "0" * 64
+        path.write_text(json.dumps(forged, sort_keys=True), encoding="utf-8")
+        path.chmod(0o600)
+
+        with self.assertRaisesRegex(ValueError, "fingerprint"):
+            self.service.compare_native(self.project_id, analysis["version"], reelbench["version"])
+
+    def test_annotation_binding_persists_a_durable_comparison_sidecar(self) -> None:
+        from scripts.reelbench_binding_service import ReelBenchBindingService
+
+        reelbench = self._validated_reelbench()
+        analysis = self._write_native_analysis([
+            {"start_seconds": 0.0, "end_seconds": 8.0, "motion_median": 0.0},
+        ])
+        comparison = self.service.compare_native(
+            self.project_id, analysis["version"], reelbench["version"]
+        )
+        annotation = {
+            "schema_version": "1.0", "analysis_version": analysis["version"],
+            "machine_fingerprint": analysis["machine_fingerprint"],
+            "shots": [{
+                "id": "S01", "shot_size": "wide", "category": "subject",
+                "category_evidence": "subject presenter", "camera": "static",
+                "frame_description": "A clearly described presenter inside a bright modern studio.",
+                "rhythm_role": None, "rhythm_evidence": None, "subjects": [],
+                "on_screen_text": [], "dialogue": [], "narration": [], "music": [],
+                "sound": [], "confidence": .9, "review_note": "",
+            }], "transcript": None,
+        }
+        annotation = self.store.write_version(
+            self.project_id, "annotation", annotation, schema_name="shot_annotation.schema.json",
+        )
+
+        binding = ReelBenchBindingService(self.store).bind(
+            self.project_id, subject_family="annotation", subject_version=annotation["version"],
+            comparison_version=comparison["version"],
+        )
+
+        self.assertEqual(binding["subject_family"], "annotation")
+        self.assertEqual(binding["comparison_fingerprint"], comparison["comparison_fingerprint"])
+        self.assertEqual(
+            self.store.read_version(
+                self.project_id, "reelbench_binding", binding["version"], "reelbench_binding.schema.json",
+            ), binding,
+        )
+
+    def test_redesign_commit_optionally_persists_a_durable_comparison_sidecar(self) -> None:
+        from scripts.video_redesign_service import VideoRedesignService
+
+        reelbench = self._validated_reelbench()
+        analysis = self._write_native_analysis([
+            {"start_seconds": 0.0, "end_seconds": 8.0, "motion_median": 0.0},
+        ])
+        comparison = self.service.compare_native(
+            self.project_id, analysis["version"], reelbench["version"]
+        )
+        annotation = {
+            "schema_version": "1.0", "analysis_version": analysis["version"],
+            "machine_fingerprint": analysis["machine_fingerprint"],
+            "shots": [{
+                "id": "S01", "shot_size": "wide", "category": "subject",
+                "category_evidence": "subject presenter", "camera": "static",
+                "frame_description": "A clearly described presenter inside a bright modern studio.",
+                "rhythm_role": None, "rhythm_evidence": None, "subjects": [],
+                "on_screen_text": [], "dialogue": [], "narration": [], "music": [],
+                "sound": [], "confidence": .9, "review_note": "",
+            }], "transcript": None,
+        }
+        self.store.write_version(self.project_id, "annotation", annotation, schema_name="shot_annotation.schema.json")
+        payload = {
+            "schema_version": "1.0", "creative_mode": "original_redesign",
+            "machine_fingerprint": analysis["machine_fingerprint"],
+            "preserve": ["timing", "shot_sizes", "camera_moves", "rhythm", "transitions", "audio_beats"],
+            "replacements": {key: f"new {key}" for key in (
+                "likeness", "voice", "dialogue", "music", "brand", "artwork", "settings", "costume", "distinctive_props",
+            )}, "required_media": ["video"], "purpose": "public campaign", "audience": "public",
+            "territory": "worldwide", "format": "short_video", "target_duration_seconds": 8.0,
+            "aspect_ratio": "16:9", "platform": "web", "concept": "new original launch story",
+            "cast": ["new presenter"], "settings": ["new studio"], "palette": ["blue"],
+            "visual_style": "clean editorial", "dialogue": [], "narration": [], "music": "new score",
+            "sound_intent": "new sound design", "shots": [{"id": "S01", "prompt": "new presenter"}],
+            "continuity": ["new presenter remains consistent"], "author": "user",
+        }
+        redesign = VideoRedesignService(self.store)
+        design = redesign.commit_version(
+            redesign.prepare_candidate(self.project_id, analysis["version"], payload), None,
+            comparison_version=comparison["version"],
+        )
+        binding = self.store.find_version_by_field(
+            self.project_id, "reelbench_binding", field="subject_version", value=design["version"],
+            schema_name="reelbench_binding.schema.json",
+        )
+        self.assertEqual(binding["subject_family"], "video_design")
+
+    def test_binding_indeterminate_recovery_requires_the_exact_published_sidecar(self) -> None:
+        from scripts.reelbench_binding_service import ReelBenchBindingService
+
+        reelbench = self._validated_reelbench()
+        analysis = self._write_native_analysis([
+            {"start_seconds": 0.0, "end_seconds": 8.0, "motion_median": 0.0},
+        ])
+        comparison = self.service.compare_native(self.project_id, analysis["version"], reelbench["version"])
+        annotation = {
+            "schema_version": "1.0", "analysis_version": analysis["version"],
+            "machine_fingerprint": analysis["machine_fingerprint"], "shots": [{
+                "id": "S01", "shot_size": "wide", "category": "subject", "category_evidence": "subject presenter",
+                "camera": "static", "frame_description": "A clearly described presenter inside a bright modern studio.",
+                "rhythm_role": None, "rhythm_evidence": None, "subjects": [], "on_screen_text": [],
+                "dialogue": [], "narration": [], "music": [], "sound": [], "confidence": .9, "review_note": "",
+            }], "transcript": None,
+        }
+        annotation = self.store.write_version(self.project_id, "annotation", annotation, schema_name="shot_annotation.schema.json")
+        binder, write = ReelBenchBindingService(self.store), self.store.write_version
+
+        def publish_then_report(*args, **kwargs):
+            receipt = write(*args, **kwargs)
+            if args[1] == "reelbench_binding":
+                raise VersionCommitIndeterminateError(
+                    project_id=self.project_id, family="reelbench_binding", version=receipt["version"],
+                    path=self.store.project_root(self.project_id) / "reelbench_binding" / f"{receipt['version']}.json",
+                    payload_fingerprint=canonical_fingerprint(receipt),
+                )
+            return receipt
+
+        with patch.object(self.store, "write_version", side_effect=publish_then_report):
+            with self.assertRaises(VersionCommitIndeterminateError) as caught:
+                binder.bind(self.project_id, subject_family="annotation", subject_version=annotation["version"], comparison_version=comparison["version"])
+        recovered = binder.bind(
+            self.project_id, subject_family="annotation", subject_version=annotation["version"],
+            comparison_version=comparison["version"], indeterminate_commit=caught.exception,
+        )
+        self.assertEqual(recovered["version"], "v001")
+
+    def test_track_motion_must_match_the_pinned_shot_measurement_algorithm(self) -> None:
+        original = self.service._adapter._runner
+
+        def forged_motion(argv, **kwargs):
+            result = original(argv, **kwargs)
+            argv = fixture_argv(argv)
+            if argv[2] == "seed":
+                return BoundedProcessResult(result.returncode, result.stdout.replace('"motion":0', '"motion":1'), result.stderr)
+            return result
+
+        self.service._adapter._runner = forged_motion
+        reelbench = self._validated_reelbench()
+        analysis = self._write_native_analysis([
+            {"start_seconds": 0.0, "end_seconds": 8.0, "motion_median": 0.0},
+        ])
+
+        with self.assertRaisesRegex(ValueError, "motion does not match"):
+            self.service.compare_native(self.project_id, analysis["version"], reelbench["version"])
+
+    def test_python_motion_recomputation_matches_pinned_upstream_helper(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "skills" / "dreamina-video-shots" / "scripts" / "video-shots.mjs"
+        track = {"hz": 5, "values": [float(value % 7) for value in range(80)]}
+        cases = [(0.0, 8.0), (1.2, 2.1), (4.0, 4.25)]
+        program = (
+            f"import {{ medianMotion }} from {script.as_uri()!r}; "
+            f"const track={json.dumps(track)}; "
+            f"console.log(JSON.stringify({json.dumps(cases)}.map(([start,end]) => medianMotion(track,start,end))));"
+        )
+        upstream = json.loads(subprocess.run(
+            ["node", "--input-type=module", "-e", program], check=True,
+            capture_output=True, text=True,
+        ).stdout)
+
+        observed = [self.service._upstream_median_motion(track, start, end)[0] for start, end in cases]
+        self.assertEqual(observed, upstream)
+
+    def test_missing_track_coverage_requires_motion_manual_review(self) -> None:
+        original = self.service._adapter._runner
+
+        def truncated_track(argv, **kwargs):
+            result = original(argv, **kwargs)
+            argv = fixture_argv(argv)
+            if argv[2] == "seed":
+                Path(argv[argv.index("--track") + 1]).write_text('{"hz":5,"values":[0]}\n', encoding="utf-8")
+            return result
+
+        self.service._adapter._runner = truncated_track
+        reelbench = self._validated_reelbench()
+        analysis = self._write_native_analysis([
+            {"start_seconds": 0.0, "end_seconds": 8.0, "motion_median": 0.0},
+        ])
+
+        result = self.service.compare_native(self.project_id, analysis["version"], reelbench["version"])
+
+        self.assertEqual(result["overall"], "manual_review")
+        self.assertEqual(result["domains"]["motion"]["verdict"], "manual_review")
+        self.assertEqual(result["mismatches"][-1]["code"], "track_coverage")
+
+    def test_structured_mismatches_keep_more_than_the_120_shot_worst_case_stably(self) -> None:
+        analysis = {
+            "source": {"source_sha256": "a" * 64, "version": "v001", "duration_seconds": 120.0},
+            "shots": [{"id": f"S{index:02d}", "measured": {
+                "start_seconds": float(index - 1), "end_seconds": float(index), "motion_median": 0.0,
+            }} for index in range(1, 121)],
+        }
+        evidence = {"source_sha256": "a" * 64, "source_receipt_version": "v001"}
+        reelbench = {"shots": {"meta": {"durationSeconds": 120.0}, "shots": [
+            {"id": f"S{index:02d}", "start": float(index) - .75, "end": float(index) + .25, "motion": 1.0}
+            for index in range(1, 121)
+        ]}, "motions": [{"motion": 1.0, "covered": True} for _ in range(120)]}
+
+        _domains, first = self.service._compare(analysis, evidence, reelbench)
+        _domains, second = self.service._compare(analysis, evidence, reelbench)
+
+        self.assertGreaterEqual(len(first), 360)
+        self.assertLessEqual(len(first), 2048)
+        self.assertEqual(first, second)
+        self.assertEqual(
+            canonical_fingerprint({"mismatches": first}),
+            canonical_fingerprint({"mismatches": second}),
         )
 
     def test_comparison_requires_exact_existing_versions_and_validated_reelbench_evidence(self) -> None:
@@ -373,10 +608,10 @@ class ReelBenchProjectServiceTests(unittest.TestCase):
         within_tolerance = {"shots": {"meta": {"durationSeconds": 8.0}, "shots": [
             {"id": "S01", "start": 0.0, "end": 4.1, "motion": 0.0},
             {"id": "S02", "start": 4.1, "end": 8.0, "motion": 0.0},
-        ]}}
+        ]}, "motions": [{"motion": 0.0, "covered": True}, {"motion": 0.0, "covered": True}]}
         mismatched = {"shots": {"meta": {"durationSeconds": 8.0}, "shots": [
             {"id": "S02", "start": 0.0, "end": 4.0, "motion": 0.0},
-        ]}}
+        ]}, "motions": [{"motion": 0.0, "covered": True}]}
 
         accepted = self.service._compare_domains(analysis, evidence, within_tolerance)
         rejected = self.service._compare_domains(analysis, evidence, mismatched)

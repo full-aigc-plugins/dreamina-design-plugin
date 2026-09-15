@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/reelbench_binding.schema.json",
+  "title": "Immutable ReelBench Corroboration Binding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "version", "project_id", "subject_family", "subject_version", "subject_fingerprint", "comparison_version", "comparison_fingerprint", "native_analysis_version", "native_analysis_fingerprint", "reelbench_evidence_version", "reelbench_evidence_fingerprint", "bound_at", "binding_fingerprint"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "project_id": {"type": "string", "pattern": "^vp_[a-f0-9]{24}$"},
+    "subject_family": {"type": "string", "enum": ["annotation", "video_design"]},
+    "subject_version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "subject_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "comparison_version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "comparison_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "native_analysis_version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "native_analysis_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "reelbench_evidence_version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "reelbench_evidence_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "bound_at": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$"},
+    "binding_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

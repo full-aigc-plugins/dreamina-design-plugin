@@ -75,6 +75,7 @@ def comparison() -> dict[str, object]:
         "reelbench_evidence_fingerprint": "4" * 64,
         "tolerances": {"duration_seconds": 0.1, "boundary_seconds": 0.04, "motion_abs_delta": 0.5},
         "domains": {name: {"verdict": "matched", "reasons": []} for name in ("source_identity", "duration", "timeline_continuity", "shot_count", "boundaries", "motion")},
+        "mismatches": [],
         "overall": "matched", "compared_at": "2026-09-15T00:00:00Z",
     }
     receipt["comparison_fingerprint"] = canonical_fingerprint(receipt)
