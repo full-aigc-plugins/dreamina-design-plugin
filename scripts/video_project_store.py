@@ -52,6 +52,17 @@ class ProjectStateConflictError(VideoProjectStoreError):
     """A compare-and-swap state transition did not match exactly."""
 
 
+class PendingVersionRecoveryRequired(VideoProjectStoreError):
+    """A linear version chain must finish its earlier reserved operation first."""
+
+    def __init__(self, *, project_id: str, family: str, version: str, operation_id: str):
+        self.project_id = project_id
+        self.family = family
+        self.version = version
+        self.operation_id = operation_id
+        super().__init__(f"recover pending {project_id}/{family}/{version} operation {operation_id} before extending its parent chain")
+
+
 class VersionCommitIndeterminateError(VideoProjectStoreError):
     """A version became visible but a later durability operation failed."""
 
@@ -183,10 +194,14 @@ class VideoProjectStore:
                 if (match := re.fullmatch(r"v([0-9]{3,})", path.stem)) is not None
             ]
             visible_numbers = list(numbers)
-            if version is None:
+            if version is None or parent_version_field is not None:
                 from scripts import reelbench_workspace as ws
                 with ws.absolute_chain(self._root) as (root_fd, _, _), ws.directory(root_fd, project_id) as project_fd:
-                    numbers += self._reserved_numbers_at(project_fd, family)
+                    if parent_version_field is not None:
+                        self._assert_no_pending_parent(project_id, project_fd, family)
+                    if version is None:
+                        numbers += self._reserved_numbers_at(project_fd, family)
+            if version is None:
                 version = f"v{max(numbers, default=0) + 1:03d}"
             elif re.fullmatch(r"v[0-9]{3,}", version) is None:
                 raise ValueError("invalid requested version")
@@ -236,6 +251,9 @@ class VideoProjectStore:
                 existing = self._read_reservation_at(project_fd, operation_id)
             except FileNotFoundError:
                 existing = None
+            if parent_version_field is not None:
+                self._assert_no_pending_parent(project_id, project_fd, family,
+                    operation_id=operation_id, version=existing["version"] if existing is not None else None)
             if existing is not None:
                 if existing["request_fingerprint"] != request_fingerprint:
                     raise ValueError("reservation differs from exact operation")
@@ -325,7 +343,7 @@ class VideoProjectStore:
             key = OperationJournal(store_fd, project_fd, "", self._root).key
         return hmac.new(key, canonical_fingerprint(body).encode(), hashlib.sha256).hexdigest()
 
-    def _reserved_numbers_at(self, project_fd, family):
+    def _reservations_at(self, project_fd, family):
         from scripts import reelbench_workspace as ws
         try:
             with ws.directory(project_fd, ".reservations") as fd:
@@ -334,7 +352,18 @@ class VideoProjectStore:
             return []
         records = [self._read_reservation_at(project_fd, name[:-5]) for name in names
                    if re.fullmatch(r"[a-f0-9]{32,64}\.json", name)]
-        return [int(r["version"][1:]) for r in records if r["family"] == family]
+        return [record for record in records if record["family"] == family]
+
+    def _reserved_numbers_at(self, project_fd, family):
+        return [int(record["version"][1:]) for record in self._reservations_at(project_fd, family)]
+
+    def _assert_no_pending_parent(self, project_id, project_fd, family, *, operation_id=None, version=None):
+        for pending in sorted(self._reservations_at(project_fd, family), key=lambda r: int(r["version"][1:])):
+            if pending["operation_id"] == operation_id:
+                continue
+            if version is None or int(pending["version"][1:]) <= int(version[1:]):
+                raise PendingVersionRecoveryRequired(project_id=project_id, family=family,
+                    version=pending["version"], operation_id=pending["operation_id"])
 
     @staticmethod
     def _sync_reservation_at(project_fd, operation_id):
@@ -696,6 +725,7 @@ __all__ = [
     "PROJECT_ID",
     "ProjectNotFoundError",
     "ProjectStateConflictError",
+    "PendingVersionRecoveryRequired",
     "VersionCommitIndeterminateError",
     "VersionReconciliationError",
     "VideoProjectStore",

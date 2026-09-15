@@ -182,5 +182,8 @@ class ReelBenchContractTests(unittest.TestCase):
         contradiction = copy.deepcopy(receipt); contradiction["domains"]["motion"]["verdict"] = "manual_review"; contradiction["comparison_fingerprint"] = canonical_fingerprint({key: value for key, value in contradiction.items() if key != "comparison_fingerprint"})
         with self.assertRaisesRegex(ValueError, "overall"):
             validate_reelbench_comparison(contradiction)
-        contradiction["overall"] = "manual_review"; contradiction["comparison_fingerprint"] = canonical_fingerprint({key: value for key, value in contradiction.items() if key != "comparison_fingerprint"})
+        contradiction["overall"] = "manual_review"
+        contradiction["domains"]["motion"]["reasons"] = ["mismatch_count=1; codes=motion_median"]
+        contradiction["mismatches"] = [{"domain": "motion", "shot_id": "S01", "code": "motion_median", "expected": "0", "observed": "3"}]
+        contradiction["comparison_fingerprint"] = canonical_fingerprint({key: value for key, value in contradiction.items() if key != "comparison_fingerprint"})
         validate_reelbench_comparison(contradiction)

@@ -115,12 +115,24 @@ def validate_reelbench_comparison(receipt: Mapping[str, Any]) -> None:
         raise ContractValidationError("comparison mismatches must use canonical stable ordering")
     if any(receipt["domains"][item["domain"]]["verdict"] != "manual_review" for item in mismatches):
         raise ContractValidationError("comparison mismatches require a manual-review domain")
+    manual_domains = {name for name, domain in receipt["domains"].items() if domain["verdict"] == "manual_review"}
+    if {item["domain"] for item in mismatches} != manual_domains:
+        raise ContractValidationError("manual-review domains and mismatch domains must match exactly")
+    for name, domain in receipt["domains"].items():
+        rows = [item for item in mismatches if item["domain"] == name]
+        reasons = []
+        if rows:
+            codes = sorted({item["code"] for item in rows})
+            reasons = [(f"mismatch_count={len(rows)}; codes=" + ",".join(codes))[:512]]
+        if domain["reasons"] != reasons:
+            raise ContractValidationError("comparison domain reasons must be the canonical mismatch summary")
 
 
 def validate_reelbench_binding(receipt: Mapping[str, Any]) -> None:
     """Validate a closed corroboration sidecar and its canonical fingerprint."""
     validate_contract(receipt, "reelbench_binding.schema.json")
     _assert_fingerprint(receipt, "binding_fingerprint")
+    parse_rfc3339(receipt["bound_at"], label="bound_at")
 
 
 def _assert_fingerprint(receipt: Mapping[str, Any], key: str) -> None:

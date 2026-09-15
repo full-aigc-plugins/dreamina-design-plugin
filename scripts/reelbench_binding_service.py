@@ -142,15 +142,46 @@ class ReelBenchBindingService:
                 validate_reelbench_binding(receipt)
                 if any(receipt.get(k) != v for k, v in expected.items()):
                     raise ValueError("retry inputs do not match committed binding")
-                reservation = {"family": "reelbench_binding", "version": receipt["version"],
-                    "payload_fingerprint": canonical_fingerprint(receipt), "schema_name": "reelbench_binding.schema.json"}
-                return self._publish_or_reconcile(fd, project_id, reservation, guard, must_exist=True)
+                return self._complete_binding(fd, project_id, receipt, expected, guard)
             existing = self._existing(fd, project_id, expected)
             if existing is not None:
-                guard()
-                return existing
+                return self._complete_binding(fd, project_id, existing, expected, guard)
             reservation = self._reserve_binding(fd, project_id, expected, guard)
-            return self._publish_or_reconcile(fd, project_id, reservation, guard)
+            receipt = self._publish_or_reconcile(fd, project_id, reservation, guard)
+            return self._complete_binding(fd, project_id, receipt, expected, guard)
+
+    def _complete_binding(self, fd, project_id, receipt, expected, guard):
+        """The exact immutable durable receipt is the standalone completion record."""
+        identity = {"family": "reelbench_binding", "version": receipt["version"],
+            "payload_fingerprint": canonical_fingerprint(receipt), "schema_name": "reelbench_binding.schema.json"}
+        try:
+            # Completion is durable before deleting the signed allocation intent.
+            # The immutable receipt also supplies idempotency after a cleanup crash.
+            recovered = self._publish_or_reconcile(fd, project_id, identity, guard, must_exist=True)
+            operation_id = canonical_fingerprint({"kind": "binding", **expected})
+            with self._store._reservation_lock(fd):
+                try:
+                    reservation = self._store._read_reservation_at(fd, operation_id)
+                except FileNotFoundError:
+                    reservation = None
+                if reservation is not None:
+                    if reservation["payload"] != recovered:
+                        raise ReelBenchRecoveryRequiredError("completed binding differs from its reservation")
+                    guard()
+                    os.unlink(f".reservations/{operation_id}.json", dir_fd=fd)
+                try:
+                    with ws.directory(fd, ".reservations") as reservations_fd:
+                        # Also cross the barrier when a prior unlink succeeded.
+                        os.fsync(reservations_fd)
+                except FileNotFoundError:
+                    pass
+                os.fsync(fd)
+                guard()
+            return recovered
+        except BaseException as exc:
+            raise VersionCommitIndeterminateError(project_id=project_id, family="reelbench_binding",
+                version=identity["version"], payload_fingerprint=identity["payload_fingerprint"],
+                path=self._store._root / project_id / "reelbench_binding" / f"{identity['version']}.json") from exc
 
     def commit_subject(self, project_id, *, subject_family, document, comparison_version,
                        binding_indeterminate_commit=None, after_commit=None):
