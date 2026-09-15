@@ -159,6 +159,10 @@ class BrowserLaunchLease:
 
     def __exit__(self, *_): self.close()
 
+    def __del__(self):
+        try: self.close()
+        except (OSError, AttributeError): pass
+
     @property
     def proxy_environment(self) -> dict[str, str]:
         if self._descriptor < 0 or self._bundle_descriptor < 0:
@@ -388,7 +392,7 @@ class TrustedMediaToolStore:
         except KeyError as exc: raise TrustedMediaToolError("browser path is not an approved application executable") from exc
         detail = ""
         for index, argv in enumerate(([_CODESIGN, "--verify", "--strict", "--deep", "--verbose=2", path], [_CODESIGN, "-d", "--verbose=4", "-r-", path])):
-            try: result = run_bounded(argv, env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"}, timeout_seconds=10, stdout_cap=65536, stderr_cap=65536)
+            try: result = run_bounded(argv, env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"}, timeout_seconds=60, stdout_cap=65536, stderr_cap=65536)
             except (OSError, BoundedProcessError) as exc: raise TrustedMediaToolError("macOS codesign is unavailable for browser verification") from exc
             if result.returncode != 0: raise TrustedMediaToolError("browser code signature verification failed")
             if index: detail = (result.stdout or "") + "\n" + (result.stderr or "")
