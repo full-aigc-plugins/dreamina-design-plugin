@@ -87,6 +87,12 @@ def _ratio(value: Any) -> float | None:
 class FinalMediaService:
     """Verify final media, then export it atomically."""
 
+    def export_project(self,*,store,project_id,composition_version,destination,approved_roots,audio_plan_service=None,subtitle_mode=None):
+        """Reload an exact project composition and all accepted generated receipts."""
+        from scripts.project_media_service import export_project
+        return export_project(self,store=store,project_id=project_id,composition_version=composition_version,
+            destination=destination,approved_roots=approved_roots,audio_plan_service=audio_plan_service,subtitle_mode=subtitle_mode)
+
     def __init__(
         self,
         media_adapter: Any,

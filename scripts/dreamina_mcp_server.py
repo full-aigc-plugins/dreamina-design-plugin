@@ -100,15 +100,25 @@ def _tool(name: str, description: str, properties: Mapping[str, Any], *, require
 class DreaminaMcpTools:
     """Tool handlers; paid handlers are protected by Codex approval_mode=prompt."""
 
-    def __init__(self, *, state_root: Path | None = None, approval_provider: Any | None = None) -> None:
+    def __init__(self, *, state_root: Path | None = None, approval_provider: Any | None = None, project_media_service=None) -> None:
         self.state_root = state_root or (Path.home() / ".local" / "share" / "codex-dreamina-design")
         self.approval_provider = approval_provider or NativeApprovalProvider()
         self.auth_flow_store = AuthFlowStore()
+        self._project_media_service=project_media_service
 
     def call(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
         definitions={tool["name"]:tool for tool in _tool_definitions()}
         if name not in definitions: raise ValueError(f"unknown tool: {name}")
         _validate_schema(args,definitions[name]["inputSchema"],path="arguments")
+        if name in {'dreamina_compose_video','dreamina_export_video_project'}:
+            if self._project_media_service is None:
+                from scripts.project_media_service import ProjectMediaService
+                from scripts.video_project_store import VideoProjectStore
+                from scripts.media_adapter import MediaAdapter
+                from scripts.trusted_media_tools import TrustedMediaToolStore
+                self._project_media_service=ProjectMediaService(VideoProjectStore(self.state_root/'video_projects'),MediaAdapter(TrustedMediaToolStore()),self.approval_provider)
+            method=self._project_media_service.compose_project if name=='dreamina_compose_video' else self._project_media_service.export_project
+            return method(**dict(args))
         if name == "dreamina_capability_snapshot":
             with _adapter(args) as adapter:
                 snapshot = adapter.capability_snapshot()
