@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 import re
 from typing import Any
 
 from scripts.json_contracts import canonical_fingerprint, validate_contract
 from scripts.reelbench_contracts import validate_reelbench_binding, validate_reelbench_comparison
 from scripts.reelbench_project_service import ReelBenchProjectService
+from scripts import reelbench_workspace as ws
 from scripts.reference_video_service import ReferenceVideoService
 from scripts.video_project_store import VersionCommitIndeterminateError, VersionReconciliationError, VideoProjectStore
 
@@ -96,8 +98,16 @@ class ReelBenchBindingService:
                     path=expected_path, reason="retry inputs do not match the committed binding",
                 )
             return recovered
-        version = self._next_version(project_id)
-        receipt = {
+        # All cooperative sidecar writers allocate and publish under the same
+        # descriptor-pinned project lock used by Task 3 evidence actions.
+        with verifier._locked_project(project_id) as (_store_fd, project_fd, _root, guard):
+            existing = self._existing(project_id, subject_family, subject_version, subject_fingerprint,
+                                      comparison_version, comparison["comparison_fingerprint"])
+            if existing is not None:
+                guard()
+                return existing
+            version = self._next_version_at(project_fd)
+            receipt = {
             "schema_version": "1.0", "version": version, "project_id": project_id,
             "subject_family": subject_family, "subject_version": subject_version,
             "subject_fingerprint": subject_fingerprint,
@@ -108,13 +118,14 @@ class ReelBenchBindingService:
             "reelbench_evidence_version": evidence["version"],
             "reelbench_evidence_fingerprint": evidence["evidence_fingerprint"],
             "bound_at": _now(),
-        }
-        receipt["binding_fingerprint"] = canonical_fingerprint(receipt)
-        validate_reelbench_binding(receipt)
-        return self._store.write_version(
-            project_id, "reelbench_binding", receipt,
-            schema_name="reelbench_binding.schema.json", version=version,
-        )
+            }
+            receipt["binding_fingerprint"] = canonical_fingerprint(receipt)
+            validate_reelbench_binding(receipt)
+            return self._store.write_version(
+                project_id, "reelbench_binding", receipt,
+                schema_name="reelbench_binding.schema.json", version=version,
+                project_fd=project_fd, publication_guard=guard,
+            )
 
     def _subject(self, project_id: str, family: str, version: str):
         if family == "annotation":
@@ -131,11 +142,29 @@ class ReelBenchBindingService:
         )
         return subject, fingerprint, schema_name
 
-    def _next_version(self, project_id: str) -> str:
-        root = self._store.project_root(project_id) / "reelbench_binding"
-        numbers = [int(path.stem[1:]) for path in root.glob("v*.json")
-                   if re.fullmatch(r"v[0-9]{3,}", path.stem)] if root.is_dir() else []
+    def _next_version_at(self, project_fd: int) -> str:
+        try:
+            with ws.directory(project_fd, "reelbench_binding") as family:
+                numbers = [int(name[1:-5]) for name in os.listdir(family)
+                           if re.fullmatch(r"v[0-9]{3,}\.json", name)]
+        except FileNotFoundError:
+            numbers = []
         return f"v{max(numbers, default=0) + 1:03d}"
+
+    def _existing(self, project_id, subject_family, subject_version, subject_fingerprint,
+                  comparison_version, comparison_fingerprint):
+        try:
+            receipt = self._store.find_version_by_field(
+                project_id, "reelbench_binding", field="subject_fingerprint", value=subject_fingerprint,
+                schema_name="reelbench_binding.schema.json",
+            )
+        except (ValueError, VersionReconciliationError):
+            return None
+        if (receipt["subject_family"], receipt["subject_version"], receipt["comparison_version"], receipt["comparison_fingerprint"]) == (
+            subject_family, subject_version, comparison_version, comparison_fingerprint,
+        ):
+            return receipt
+        return None
 
 
 __all__ = ["CompositeBindingIndeterminateError", "ReelBenchBindingService"]
