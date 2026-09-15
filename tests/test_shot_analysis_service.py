@@ -231,7 +231,7 @@ class ShotAnalysisServiceTests(unittest.TestCase):
 
     def test_annotation_rejects_an_orphan_comparison_receipt(self):
         comparison = {
-            "schema_version": "1.0", "version": "v001", "project_id": self.project_id,
+            "schema_version": "1.1", "version": "v001", "project_id": self.project_id,
             "source_sha256": self.analysis["source"]["source_sha256"],
             "native_analysis_version": self.analysis["version"],
             "native_analysis_fingerprint": self.analysis["machine_fingerprint"],

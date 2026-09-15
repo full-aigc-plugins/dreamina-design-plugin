@@ -35,20 +35,14 @@ class ReelBenchBindingService:
         )
         validate_reelbench_comparison(comparison)
         verifier = ReelBenchProjectService(self._store, adapter=None)
-        validated = verifier.validate_evidence_lineage(
-            project_id, comparison["reelbench_evidence_version"]
+        validated = verifier.validate_comparison_against_inputs(
+            project_id, comparison["native_analysis_version"], comparison["reelbench_evidence_version"], comparison
         )
-        evidence, source = validated["evidence"], validated["source"]
-        analysis = self._store.read_version(
-            project_id, "analysis", comparison["native_analysis_version"],
-            "shot_analysis.schema.json",
-        )
-        ReferenceVideoService.validate_analysis_fingerprint(analysis, source)
+        if validated["overall"] != "matched":
+            raise ValueError("automatic corroboration requires a recomputed matched comparison")
+        evidence, analysis = validated["evidence"], validated["analysis"]
         if (
             comparison["project_id"] != project_id
-            or comparison["comparison_fingerprint"] != canonical_fingerprint(
-                {key: value for key, value in comparison.items() if key != "comparison_fingerprint"}
-            )
             or comparison["native_analysis_fingerprint"] != analysis["machine_fingerprint"]
             or comparison["source_sha256"] != analysis["source"]["source_sha256"]
             or comparison["reelbench_evidence_fingerprint"] != evidence["evidence_fingerprint"]

@@ -69,7 +69,7 @@ def evidence(action: str = "validate") -> dict[str, object]:
 
 def comparison() -> dict[str, object]:
     receipt: dict[str, object] = {
-        "schema_version": "1.0", "version": "v001", "project_id": "vp_" + "1" * 24,
+        "schema_version": "1.1", "version": "v001", "project_id": "vp_" + "1" * 24,
         "source_sha256": "2" * 64, "native_analysis_version": "v001",
         "native_analysis_fingerprint": "3" * 64, "reelbench_evidence_version": "v002",
         "reelbench_evidence_fingerprint": "4" * 64,

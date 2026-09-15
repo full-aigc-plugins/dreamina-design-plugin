@@ -165,7 +165,7 @@ class ClosedSchemaTests(unittest.TestCase):
 
     def test_reelbench_comparison_is_closed_and_requires_all_domains(self) -> None:
         comparison = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "version": "v001",
             "project_id": "vp_" + "1" * 24,
             "source_sha256": "2" * 64,

@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "version", "project_id", "source_sha256", "native_analysis_version", "native_analysis_fingerprint", "reelbench_evidence_version", "reelbench_evidence_fingerprint", "tolerances", "domains", "mismatches", "overall", "compared_at", "comparison_fingerprint"],
   "properties": {
-    "schema_version": {"type": "string", "const": "1.0"},
+    "schema_version": {"type": "string", "const": "1.1"},
     "version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
     "project_id": {"type": "string", "pattern": "^vp_[a-f0-9]{24}$"},
     "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},

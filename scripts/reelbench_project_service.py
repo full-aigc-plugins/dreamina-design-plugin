@@ -85,22 +85,10 @@ class ReelBenchProjectService:
         self._version(analysis_version)
         self._version(reelbench_version)
         with self._locked_project(project_id) as (_store_fd, project_fd, _root, guard):
-            # Use the store's descriptor-pinned reader for every receipt. The
-            # project descriptor below is retained only to verify the exact
-            # lineage artifacts named by the validated evidence.
-            analysis = self._store.read_version(
-                project_id, "analysis", analysis_version, "shot_analysis.schema.json",
-            )
-            validated = self._validated_evidence_locked(project_fd, project_id, reelbench_version)
-            evidence, source, reelbench = (
-                validated["evidence"], validated["source"], validated["reelbench"]
-            )
-            if analysis["project_id"] != project_id or evidence["project_id"] != project_id:
-                raise ValueError("comparison receipt project mismatch")
-            ReferenceVideoService.validate_analysis_fingerprint(analysis, source)
-            domains, mismatches = self._compare(analysis, evidence, reelbench)
+            validated = self._validate_comparison_locked(project_fd, project_id, analysis_version, reelbench_version)
+            analysis, evidence, domains, mismatches = (validated[key] for key in ("analysis", "evidence", "domains", "mismatches"))
             receipt = {
-                "schema_version": "1.0",
+                "schema_version": "1.1",
                 "version": self._next_version(project_fd, "reelbench_comparison"),
                 "project_id": project_id,
                 "source_sha256": analysis["source"]["source_sha256"],
@@ -130,6 +118,43 @@ class ReelBenchProjectService:
             validate_reelbench_comparison(persisted)
             guard()
             return persisted
+
+    def validate_comparison_against_inputs(self, project_id: str, analysis_version: str,
+                                          reelbench_version: str, comparison: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Reload and recompute every comparison input; optionally prove exact receipt equality."""
+        self._version(analysis_version)
+        self._version(reelbench_version)
+        with self._locked_project(project_id) as (_store_fd, project_fd, _root, guard):
+            result = self._validate_comparison_locked(project_fd, project_id, analysis_version, reelbench_version)
+            if comparison is not None:
+                expected = {
+                    "schema_version": "1.1", "project_id": project_id,
+                    "source_sha256": result["analysis"]["source"]["source_sha256"],
+                    "native_analysis_version": analysis_version,
+                    "native_analysis_fingerprint": result["analysis"]["machine_fingerprint"],
+                    "reelbench_evidence_version": reelbench_version,
+                    "reelbench_evidence_fingerprint": result["evidence"]["evidence_fingerprint"],
+                    "tolerances": dict(_COMPARISON_TOLERANCES), "domains": result["domains"],
+                    "mismatches": result["mismatches"], "overall": result["overall"],
+                }
+                if any(comparison.get(key) != value for key, value in expected.items()):
+                    raise ValueError("comparison receipt differs from recomputed immutable inputs")
+                if comparison.get("comparison_fingerprint") != canonical_fingerprint({k: v for k, v in comparison.items() if k != "comparison_fingerprint"}):
+                    raise ValueError("comparison fingerprint differs from canonical receipt")
+            guard()
+            return result
+
+    def _validate_comparison_locked(self, project_fd, project_id, analysis_version, reelbench_version):
+        analysis = self._store.read_version(project_id, "analysis", analysis_version, "shot_analysis.schema.json")
+        own_source = self._store.read_version(project_id, "source_receipt", analysis["source"]["version"], "source_receipt.schema.json")
+        ReferenceVideoService.validate_analysis_fingerprint(analysis, own_source)
+        validated = self._validated_evidence_locked(project_fd, project_id, reelbench_version)
+        evidence, reelbench = validated["evidence"], validated["reelbench"]
+        if analysis["project_id"] != project_id or evidence["project_id"] != project_id:
+            raise ValueError("comparison receipt project mismatch")
+        domains, mismatches = self._compare(analysis, evidence, reelbench)
+        overall = "manual_review" if any(domain["verdict"] == "manual_review" for domain in domains.values()) else "matched"
+        return {"analysis": analysis, "evidence": evidence, "domains": domains, "mismatches": mismatches, "overall": overall}
 
     def validate_evidence_lineage(self, project_id: str, reelbench_version: str) -> dict[str, Any]:
         """Public Task 3 verifier for one exact, validated ReelBench evidence lineage."""
@@ -273,7 +298,7 @@ class ReelBenchProjectService:
         domains = {
             name: {
                 "verdict": "manual_review" if reasons else "matched",
-                "reasons": cls._receipt_reasons(reasons),
+                "reasons": cls._domain_summary(reasons),
             }
             for name, reasons in domains.items()
         }
@@ -322,7 +347,7 @@ class ReelBenchProjectService:
         hz, values = track["hz"], track["values"]
         span = end - start
         if span <= 0:
-            return None, True
+            return None, False
         edge = min(0.4, max(0.1, span * 0.15))
         start_index = math.ceil((start + edge) * hz)
         end_index = math.floor((end - edge) * hz)
@@ -365,6 +390,14 @@ class ReelBenchProjectService:
         if len(grouped) > 32:
             raise ValueError("comparison mismatch set exceeds receipt bound")
         return grouped
+
+    @staticmethod
+    def _domain_summary(reasons):
+        if not reasons:
+            return []
+        codes = sorted({reason.split(":", 1)[0] for reason in reasons})
+        text = f"mismatch_count={len(reasons)}; codes=" + ",".join(codes)
+        return [text[:512]]
 
     @staticmethod
     def _next_version(project_fd, family):
@@ -743,42 +776,21 @@ class ReelBenchProjectService:
                 "reelbench_comparison.schema.json",
             )
             validate_reelbench_comparison(receipt)
-            analysis = self._store.read_version(
-                error.project_id, "analysis", receipt["native_analysis_version"],
-                "shot_analysis.schema.json",
-            )
-            evidence = self._store.read_version(
-                error.project_id, "reelbench_evidence", receipt["reelbench_evidence_version"],
-                "reelbench_evidence.schema.json",
-            )
-            if (
-                analysis["machine_fingerprint"] != receipt["native_analysis_fingerprint"]
-                or evidence["evidence_fingerprint"] != receipt["reelbench_evidence_fingerprint"]
-                or analysis["source"]["source_sha256"] != receipt["source_sha256"]
-            ):
-                raise ValueError("comparison recovery input fingerprint mismatch")
-            source = self._store.read_version(
-                error.project_id, "source_receipt", evidence["source_receipt_version"],
-                "source_receipt.schema.json",
-            )
-            ReferenceVideoService.validate_analysis_fingerprint(analysis, source)
-            self._lineage(project_fd, error.project_id, evidence["version"], source)
-            if evidence["action"] != "validate" or any(
-                gate["status"] == "FAIL" for gate in evidence["gates"]
-            ):
-                raise ValueError("comparison recovery evidence is no longer validated")
-            expected_domains, expected_mismatches = self._compare(
-                analysis, evidence, self._comparison_reelbench_documents(project_fd, evidence),
-            )
-            expected_overall = "manual_review" if any(
-                domain["verdict"] == "manual_review" for domain in expected_domains.values()
-            ) else "matched"
-            if (
-                receipt["tolerances"] != _COMPARISON_TOLERANCES
-                or receipt["domains"] != expected_domains
-                or receipt["mismatches"] != expected_mismatches
-                or receipt["overall"] != expected_overall
-            ):
+            self._validate_comparison_locked(project_fd, error.project_id,
+                                             receipt["native_analysis_version"], receipt["reelbench_evidence_version"])
+            # Reuse the public comparison contract's exact-field checks without
+            # reopening a second project lock.
+            expected = self._validate_comparison_locked(project_fd, error.project_id,
+                                                        receipt["native_analysis_version"], receipt["reelbench_evidence_version"])
+            fields = {"schema_version": "1.1", "project_id": error.project_id,
+                      "source_sha256": expected["analysis"]["source"]["source_sha256"],
+                      "native_analysis_version": receipt["native_analysis_version"],
+                      "native_analysis_fingerprint": expected["analysis"]["machine_fingerprint"],
+                      "reelbench_evidence_version": receipt["reelbench_evidence_version"],
+                      "reelbench_evidence_fingerprint": expected["evidence"]["evidence_fingerprint"],
+                      "tolerances": _COMPARISON_TOLERANCES, "domains": expected["domains"],
+                      "mismatches": expected["mismatches"], "overall": expected["overall"]}
+            if any(receipt.get(key) != value for key, value in fields.items()):
                 raise ValueError("comparison recovery does not match current immutable inputs")
             guard()
             return receipt
