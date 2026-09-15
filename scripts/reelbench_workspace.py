@@ -52,11 +52,11 @@ def check_quota(root, reserve=0, reserve_files=0, *, max_bytes=None):
     return total, count
 
 
-def check_action_quota(root, target=None, reserve=0, reserve_files=0):
+def check_action_quota(root, target=None, reserve=0, reserve_files=0, *, output_max_bytes=None, source_max_bytes=None):
     """Generated output and read-only inputs/tools have independent budgets."""
-    budgets = {'source': 2 * 1024**3, 'inputs': 2 * 1024**3,
+    budgets = {'source': 2 * 1024**3 if source_max_bytes is None else source_max_bytes, 'inputs': 2 * 1024**3,
                'tools': 3 * 256 * 1024**2, 'script': 3 * MAX_FILE_BYTES,
-               'output': MAX_TREE_BYTES}
+               'output': MAX_TREE_BYTES if output_max_bytes is None else output_max_bytes}
     selected = components(target)[0] if target is not None else None
     for name, budget in budgets.items():
         amount = reserve if selected == name else 0
@@ -86,6 +86,25 @@ def cleanup_failure(primary, failure):
     primary.__dict__.setdefault('cleanup_errors', []).append(failure)
     if callable(getattr(primary, 'add_note', None)):
         primary.add_note(f'cleanup failure: {type(failure).__name__}: {failure}')
+
+
+def check_sync_action_quota(root):
+    """Monitor sync's two video candidates and enforce each artifact's bound."""
+    check_action_quota(root, output_max_bytes=4608 * 1024**2, source_max_bytes=4 * 1024**3)
+    def visit(fd, depth):
+        if depth > 4: raise WorkspaceQuotaError('sync output depth exceeded')
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                info=entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode):
+                    with directory(fd,entry.name) as child: visit(child,depth+1)
+                elif stat.S_ISREG(info.st_mode):
+                    maximum=2 * 1024**3 if entry.name.endswith('.mp4') else 64 * 1024**2 if entry.name.endswith('.png') else MAX_FILE_BYTES
+                    if info.st_size > maximum: raise WorkspaceQuotaError('sync per-artifact byte quota exceeded')
+                else: raise WorkspaceQuotaError('unsafe sync output entry')
+    try:
+        with directory(root,'output') as fd: visit(fd,0)
+    except FileNotFoundError: pass
 
 
 def components(value):

@@ -1,35 +1,32 @@
-"""RED acceptance tests for guarded ReelBench synchronized review evidence."""
-from __future__ import annotations
-
+"""Exercise the project-only sync boundary with real trusted Node and ffprobe."""
 import unittest
-
+from scripts.reelbench_sync_service import ReelBenchSyncError, ReelBenchSyncBlockedError, FinalMediaVerificationError
+from tests.reelbench_sync_fixture import SyncFixture
 
 class ReelBenchSyncServiceTests(unittest.TestCase):
-    def setUp(self) -> None:
-        from scripts.reelbench_sync_service import ReelBenchSyncService
+    def setUp(self): self.f = SyncFixture(self)
 
-        self.service = ReelBenchSyncService()
-        self.landscape = {"width": 1920, "height": 1080, "duration_seconds": 8.0}
-        self.portrait = {"width": 1080, "height": 1920, "duration_seconds": 8.0}
+    def test_plan_is_real_upstream_geometry_and_leaves_no_version(self):
+        result = self.f.service.plan(*self.f.args)
+        self.assertEqual(result['video'], {'width':640,'height':360})
+        self.assertEqual(result['panel'], {'width':640,'height':288})
+        self.assertEqual(result['output'], {'width':640,'height':648})
+        self.assertEqual(result['fps'], 30)
+        self.assertIsNone(self.f.service.status(self.f.args[0])['latest_version'])
+        self.assertEqual(list(self.f.project.store.project_root(self.f.args[0]).glob('.reelbench-sync-*')), [])
 
-    def test_portrait_and_landscape_layouts_preserve_source_aspect(self) -> None:
-        landscape = self.service.plan(self.landscape)
-        portrait = self.service.plan(self.portrait)
+    def test_missing_browser_is_typed_and_no_workspace_is_created(self):
+        with self.assertRaises(ReelBenchSyncBlockedError): self.f.service.panels(*self.f.args)
+        self.assertIsNone(self.f.service.status(self.f.args[0])['latest_version'])
 
-        self.assertEqual(landscape["layout"], "vertical-stack")
-        self.assertEqual(portrait["layout"], "horizontal-stack")
-        # H.264 requires even edges; the only allowable aspect deviation is the
-        # resulting one-pixel rounding at the scaled source edge.
-        self.assertLessEqual(abs(landscape["video"]["width"] * self.landscape["height"] -
-                                 landscape["video"]["height"] * self.landscape["width"]),
-                             2 * max(self.landscape["width"], self.landscape["height"]))
-        self.assertLessEqual(abs(portrait["video"]["width"] * self.portrait["height"] -
-                                 portrait["video"]["height"] * self.portrait["width"]),
-                             2 * max(self.portrait["width"], self.portrait["height"]))
+    def test_source_corruption_is_rejected_before_plan(self):
+        self.f.project.source.chmod(0o600)
+        self.f.project.source.write_bytes(b'foreign')
+        with self.assertRaises(ValueError): self.f.service.plan(*self.f.args)
 
-    def test_review_role_is_rejected_by_final_media_guard(self) -> None:
-        from scripts.reelbench_sync_service import FinalMediaVerificationError
+    def test_review_role_is_rejected(self):
+        with self.assertRaises(FinalMediaVerificationError): self.f.service.accept_generated_shot({'artifact_role':'synchronized_review'})
 
-        receipt = {"artifact_role": "synchronized_review"}
-        with self.assertRaises(FinalMediaVerificationError):
-            self.service.accept_generated_shot(receipt)
+    def test_preserve_requires_approved_policy(self):
+        with self.assertRaisesRegex(ReelBenchSyncError, 'approved'):
+            self.f.service.export(*self.f.args, audio_policy='preserve_source_audio')

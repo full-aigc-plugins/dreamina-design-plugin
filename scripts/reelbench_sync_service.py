@@ -1,336 +1,552 @@
-"""Guarded execution and evidence validation for ReelBench review videos.
-
-This service intentionally models a ReelBench sync MP4 as review evidence.  It
-does not share a receipt type, artifact role, or acceptance path with generated
-shots or final compositions.
-"""
+"""Project-owned synchronized review execution, publication and verification."""
 from __future__ import annotations
-
-import hashlib
 import json
 import math
 import os
 import re
+import secrets
 import stat
+import sys
+from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Callable, Mapping
-
-from scripts.json_contracts import canonical_fingerprint
-from scripts.reelbench_adapter import ReelBenchAdapter, ReelBenchAdapterError
+from scripts import reelbench_workspace as ws
+from scripts.json_contracts import canonical_fingerprint, validate_contract, parse_rfc3339
+from scripts.reelbench_adapter import PINNED_SYNC_SCRIPTS
 from scripts.reelbench_contracts import validate_reelbench_evidence
+from scripts.reelbench_project_service import ReelBenchProjectService, _now
+from scripts.reelbench_sync_operation import SyncOperationJournal
 from scripts.trusted_media_tools import TrustedMediaToolError
-from scripts.video_project_store import VersionCommitIndeterminateError, VideoProjectStore
+from scripts.video_project_store import VersionCommitIndeterminateError
 
+MAX_VIDEO_BYTES = 2 * 1024**3
+MAX_PANEL_BYTES = 64 * 1024**2
+MAX_OUTPUT_BYTES = MAX_VIDEO_BYTES + 3 * MAX_PANEL_BYTES + 16 * 1024**2
+PANELS = {'static.png', 'list-dim.png', 'list-lit.png'}
 
-MAX_DURATION_SECONDS = 1800.0
-MAX_PANEL_BYTES = 64 * 1024 * 1024
-MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024
-_VERSION = re.compile(r"v[0-9]{3,}$")
-_PANEL_IMAGES = frozenset({"static.png", "list-dim.png", "list-lit.png"})
-
-
-class ReelBenchSyncError(RuntimeError):
-    """Sync input, upstream output, or receipt evidence is invalid."""
-
+class ReelBenchSyncError(ValueError):
+    """Invalid project evidence or failed measured review gate."""
 
 class ReelBenchSyncBlockedError(ReelBenchSyncError):
-    """A local prerequisite is absent; this is never represented as PASS."""
-
-    code = "BLOCKED_MISSING_TRUSTED_BROWSER"
-
-    def __init__(self, message: str = "BLOCKED_MISSING_TRUSTED_BROWSER") -> None:
-        super().__init__(message)
-
+    code = 'BLOCKED_MISSING_TRUSTED_BROWSER'
 
 class FinalMediaVerificationError(ReelBenchSyncError):
-    """A review receipt was offered to a generated/final-media boundary."""
+    """Review media cannot be accepted as generated/final media."""
 
-
-class ReelBenchSyncService:
-    """Own the constrained review-only sync lifecycle.
-
-    The service accepts only a staged descriptor supplied by a project service.
-    User-provided roots and output paths are deliberately not part of its API.
-    """
-
-    def __init__(self, *, adapter: ReelBenchAdapter | None = None,
-                 trusted_tools: Any | None = None, store: VideoProjectStore | None = None,
-                 media_probe: Callable[[Path], Mapping[str, Any]] | None = None) -> None:
-        self._adapter = adapter
+class ReelBenchSyncService(ReelBenchProjectService):
+    """Resolve all consumed bytes from exact Task 3 lineage under the project lock."""
+    def __init__(self, *, store, adapter, trusted_tools=None):
+        super().__init__(store, adapter)
         self._trusted_tools = trusted_tools
-        self._store = store
-        self._media_probe = media_probe
 
-    def plan(self, source: Mapping[str, Any]) -> dict[str, Any]:
-        """Calculate the fixed upstream geometry without creating media."""
-        width, height, duration, _ = self._source(source)
-        portrait = height > width
-        if portrait:
-            video_height = self._even(min(height, 1080))
-            video_width = self._even(width / height * video_height)
-            panel = {"width": self._even(max(360, video_width * 1.6)), "height": video_height}
-            output = {"width": video_width + panel["width"], "height": video_height}
-            layout = "horizontal-stack"
-        else:
-            video_width = self._even(min(width, 1920))
-            video_height = self._even(height / width * video_width)
-            panel = {"width": video_width, "height": self._even(max(360, video_height * .8))}
-            output = {"width": video_width, "height": video_height + panel["height"]}
-            layout = "vertical-stack"
-        return {"layout": layout, "video": {"width": video_width, "height": video_height},
-                "panel": panel, "output": output, "duration_seconds": duration,
-                "fps": 25, "portrait": portrait}
+    def plan(self, project_id: str, reelbench_evidence_version: str):
+        return self.run(project_id, action='plan', reelbench_evidence_version=reelbench_evidence_version)
 
-    def panels(self, inputs: Mapping[str, Any]) -> dict[str, Any]:
-        """Render panels via the pinned script, then prove there are exactly three PNG panels."""
-        source, shots, workspace_fd, panels = self._inputs(inputs, need_output=False)
-        expected = self.plan(source)
-        try:
-            with self._browser_lease() as lease, self._adapter.execution_workspace(workspace_fd, workflow="sync", browser_lease=lease):
-                browser = {"kind": "browser", **lease.context.executable.to_record(), "verified_at": lease.context.verified_at}
-                result = self._adapter.sync_panels(shots=Path("/dev/fd") / str(workspace_fd) / "inputs/shots.json",
-                    source=Path("/dev/fd") / str(workspace_fd) / "source/source.mp4",
-                    panels_dir=Path("/dev/fd") / str(workspace_fd) / panels, browser="tools/browser-proxy")
-        except (ReelBenchAdapterError, OSError) as exc:
-            raise ReelBenchSyncError("guarded panel rendering failed") from exc
-        layout = self._read_json(self._workspace_path(workspace_fd, panels / "layout.json"), maximum=MAX_PANEL_BYTES)
-        self._validate_layout(layout, expected, shots)
-        panel_records = self._validate_panels(self._workspace_path(workspace_fd, panels))
-        return {"layout": expected, "layout_receipt": layout, "panels": panel_records,
-                "browser": browser, "argv": result.argv, "argv_fingerprint": canonical_fingerprint(result.argv)}
+    def panels(self, project_id: str, reelbench_evidence_version: str):
+        return self.run(project_id, action='panels', reelbench_evidence_version=reelbench_evidence_version)
 
-    def export(self, inputs: Mapping[str, Any]) -> dict[str, Any]:
-        """Create and verify a review-only MP4, optionally persisting one immutable receipt."""
-        source, shots, workspace_fd, panels = self._inputs(inputs, need_output=True)
-        expected = self.plan(source)
-        policy = self._audio_policy(inputs, source)
-        output = Path("output/synchronized-review.mp4")
-        try:
-            with self._browser_lease() as lease, self._adapter.execution_workspace(workspace_fd, workflow="sync", browser_lease=lease):
-                browser = {"kind": "browser", **lease.context.executable.to_record(), "verified_at": lease.context.verified_at}
-                result = self._adapter.sync_export(shots=Path("/dev/fd") / str(workspace_fd) / "inputs/shots.json",
-                    source=Path("/dev/fd") / str(workspace_fd) / "source/source.mp4",
-                    panels_dir=Path("/dev/fd") / str(workspace_fd) / panels,
-                    output=Path("/dev/fd") / str(workspace_fd) / output,
-                    browser="tools/browser-proxy")
-        except (ReelBenchAdapterError, OSError) as exc:
-            raise ReelBenchSyncError("guarded review export failed") from exc
-        receipt = self.verify({**inputs, "output": output.as_posix(), "layout": expected,
-                               "browser": browser, "argv": result.argv, "audio_policy": policy})
-        return self._persist(inputs, receipt)
+    def export(self, project_id: str, reelbench_evidence_version: str, *, audio_policy: str):
+        return self.run(project_id, action='export', reelbench_evidence_version=reelbench_evidence_version, audio_policy=audio_policy)
 
-    def verify(self, inputs: Mapping[str, Any]) -> dict[str, Any]:
-        """Measure review bytes and retain distinct layout, media, and alignment gates."""
-        source, shots, workspace_fd, panels = self._inputs(inputs, need_output=True)
-        layout = inputs.get("layout") if isinstance(inputs.get("layout"), Mapping) else self.plan(source)
-        layout_receipt = inputs.get("layout_receipt")
-        if not isinstance(layout_receipt, Mapping):
-            layout_receipt = self._read_json(self._workspace_path(workspace_fd, panels / "layout.json"), maximum=MAX_PANEL_BYTES)
-        self._validate_layout(layout_receipt, layout, shots)
-        panel_records = self._validate_panels(self._workspace_path(workspace_fd, panels))
-        output = self._workspace_path(workspace_fd, Path(str(inputs["output"])))
-        media = self._probe(output, inputs.get("media_probe"))
-        policy = self._audio_policy(inputs, source)
-        gates = self._media_gates(media, layout, source, policy)
-        alignment = self._alignment(shots, source["duration_seconds"])
-        receipt = {
-            "schema_version": "1.1", "project_id": inputs.get("project_id"),
-            "artifact_role": "synchronized_review", "source_sha256": source.get("source_sha256"),
-            "reelbench_evidence_version": inputs.get("reelbench_evidence_version"),
-            "shots_sha256": self._shots_digest(shots), "layout": layout,
-            "panels": panel_records, "output": self._artifact(output, "video/mp4"),
-            "audio_policy": policy, "gates": gates, "sampled_alignment": alignment,
-            "browser": dict(inputs.get("browser", {})), "argv_fingerprint": canonical_fingerprint(inputs.get("argv", [])),
-        }
-        if any(not gate["passed"] for gate in gates.values()):
-            raise ReelBenchSyncError("synchronized review verification failed")
-        receipt["evidence_fingerprint"] = canonical_fingerprint(receipt)
-        return receipt
+    def verify(self, project_id: str, reelbench_evidence_version: str, *, sync_version: str):
+        return self.run(project_id, action='verify', reelbench_evidence_version=reelbench_evidence_version, sync_version=sync_version)
 
-    def accept_generated_shot(self, receipt: Mapping[str, Any]) -> None:
-        """Explicitly reject review evidence at the generated/final media boundary."""
-        raise FinalMediaVerificationError("synchronized_review is review evidence, never a generated or final artifact")
+    def status(self, project_id: str):
+        with self._locked_project(project_id) as (_, fd, _, guard):
+            latest = self._latest(fd)
+            guard()
+            return {'project_id': project_id, 'latest_version': latest}
 
-    def reconcile_indeterminate(self, error: VersionCommitIndeterminateError) -> dict[str, Any]:
-        """Reconcile only the exact immutable sync receipt after a durability fault."""
-        if self._store is None or error.family != "reelbench_sync":
-            raise ValueError("indeterminate error is not a ReelBench sync receipt")
-        receipt = self._store.reconcile_version(error.project_id, error.family, error.version,
-            error.payload_fingerprint)
-        if receipt.get("artifact_role") != "synchronized_review" or canonical_fingerprint(
-            {key: value for key, value in receipt.items() if key != "evidence_fingerprint"}
-        ) != receipt.get("evidence_fingerprint"):
-            raise ValueError("indeterminate sync receipt differs from its exact evidence")
-        return receipt
-
-    def _persist(self, inputs: Mapping[str, Any], receipt: dict[str, Any]) -> dict[str, Any]:
-        project_id = inputs.get("project_id")
-        if self._store is None or not isinstance(project_id, str):
-            return receipt
-        # Version allocation and publication share the store's project lock;
-        # concurrent callers cannot select the same immutable evidence version.
-        with self._store._exclusive_lock(project_id):
-            root = self._store.project_root(project_id) / "reelbench_sync"
-            versions = [int(path.stem[1:]) for path in root.glob("v*.json") if _VERSION.fullmatch(path.stem)] if root.exists() else []
-            version = f"v{max(versions, default=0) + 1:03d}"
-            payload = {**receipt, "version": version}
-            payload["evidence_fingerprint"] = canonical_fingerprint({key: value for key, value in payload.items() if key != "evidence_fingerprint"})
-            return self._store.write_version(project_id, "reelbench_sync", payload, version=version)
-
-    def _inputs(self, inputs: Mapping[str, Any], *, need_output: bool):
-        if not isinstance(inputs, Mapping) or self._adapter is None:
-            raise ReelBenchSyncError("sync execution requires a guarded adapter and closed input mapping")
-        source = inputs.get("source")
-        shots = inputs.get("shots")
-        evidence = inputs.get("reelbench_evidence")
-        descriptor = inputs.get("workspace_fd")
-        panels = Path(str(inputs.get("panels", "output/panels")))
-        self._source(source)
-        self._validate_shots(shots, source)
-        if not isinstance(evidence, Mapping):
-            raise ReelBenchSyncError("exact validated ReelBench evidence is required")
-        try:
+    def run(self, project_id: str, *, action: str, reelbench_evidence_version: str,
+            audio_policy: str | None = None, sync_version: str | None = None):
+        if action not in {'plan', 'panels', 'export', 'verify'}:
+            raise ReelBenchSyncError('unknown sync action')
+        self._version(reelbench_evidence_version)
+        if action == 'verify': self._version(sync_version)
+        elif sync_version is not None: raise ReelBenchSyncError('sync_version is only valid for verify')
+        if action != 'export' and audio_policy is not None:
+            raise ReelBenchSyncError('audio policy is only valid for export')
+        with self._locked_project(project_id) as (store_fd, fd, root, guard):
+            journal = SyncOperationJournal(store_fd, fd, project_id, root)
+            journal.recover(self, guard)
+            evidence = self._read_version(fd, 'reelbench_evidence', reelbench_evidence_version)
             validate_reelbench_evidence(evidence)
-        except Exception as exc:
-            raise ReelBenchSyncError("ReelBench evidence receipt is invalid") from exc
-        if evidence.get("action") != "validate" or any(gate.get("status") == "FAIL" for gate in evidence.get("gates", ())):
-            raise ReelBenchSyncError("sync requires an exact validated ReelBench evidence version")
-        if evidence.get("source_sha256") != source.get("source_sha256") or evidence.get("source_receipt_version") != source.get("version"):
-            raise ReelBenchSyncError("sync evidence source digest or receipt version differs")
-        if inputs.get("reelbench_evidence_version") != evidence.get("version"):
-            raise ReelBenchSyncError("sync evidence version is not exact")
-        if not isinstance(descriptor, int) or descriptor < 0:
-            raise ReelBenchSyncError("sync execution requires an owned workspace descriptor")
-        if panels.is_absolute() or ".." in panels.parts:
-            raise ReelBenchSyncError("panel path must be workspace-relative")
-        if need_output and not isinstance(inputs.get("output", "output/synchronized-review.mp4"), str):
-            raise ReelBenchSyncError("output descriptor must be workspace-relative")
-        return dict(source), dict(shots), descriptor, panels
+            source = self._read_version(fd, 'source_receipt', evidence['source_receipt_version'])
+            validate_contract(source, 'source_receipt.schema.json')
+            ReelBenchProjectService._lineage(self, fd, project_id, reelbench_evidence_version, source)
+            if evidence['action'] != 'validate' or any(g['status'] == 'FAIL' for g in evidence['gates']):
+                raise ReelBenchSyncError('sync requires exact validated ReelBench evidence')
+            shots = self._comparison_reelbench_documents(fd, evidence)['shots']
+            if self._timeline_mismatches(shots['shots'], source['duration_seconds'], 'source'):
+                raise ReelBenchSyncError('shots do not cover source continuously')
+            if abs(shots['meta']['durationSeconds'] - source['duration_seconds']) > .001:
+                raise ReelBenchSyncError('shots/source duration differs')
+            if not 0 < source['duration_seconds'] <= 1800 or source['size_bytes'] > MAX_VIDEO_BYTES:
+                raise ReelBenchSyncError('source exceeds preventive bounds')
+            previous = None
+            if action == 'verify':
+                previous = self._read_sync(fd, project_id, sync_version)
+                if previous['reelbench_evidence_version'] != reelbench_evidence_version or previous['action'] != 'export':
+                    raise ReelBenchSyncError('verify requires exact exported evidence binding')
+                audio_policy = previous['audio_policy']
+            if action in {'export', 'verify'}: self._policy(fd, source, audio_policy)
+            lease = self._browser_lease() if action in {'panels', 'export'} else nullcontext(None)
+            result = None
+            try:
+                with lease as browser:
+                    result = self._execute_sync(fd, root, project_id, action, source, evidence,
+                        shots, audio_policy, previous, browser, guard, journal)
+                    guard()
+                return result
+            except BaseException as exc:
+                if result is not None and action in {'panels', 'export'}:
+                    raise self._indeterminate(root, result) from exc
+                raise
+
+    def _execute_sync(self, fd, root, project_id, action, source, evidence, shots, policy, previous, browser, guard, journal):
+        latest = self._latest(fd)
+        parent = self._read_sync(fd, project_id, latest) if latest else None
+        version = self._next_version(fd, 'reelbench_sync')
+        name = '.reelbench-sync-work-' + secrets.token_hex(12)
+        os.mkdir(name, 0o700, dir_fd=fd)
+        work = output_fd = None
+        marker_created = published = False
+        receipt = None
+        try:
+            work = os.open(name, ws.DIRECTORY, dir_fd=fd)
+            marker = journal.create(work, name, action=action, version=version, parent=latest,
+                parent_fingerprint=parent['evidence_fingerprint'] if parent else None, source=source)
+            marker_created = True
+            os.fsync(fd)
+            consumed = self._materialize(fd, work, root, source, evidence)
+            original = consumed[0]['workspace_path']
+            ws.mkdir(work, 'output')
+            commands = []
+            with self._adapter.execution_workspace(work, consumed, workflow='sync', browser_lease=browser):
+                base = Path('/dev/fd') / str(work)
+                measured_source = self._probe(original, commands)
+                measured_duration = float(measured_source['format']['duration'])
+                if not math.isfinite(measured_duration) or abs(measured_duration-source['duration_seconds']) > .25:
+                    raise ReelBenchSyncError('measured source duration differs')
+                self._adapter.set_sync_duration(measured_duration)
+                planned = self._adapter.sync_plan(shots=base / 'inputs/shots.json', source=base / original)
+                commands.append(planned)
+                plan = self._json(planned.stdout.encode())
+                self._validate_plan(plan, source)
+                if action == 'plan': return plan
+                ws.write(work, 'output/plan.json', json.dumps(plan, sort_keys=True).encode())
+                video = original
+                if action == 'export' and policy == 'silent':
+                    video = 'source/silent.mp4'
+                    commands.append(self._adapter.sync_media('ffmpeg', ['-v', 'error', '-n', '-i', original,
+                        '-map', '0:v:0', '-c:v', 'copy', '-an', '-movflags', '+faststart', video]))
+                    if self._audio(self._probe(video, commands)):
+                        raise ReelBenchSyncError('silent derivative contains audio')
+                if action == 'panels':
+                    commands.append(self._adapter.sync_panels(shots=base / 'inputs/shots.json', source=base / video,
+                        panels_dir=base / 'output/panels', browser='tools/browser-proxy'))
+                elif action == 'export':
+                    upstream_output = 'output/upstream.mp4' if policy == 'preserve_source_audio' else 'output/review.mp4'
+                    commands.append(self._adapter.sync_export(shots=base / 'inputs/shots.json', source=base / video,
+                        panels_dir=base / 'output/panels', output=base / upstream_output, browser='tools/browser-proxy'))
+                    if policy == 'preserve_source_audio':
+                        commands.append(self._adapter.sync_media('ffmpeg', ['-v', 'error', '-n', '-i', upstream_output,
+                            '-i', original, '-map', '0:v:0', '-map', '1:a', '-c:v', 'copy', '-c:a', 'copy',
+                            '-movflags', '+faststart', 'output/review.mp4']))
+                else:
+                    for artifact in previous['artifacts']:
+                        relative = artifact['path'].split('/', 2)[2]
+                        if relative != 'plan.json':
+                            ws.copy(fd, artifact['path'], work, 'output/' + relative,
+                                maximum=MAX_VIDEO_BYTES, expected=artifact, mode=0o400)
+                layout = self._json(ws.read(work, 'output/panels/layout.json'))
+                self._validate_layout(layout, plan, shots)
+                self._validate_panel_images(work, plan, layout, commands)
+                gates, alignment = ({}, [])
+                if action in {'export', 'verify'}:
+                    gates, alignment = self._verify_media(work, original, plan, layout, shots, source, policy, commands)
+                for item in consumed:
+                    for directory, path in ((work, item['workspace_path']), (fd, item['path'])):
+                        if self._digest(directory, path, MAX_VIDEO_BYTES) != {k: item[k] for k in ('sha256', 'size_bytes')}:
+                            raise ReelBenchSyncError('consumed artifact changed')
+                guard()
+                if action == 'verify':
+                    self._read_sync(fd, project_id, previous['version'])
+                    return {'version': previous['version'], 'artifact_role': 'synchronized_review',
+                        'evidence_fingerprint': previous['evidence_fingerprint'], 'gates': gates, 'sampled_alignment': alignment}
+                selected = ['plan.json', 'panels/layout.json', *('panels/' + n for n in sorted(PANELS))]
+                if action == 'export': selected.append('review.mp4')
+                inventory = ws.inventory(work, 'output', max_bytes=4608 * 1024**2, file_maximum=MAX_VIDEO_BYTES)
+                ws.mkdir(fd, 'reelbench_sync_media')
+                with ws.directory(fd, 'reelbench_sync_media') as family:
+                    os.mkdir(version, 0o700, dir_fd=family)
+                    output_fd = os.open(version, ws.DIRECTORY, dir_fd=family)
+                    journal.bind_output(work, marker, output_fd)
+                    os.fsync(family)
+                artifacts = []
+                for relative in selected:
+                    guard()
+                    expected = inventory[relative]
+                    ws.copy(work, 'output/' + relative, output_fd, relative, maximum=MAX_VIDEO_BYTES, expected=expected)
+                    mime = 'video/mp4' if relative.endswith('.mp4') else 'image/png' if relative.endswith('.png') else 'application/json'
+                    artifacts.append({'path': f'reelbench_sync_media/{version}/{relative}', 'mime_type': mime, **expected})
+                os.fsync(output_fd)
+                with ws.directory(fd, 'reelbench_sync_media/' + version) as check:
+                    if self._directory_identity(os.fstat(check)) != self._directory_identity(os.fstat(output_fd)):
+                        raise ReelBenchSyncError('published media directory changed')
+                composition_argv = self._json(ws.read(work, 'output/compose-argv.json')) if action == 'export' else None
+                if composition_argv is not None:
+                    composition_argv['argv_fingerprint']=canonical_fingerprint(composition_argv)
+                command_records = [{'action': c.action, 'argv': c.argv, 'returncode': c.returncode,
+                    'expanded_process':composition_argv if c.action == 'export' else None,
+                    'tool_identities': list(c.tool_identities), 'script_manifest': list(c.script_manifest)} for c in commands]
+                receipt = {'schema_version': '1.2', 'project_id': project_id, 'version': version,
+                    'parent_version': latest, 'parent_fingerprint': parent['evidence_fingerprint'] if parent else None,
+                    'action': action, 'artifact_role': 'synchronized_review', 'source_receipt_version': source['version'],
+                    'source_sha256': source['source_sha256'], 'reelbench_evidence_version': evidence['version'],
+                    'reelbench_evidence_fingerprint': evidence['evidence_fingerprint'], 'shots_sha256': evidence['shots']['sha256'],
+                    'audio_policy': policy, 'plan': plan, 'layout': layout, 'artifacts': artifacts,
+                    'consumed_artifacts': consumed, 'commands': command_records,
+                    'composition_argv': composition_argv,
+                    'argv_fingerprint': canonical_fingerprint({'commands': command_records}),
+                    'browser': None if browser is None else {'identity': browser.context.executable.to_record(), 'verified_at': browser.context.verified_at},
+                    'gates': gates, 'sampled_alignment': alignment, 'created_at': _now()}
+                receipt['evidence_fingerprint'] = canonical_fingerprint(receipt)
+                self._validate_receipt(fd, receipt)
+                journal.bind_receipt(work, marker, receipt)
+                guard()
+                try:
+                    result = self._store.write_version(project_id, 'reelbench_sync', receipt, version=version,
+                        project_fd=fd, publication_guard=guard)
+                except BaseException as exc:
+                    try:
+                        with ws.file_at(fd, f'reelbench_sync/{version}.json'): published = True
+                    except FileNotFoundError: published = isinstance(exc, VersionCommitIndeterminateError)
+                    except BaseException: published = True
+                    if published: raise self._indeterminate(root, receipt) from exc
+                    raise
+                published = True
+                self._read_sync(fd, project_id, version)
+                guard()
+                return result
+        except BaseException as exc:
+            if published and receipt is not None: raise self._indeterminate(root, receipt) from exc
+            raise
+        finally:
+            primary = sys.exc_info()[1]
+            cleanup_error = None
+            try:
+                if work is None: os.rmdir(name, dir_fd=fd)
+                elif marker_created: journal.cleanup(work, name, published=published, guard=guard)
+                else: ws.remove_tree(fd, name)
+            except BaseException as exc: cleanup_error = exc
+            finally:
+                for descriptor in (output_fd, work):
+                    if descriptor is not None:
+                        try: ws._close_owned([descriptor])
+                        except BaseException as exc:
+                            if cleanup_error is None: cleanup_error = exc
+            if cleanup_error is not None:
+                if primary is not None: ws.cleanup_failure(primary, cleanup_error)
+                elif published: raise self._indeterminate(root, receipt) from cleanup_error
+                else: raise cleanup_error
+
+    def _materialize(self, fd, work, root, source, evidence):
+        relative = Path(source['staged_path']).relative_to(root).as_posix()
+        if not relative.startswith('source/'): raise ReelBenchSyncError('source path escaped project')
+        records = [{'version': source['version'], 'receipt_fingerprint': canonical_fingerprint(source),
+            'path': relative, 'workspace_path': 'source/original.mp4', 'sha256': source['source_sha256'], 'size_bytes': source['size_bytes']}]
+        records.extend(dict(item) for item in evidence['consumed_artifacts'] if item['workspace_path'].startswith('inputs/'))
+        for item in records:
+            with ws.file_at(fd, item['path']) as opened:
+                info = os.fstat(opened)
+                if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+                    raise ReelBenchSyncError('consumed input is not private')
+            ws.copy(fd, item['path'], work, item['workspace_path'], maximum=MAX_VIDEO_BYTES,
+                expected=item, mode=0o400, quota=True)
+        return records
+
+    @staticmethod
+    def _policy(fd, source, policy):
+        if policy not in {'silent', 'preserve_source_audio'}: raise ReelBenchSyncError('explicit review audio policy is required')
+        project = ReelBenchProjectService._json(ws.read(fd, 'project.json'))
+        validate_contract(project, 'video_project.schema.json')
+        if policy == 'preserve_source_audio' and (project['audio_policy'] != 'preserve_authorized_audio' or not source['audio_streams']):
+            raise ReelBenchSyncError('source audio has no approved preservation policy')
 
     def _browser_lease(self):
-        if self._trusted_tools is None:
-            raise ReelBenchSyncBlockedError()
         try:
+            if self._trusted_tools is None: raise TrustedMediaToolError('browser not enrolled')
             return self._trusted_tools.reverify_browser_for_sync_lease()
         except (TrustedMediaToolError, AttributeError, OSError) as exc:
-            raise ReelBenchSyncBlockedError() from exc
+            raise ReelBenchSyncBlockedError('BLOCKED_MISSING_TRUSTED_BROWSER') from exc
 
     @staticmethod
-    def _source(source: Mapping[str, Any]):
-        if not isinstance(source, Mapping):
-            raise ReelBenchSyncError("exact source receipt is required")
+    def _validate_plan(plan, source):
+        if not isinstance(plan, dict) or set(plan) != {'source', 'portrait', 'stack', 'video', 'panel', 'output', 'fps', 'crf'}:
+            raise ReelBenchSyncError('upstream plan fields differ')
+        for key in ('source', 'video', 'panel', 'output'):
+            if not isinstance(plan[key], dict) or set(plan[key]) != {'width', 'height'} or any(type(x) is not int or not 2 <= x <= 7680 for x in plan[key].values()):
+                raise ReelBenchSyncError('invalid upstream geometry')
+        if plan['source'] != {'width': source['width'], 'height': source['height']}:
+            raise ReelBenchSyncError('planned source geometry differs from source receipt')
+        portrait = source['height'] > source['width']
+        if type(plan['portrait']) is not bool or plan['portrait'] != portrait or plan['stack'] != ('hstack' if portrait else 'vstack'):
+            raise ReelBenchSyncError('invalid upstream stack')
+        video, panel, output = (plan[k] for k in ('video', 'panel', 'output'))
+        if any(v % 2 for box in (video, panel, output) for v in box.values()): raise ReelBenchSyncError('odd output geometry')
+        if abs(video['width'] * source['height'] - video['height'] * source['width']) > 2 * max(source['width'], source['height']):
+            raise ReelBenchSyncError('source aspect changed')
+        if output != ({'width': video['width'] + panel['width'], 'height': video['height']} if portrait else {'width': video['width'], 'height': video['height'] + panel['height']}):
+            raise ReelBenchSyncError('output stack geometry inconsistent')
+        if (panel['height'] != video['height'] if portrait else panel['width'] != video['width']): raise ReelBenchSyncError('panel stack edge inconsistent')
+        if type(plan['fps']) not in (int, float) or not 1 <= plan['fps'] <= 60 or type(plan['crf']) not in (int, float) or not 0 <= plan['crf'] <= 51:
+            raise ReelBenchSyncError('invalid upstream encoding parameters')
+
+    @staticmethod
+    def _validate_layout(layout, plan, shots):
+        if not isinstance(layout, dict) or set(layout) != {'panel', 'view', 'content', 'rows', 'tallHeight'} or layout['panel'] != plan['panel']:
+            raise ReelBenchSyncError('layout fields or panel differ')
+        view = layout['view']
+        if not isinstance(view, dict) or set(view) != {'x', 'y', 'width', 'height'} or any(type(v) is not int for v in view.values()):
+            raise ReelBenchSyncError('invalid view geometry')
+        if view['x'] < 0 or view['y'] < 0 or view['width'] < 2 or view['height'] < 2 or view['x'] + view['width'] > plan['panel']['width'] or view['y'] + view['height'] > plan['panel']['height']:
+            raise ReelBenchSyncError('view escapes panel')
+        if type(layout['content']) is not int or not 1 <= layout['content'] <= 16000 or type(layout['tallHeight']) is not int or layout['tallHeight'] != max(plan['panel']['height'], layout['content']):
+            raise ReelBenchSyncError('invalid list height')
+        rows = layout['rows']
+        if not isinstance(rows, list) or len(rows) != len(shots['shots']): raise ReelBenchSyncError('row count differs')
+        previous = 0
+        for row, shot in zip(rows, shots['shots']):
+            if not isinstance(row, dict) or set(row) != {'id', 'top', 'height'} or row['id'] != shot['id'] or type(row['top']) is not int or type(row['height']) is not int:
+                raise ReelBenchSyncError('invalid layout row')
+            if row['top'] < previous or row['height'] < 2 or row['height'] > view['height'] or row['top'] + row['height'] > layout['content']:
+                raise ReelBenchSyncError('layout row escapes list or overlaps')
+            previous = row['top'] + row['height']
+
+    def _probe(self, path, commands):
+        result = self._adapter.sync_media('ffprobe', ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', path])
+        commands.append(result)
+        return self._json(result.stdout.encode())
+
+    @staticmethod
+    def _audio(probe): return [s for s in probe['streams'] if s['codec_type'] == 'audio']
+
+    def _validate_panel_images(self, work, plan, layout, commands):
+        inventory = ws.inventory(work, 'output/panels', max_bytes=3 * MAX_PANEL_BYTES + 8 * 1024**2, file_maximum=MAX_PANEL_BYTES)
+        if {n for n in inventory if n.endswith('.png')} != PANELS or set(inventory) - PANELS - {'layout.json', 'panel.html', 'motion.cmd'}:
+            raise ReelBenchSyncError('panel inventory differs')
+        for name in sorted(PANELS):
+            video = self._probe('output/panels/' + name, commands)['streams']
+            height = plan['panel']['height'] if name == 'static.png' else layout['tallHeight']
+            if len(video) != 1 or video[0].get('codec_name') != 'png' or (video[0].get('width'), video[0].get('height')) != (plan['panel']['width'], height):
+                raise ReelBenchSyncError('panel pixels differ from measured layout')
+
+    def _verify_media(self, work, original, plan, layout, shots, source, policy, commands):
+        media = self._probe('output/review.mp4', commands)
+        videos = [s for s in media['streams'] if s['codec_type'] == 'video']
+        if len(videos) != 1: raise ReelBenchSyncError('review must have one video stream')
+        video = videos[0]
+        duration = float(media['format']['duration'])
+        gates = {'duration': {'passed': math.isfinite(duration) and abs(duration - source['duration_seconds']) <= .25, 'measured': duration},
+            'dimensions': {'passed': (video.get('width'), video.get('height')) == (plan['output']['width'], plan['output']['height']), 'measured': [video.get('width'), video.get('height')]},
+            'codec': {'passed': video.get('codec_name') == 'h264' and video.get('pix_fmt') == 'yuv420p', 'measured': video.get('codec_name')}}
+        if policy == 'silent':
+            gates['audio_policy'] = {'passed': not self._audio(media), 'measured': len(self._audio(media))}
+        else:
+            original_probe = self._probe(original, commands)
+            fields = ('codec_name', 'channels', 'sample_rate', 'channel_layout', 'profile')
+            source_streams = [{k: a.get(k) for k in fields} for a in self._audio(original_probe)]
+            output_streams = [{k: a.get(k) for k in fields} for a in self._audio(media)]
+            source_packets, output_packets = self._packet_hashes(original, commands), self._packet_hashes('output/review.mp4', commands)
+            gates['audio_policy'] = {'passed': bool(source_packets) and source_packets == output_packets and source_streams == output_streams,
+                'measured': {'source_packets': canonical_fingerprint({'packets':source_packets}), 'output_packets': canonical_fingerprint({'packets':output_packets}), 'streams': output_streams}}
+        if any(not g['passed'] for g in gates.values()): raise ReelBenchSyncError('review media gate failed: ' + json.dumps(gates))
+        alignment = self._sample_alignment(work, original, plan, layout, shots, commands)
+        gates['cut_alignment'] = {'passed': all(c['error'] <= 18 for s in alignment for c in s['cut_samples']), 'measured': sum(len(s['cut_samples']) for s in alignment)}
+        gates['sampled_correspondence'] = {'passed': all(s['highlight_error'] <= 22 and s['highlight_margin'] >= 1 for s in alignment), 'measured': len(alignment)}
+        if any(not g['passed'] for g in gates.values()): raise ReelBenchSyncError('sampled review correspondence failed: ' + json.dumps(alignment))
+        return gates, alignment
+
+    def _packet_hashes(self, path, commands):
+        result = self._adapter.sync_media('ffprobe', ['-v', 'error', '-select_streams', 'a', '-show_packets',
+            '-show_data_hash', 'sha256', '-show_entries', 'packet=stream_index,data_hash,size', '-of', 'json', path])
+        commands.append(result)
+        packets = json.loads(result.stdout)['packets']
+        grouped = {}
+        for packet in packets:
+            if not {'stream_index', 'size', 'data_hash'} <= set(packet): raise ReelBenchSyncError('missing audio packet hash')
+            grouped.setdefault(packet['stream_index'], []).append([packet['size'], packet['data_hash']])
+        return list(grouped.values())
+
+    def _pixels(self, work, path, seconds, crop, commands, *, video_scale=None):
+        name = 'output/sample-' + secrets.token_hex(8) + '.gray'
+        filters = []
+        if video_scale is not None: filters.append(f'scale={video_scale[0]}:{video_scale[1]}:flags=lanczos')
+        filters.extend([f'crop={crop[2]}:{crop[3]}:{crop[0]}:{crop[1]}', 'scale=64:32', 'format=gray'])
+        commands.append(self._adapter.sync_media('ffmpeg', ['-v', 'error', '-n', '-i', path, '-ss', f'{seconds:.6f}',
+            '-frames:v', '1', '-vf', ','.join(filters), '-f', 'rawvideo', name]))
+        payload = ws.read(work, name, 2048)
+        if len(payload) != 2048: raise ReelBenchSyncError('sample decode returned incomplete pixels')
+        with ws.directory(work, 'output') as output: os.unlink(name.split('/')[-1], dir_fd=output)
+        return payload
+
+    @staticmethod
+    def _distance(a, b): return sum(abs(x-y) for x,y in zip(a,b)) / len(a)
+
+    def _sample_alignment(self, work, original, plan, layout, shots, commands):
+        view, rows = layout['view'], layout['rows']
+        vw, vh = plan['video']['width'], plan['video']['height']
+        px, py = (vw, 0) if plan['portrait'] else (0, vh)
+        anchor = rows[min(1, len(rows)-1)]['top'] - rows[0]['top']
+        samples = []
+        for index, (shot, row) in enumerate(zip(shots['shots'], rows)):
+            start, end = float(shot['start']), float(shot['end'])
+            stable = start if index == 0 else start + min(.45, end-start)
+            frame = math.ceil((stable + 1/plan['fps']) * plan['fps']) / plan['fps']
+            if frame >= end: raise ReelBenchSyncError('shot has no stable frame for highlight verification')
+            offset = min(max(0, layout['content'] - view['height']), max(0, row['top'] - anchor))
+            y = max(view['y'], min(view['y'] + view['height'] - row['height'], view['y'] + row['top'] - offset))
+            source_pixels = self._pixels(work, original, frame, (0,0,vw,vh), commands, video_scale=(vw,vh))
+            review_pixels = self._pixels(work, 'output/review.mp4', frame, (0,0,vw,vh), commands)
+            actual = self._pixels(work, 'output/review.mp4', frame, (px+view['x'],py+y,view['width'],row['height']), commands)
+            lit = self._pixels(work, 'output/panels/list-lit.png', 0, (view['x'],row['top'],view['width'],row['height']), commands)
+            dim = self._pixels(work, 'output/panels/list-dim.png', 0, (view['x'],row['top'],view['width'],row['height']), commands)
+            lit_error = self._distance(actual, lit)
+            cut_samples=[]
+            cut_frame=math.ceil(start*plan['fps'])/plan['fps']
+            for seconds in sorted({max(0,cut_frame-1/plan['fps']),cut_frame}):
+                left=self._pixels(work,original,seconds,(0,0,vw,vh),commands,video_scale=(vw,vh))
+                right=self._pixels(work,'output/review.mp4',seconds,(0,0,vw,vh),commands)
+                cut_samples.append({'seconds':seconds,'error':self._distance(left,right)})
+            samples.append({'shot_id': shot['id'], 'cut_seconds': start, 'sample_seconds': frame,
+                'cut_samples':cut_samples,
+                'source_error': self._distance(source_pixels, review_pixels), 'highlight_error': lit_error,
+                'highlight_margin': self._distance(actual, dim) - lit_error})
+        return samples
+
+    def _read_sync(self, fd, project_id, version):
+        receipt = self._read_version(fd, 'reelbench_sync', version)
+        self._validate_receipt(fd, receipt)
+        body = {k:v for k,v in receipt.items() if k != 'evidence_fingerprint'}
+        if receipt.get('artifact_role') != 'synchronized_review' or receipt.get('project_id') != project_id or canonical_fingerprint(body) != receipt.get('evidence_fingerprint'):
+            raise ReelBenchSyncError('sync receipt fingerprint or identity differs')
+        expected = {}
+        for artifact in receipt['artifacts']:
+            prefix = 'reelbench_sync_media/' + version + '/'
+            if not artifact['path'].startswith(prefix): raise ReelBenchSyncError('sync artifact escaped version')
+            relative = artifact['path'][len(prefix):]
+            if relative in expected: raise ReelBenchSyncError('duplicate sync artifact')
+            expected[relative] = {k:artifact[k] for k in ('sha256', 'size_bytes')}
+        observed = ws.inventory(fd, 'reelbench_sync_media/' + version, max_bytes=MAX_OUTPUT_BYTES, file_maximum=MAX_VIDEO_BYTES, private=True)
+        if observed != expected: raise ReelBenchSyncError('sync artifact inventory or digest differs')
+        return receipt
+
+    def _validate_receipt(self, fd, receipt):
+        required = {'schema_version','project_id','version','parent_version','parent_fingerprint','action',
+            'artifact_role','source_receipt_version','source_sha256','reelbench_evidence_version',
+            'reelbench_evidence_fingerprint','shots_sha256','audio_policy','plan','layout','artifacts',
+            'consumed_artifacts','commands','composition_argv','argv_fingerprint','browser','gates',
+            'sampled_alignment','created_at','evidence_fingerprint'}
+        if not isinstance(receipt, dict) or set(receipt) != required or receipt['schema_version'] != '1.2' or receipt['action'] not in {'panels','export'}:
+            raise ReelBenchSyncError('sync receipt fields/action differ')
+        if canonical_fingerprint({k:v for k,v in receipt.items() if k != 'evidence_fingerprint'}) != receipt['evidence_fingerprint']:
+            raise ReelBenchSyncError('sync receipt fingerprint differs')
+        self._version(receipt['version'])
+        self._version(receipt['parent_version'], nullable=True)
+        number = int(receipt['version'][1:])
+        if (receipt['parent_version'] is None and (number != 1 or receipt['parent_fingerprint'] is not None)) or (receipt['parent_version'] is not None and int(receipt['parent_version'][1:]) != number-1):
+            raise ReelBenchSyncError('sync parent is not preceding version')
+        if receipt['parent_version'] is not None:
+            parent = self._read_version(fd,'reelbench_sync',receipt['parent_version'])
+            if canonical_fingerprint({k:v for k,v in parent.items() if k != 'evidence_fingerprint'}) != receipt['parent_fingerprint'] or parent['evidence_fingerprint'] != receipt['parent_fingerprint']:
+                raise ReelBenchSyncError('sync parent fingerprint differs')
+        parse_rfc3339(receipt['created_at'], label='created_at')
+        source = self._read_version(fd,'source_receipt',receipt['source_receipt_version'])
+        evidence = self._read_version(fd,'reelbench_evidence',receipt['reelbench_evidence_version'])
+        validate_contract(source,'source_receipt.schema.json')
+        validate_reelbench_evidence(evidence)
+        if source['project_id'] != receipt['project_id'] or source['source_sha256'] != receipt['source_sha256'] or evidence['evidence_fingerprint'] != receipt['reelbench_evidence_fingerprint'] or evidence['shots']['sha256'] != receipt['shots_sha256']:
+            raise ReelBenchSyncError('sync source/evidence binding differs')
+        shots = self._comparison_reelbench_documents(fd,evidence)['shots']
+        self._validate_plan(receipt['plan'],source)
+        self._validate_layout(receipt['layout'],receipt['plan'],shots)
+        expected = {'plan.json','panels/layout.json',*('panels/'+n for n in PANELS)}
+        if receipt['action'] == 'export': expected.add('review.mp4')
+        prefix = 'reelbench_sync_media/' + receipt['version'] + '/'
+        paths = []
+        for artifact in receipt['artifacts']:
+            if set(artifact) != {'path','mime_type','size_bytes','sha256'} or not artifact['path'].startswith(prefix): raise ReelBenchSyncError('invalid sync artifact')
+            path = artifact['path'][len(prefix):]
+            paths.append(path)
+            if type(artifact['size_bytes']) is not int or not 0 < artifact['size_bytes'] <= (MAX_VIDEO_BYTES if path.endswith('.mp4') else MAX_PANEL_BYTES) or re.fullmatch('[a-f0-9]{64}',artifact['sha256']) is None:
+                raise ReelBenchSyncError('invalid sync artifact digest/size')
+        if len(paths) != len(expected) or set(paths) != expected: raise ReelBenchSyncError('incomplete sync artifact set')
+        commands = receipt['commands']
+        if not isinstance(commands,list) or not 1 <= len(commands) <= 1200 or canonical_fingerprint({'commands':commands}) != receipt['argv_fingerprint']:
+            raise ReelBenchSyncError('invalid command provenance')
+        for command in commands:
+            if set(command) != {'action','argv','returncode','tool_identities','script_manifest','expanded_process'} or command['returncode'] != 0 or command['action'] not in {'ffmpeg','ffprobe','plan','panels','export'}:
+                raise ReelBenchSyncError('invalid sync command')
+            if command['expanded_process'] != (receipt['composition_argv'] if command['action']=='export' else None):
+                raise ReelBenchSyncError('expanded command is outside ordered provenance')
+            manifest = {m['path']:(m['sha256'],m['size_bytes']) for m in command['script_manifest']}
+            if any(manifest.get('script/'+name) != pin for name,pin in PINNED_SYNC_SCRIPTS.items()):
+                raise ReelBenchSyncError('sync command lacks independently pinned scripts')
+        if receipt['action'] == 'panels':
+            if receipt['audio_policy'] is not None or receipt['gates'] or receipt['sampled_alignment'] or receipt['composition_argv'] is not None:
+                raise ReelBenchSyncError('panel receipt cannot claim video verification')
+        else:
+            expanded=receipt['composition_argv']
+            if not isinstance(expanded,dict) or set(expanded) != {'upstream_argv','actual_argv','argv_fingerprint'} or canonical_fingerprint({k:v for k,v in expanded.items() if k!='argv_fingerprint'}) != expanded['argv_fingerprint']:
+                raise ReelBenchSyncError('expanded command fingerprint differs')
+            if receipt['audio_policy'] not in {'silent','preserve_source_audio'} or set(receipt['gates']) != {'duration','dimensions','codec','audio_policy','cut_alignment','sampled_correspondence'}:
+                raise ReelBenchSyncError('incomplete review gates')
+            if any(set(g) != {'passed','measured'} or g['passed'] is not True for g in receipt['gates'].values()): raise ReelBenchSyncError('failed review gate')
+            samples = receipt['sampled_alignment']
+            if [s['shot_id'] for s in samples] != [s['id'] for s in shots['shots']]: raise ReelBenchSyncError('sample identity differs')
+            for sample,shot in zip(samples,shots['shots']):
+                if set(sample) != {'shot_id','cut_seconds','sample_seconds','source_error','highlight_error','highlight_margin','cut_samples'} or sample['cut_seconds'] != shot['start'] or not shot['start'] <= sample['sample_seconds'] < shot['end']:
+                    raise ReelBenchSyncError('invalid shot sample')
+                if not 1 <= len(sample['cut_samples']) <= 2 or any(set(c) != {'seconds','error'} or type(c['error']) not in (int,float) or not math.isfinite(c['error']) or not 0 <= c['error'] <= 18 for c in sample['cut_samples']):
+                    raise ReelBenchSyncError('failed cut measurements')
+                if any(type(sample[k]) not in (int,float) or not math.isfinite(sample[k]) for k in ('source_error','highlight_error','highlight_margin')) or not 0 <= sample['source_error'] <= 18 or not 0 <= sample['highlight_error'] <= 22 or sample['highlight_margin'] < 1:
+                    raise ReelBenchSyncError('failed correspondence measurements')
+
+    def _lineage(self, fd, project_id, version, source):
+        receipt = self._read_sync(fd, project_id, version)
+        if receipt['source_sha256'] != source['source_sha256'] or receipt['source_receipt_version'] != source['version']:
+            raise ReelBenchSyncError('sync source differs')
+        evidence = self._read_version(fd, 'reelbench_evidence', receipt['reelbench_evidence_version'])
+        if evidence['evidence_fingerprint'] != receipt['reelbench_evidence_fingerprint']:
+            raise ReelBenchSyncError('sync evidence binding differs')
+        ReelBenchProjectService._lineage(self, fd, project_id, evidence['version'], source)
+        return [receipt]
+
+    @classmethod
+    def _latest(cls, fd):
         try:
-            width, height, duration = int(source["width"]), int(source["height"]), float(source["duration_seconds"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ReelBenchSyncError("source geometry or duration is missing") from exc
-        if width < 2 or height < 2 or width > 7680 or height > 7680 or not math.isfinite(duration) or not 0 < duration <= MAX_DURATION_SECONDS:
-            raise ReelBenchSyncError("source geometry or duration is outside review bounds")
-        streams = source.get("audio_streams", [])
-        if not isinstance(streams, list):
-            raise ReelBenchSyncError("source audio stream declaration is invalid")
-        return width, height, duration, streams
+            with ws.directory(fd, 'reelbench_sync') as family:
+                versions = [name[:-5] for name in os.listdir(family) if name.endswith('.json') and name.startswith('v')]
+            for version in versions: cls._version(version)
+            return max(versions, key=lambda v:int(v[1:]), default=None)
+        except FileNotFoundError: return None
 
     @staticmethod
-    def _even(value: float) -> int:
-        candidate = int(round(value / 2.0) * 2)
-        if candidate < 2:
-            raise ReelBenchSyncError("source aspect produced an invalid video edge")
-        return candidate
+    def _indeterminate(root, receipt):
+        return VersionCommitIndeterminateError(project_id=receipt['project_id'], family='reelbench_sync',
+            version=receipt['version'], path=root / 'reelbench_sync' / (receipt['version'] + '.json'),
+            payload_fingerprint=canonical_fingerprint(receipt))
 
-    def _validate_shots(self, shots: Any, source: Mapping[str, Any]) -> None:
-        if not isinstance(shots, Mapping) or not isinstance(shots.get("shots"), list) or not shots["shots"]:
-            raise ReelBenchSyncError("validated shots document is required")
-        duration = self._source(source)[2]
-        meta = shots.get("meta")
-        if not isinstance(meta, Mapping) or abs(float(meta.get("durationSeconds", -1)) - duration) > .25:
-            raise ReelBenchSyncError("shots source duration differs from exact source receipt")
-        previous = 0.0
-        for index, shot in enumerate(shots["shots"]):
-            if not isinstance(shot, Mapping) or not isinstance(shot.get("id"), str):
-                raise ReelBenchSyncError("shot identity is invalid")
-            try: start, end = float(shot["start"]), float(shot["end"])
-            except (KeyError, TypeError, ValueError) as exc: raise ReelBenchSyncError("shot timing is invalid") from exc
-            if not (math.isfinite(start) and math.isfinite(end) and end > start and abs(start - previous) <= .10 and end <= duration + .10):
-                raise ReelBenchSyncError("shots do not continuously correspond to source cuts")
-            previous = end
-        if abs(previous - duration) > .25: raise ReelBenchSyncError("shots do not cover exact source duration")
-
-    def _validate_layout(self, layout: Any, expected: Mapping[str, Any], shots: Mapping[str, Any]) -> None:
-        if not isinstance(layout, Mapping): raise ReelBenchSyncError("layout receipt is absent")
-        panel = layout.get("panel")
-        if not isinstance(panel, Mapping) or int(panel.get("width", -1)) != expected["panel"]["width"] or int(panel.get("height", -1)) != expected["panel"]["height"]:
-            raise ReelBenchSyncError("layout panel differs from fixed source-aspect plan")
-        rows = layout.get("rows")
-        if not isinstance(rows, list) or [row.get("id") for row in rows if isinstance(row, Mapping)] != [shot["id"] for shot in shots["shots"]]:
-            raise ReelBenchSyncError("layout rows do not correspond to validated source shots")
-
-    def _validate_panels(self, directory: Path) -> list[dict[str, Any]]:
-        if not directory.is_dir() or directory.is_symlink(): raise ReelBenchSyncError("panel directory is unsafe")
-        images = {path.name for path in directory.iterdir() if path.is_file() and path.suffix.lower() == ".png"}
-        if images != _PANEL_IMAGES: raise ReelBenchSyncError("sync output must contain exactly the three upstream panel images")
-        return [self._artifact(directory / name, "image/png") for name in sorted(images)]
+    def reconcile_indeterminate(self, error):
+        if error.family != 'reelbench_sync': raise ReelBenchSyncError('wrong recovery family')
+        with self._locked_project(error.project_id) as (_, fd, _, guard):
+            receipt = self._read_sync(fd, error.project_id, error.version)
+            if canonical_fingerprint(receipt) != error.payload_fingerprint: raise ReelBenchSyncError('exact recovery fingerprint differs')
+            source = self._read_version(fd, 'source_receipt', receipt['source_receipt_version'])
+            self._lineage(fd, error.project_id, error.version, source)
+            guard()
+            return receipt
 
     @staticmethod
-    def _workspace_path(descriptor: int, relative: Path) -> Path:
-        if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
-            raise ReelBenchSyncError("workspace path is noncanonical")
-        return Path("/dev/fd") / str(descriptor) / relative
-
-    def _probe(self, output: Path, supplied: Any) -> Mapping[str, Any]:
-        if output.is_symlink() or not output.is_file() or output.stat().st_size < 1 or output.stat().st_size > MAX_VIDEO_BYTES:
-            raise ReelBenchSyncError("review output is unsafe or outside byte bound")
-        probe = supplied if isinstance(supplied, Mapping) else self._media_probe(output) if self._media_probe else None
-        if not isinstance(probe, Mapping): raise ReelBenchSyncError("ffprobe evidence is required for review verification")
-        return probe
-
-    def _media_gates(self, media: Mapping[str, Any], layout: Mapping[str, Any], source: Mapping[str, Any], policy: str) -> dict[str, dict[str, Any]]:
-        streams = media.get("streams", [])
-        fmt = media.get("format", {})
-        video = next((item for item in streams if isinstance(item, Mapping) and item.get("codec_type") == "video"), {})
-        audio = [item for item in streams if isinstance(item, Mapping) and item.get("codec_type") == "audio"]
-        duration = float(fmt.get("duration", 0) or 0)
-        expected_duration = self._source(source)[2]
-        return {"duration": {"passed": abs(duration - expected_duration) <= .25, "measured": duration},
-                "dimensions": {"passed": (video.get("width"), video.get("height")) == (layout["output"]["width"], layout["output"]["height"]), "measured": [video.get("width"), video.get("height")]},
-                "codec": {"passed": video.get("codec_name") == "h264" and video.get("pix_fmt") == "yuv420p", "measured": video.get("codec_name")},
-                "audio_policy": {"passed": (not audio if policy == "silent" else bool(audio)), "measured": len(audio)},
-                "cut_alignment": {"passed": True, "measured": "validated shots timeline"},
-                "sampled_correspondence": {"passed": True, "measured": "cut samples bound to row ids"}}
-
-    def _audio_policy(self, inputs: Mapping[str, Any], source: Mapping[str, Any]) -> str:
-        policy = inputs.get("audio_policy")
-        if policy not in {"silent", "preserve_source_audio"}: raise ReelBenchSyncError("explicit review audio policy is required")
-        if policy == "preserve_source_audio" and not self._source(source)[3]: raise ReelBenchSyncError("source has no permitted audio to preserve")
-        return policy
-
-    @staticmethod
-    def _rows(shots: Mapping[str, Any]) -> list[dict[str, Any]]:
-        return [{"id": shot["id"]} for shot in shots["shots"]]
-
-    @staticmethod
-    def _shots_digest(shots: Mapping[str, Any]) -> str:
-        return hashlib.sha256(json.dumps(shots, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-    @staticmethod
-    def _artifact(path: Path, mime_type: str) -> dict[str, Any]:
-        if path.is_symlink() or not path.is_file(): raise ReelBenchSyncError("artifact is missing or symlinked")
-        payload = path.read_bytes()
-        return {"path": path.name, "mime_type": mime_type, "size_bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
-
-    @staticmethod
-    def _read_json(path: Path, *, maximum: int) -> Mapping[str, Any]:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > maximum: raise ReelBenchSyncError("layout receipt is unsafe")
-        try: value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc: raise ReelBenchSyncError("layout receipt is invalid JSON") from exc
-        if not isinstance(value, Mapping): raise ReelBenchSyncError("layout receipt is not an object")
-        return value
-
-    @staticmethod
-    def _alignment(shots: Mapping[str, Any], duration: float) -> list[dict[str, Any]]:
-        # Each measured cut is sampled at the cut and one stable point inside the shot.
-        return [{"shot_id": shot["id"], "cut_seconds": float(shot["start"]),
-                 "sample_seconds": min(float(shot["end"]) - .001, max(float(shot["start"]), (float(shot["start"]) + float(shot["end"])) / 2.0)),
-                 "source_duration_seconds": duration} for shot in shots["shots"]]
-
-
-__all__ = ["FinalMediaVerificationError", "ReelBenchSyncBlockedError", "ReelBenchSyncError", "ReelBenchSyncService"]
+    def accept_generated_shot(receipt):
+        raise FinalMediaVerificationError('synchronized_review is never generated or final media')

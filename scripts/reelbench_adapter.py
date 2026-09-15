@@ -20,13 +20,35 @@ from scripts.reelbench_contracts import REELBENCH_VALIDATE_GATES, _PINNED_SHOTS_
 from scripts.trusted_media_tools import TrustedExecutable, TrustedMediaToolStore
 from scripts import reelbench_workspace as workspace
 from scripts.reelbench_exec_helper import HELPER_CODE
+from scripts.reelbench_sync_ffmpeg import SYNC_FFMPEG_PROXY
 
 # The upstream entrypoint is fixed by this module, not caller input.  Its
 # descriptor launcher differs only in the one allowed pinned program name.
 SYNC_HELPER_CODE = HELPER_CODE.replace("script/video-shots.mjs", "script/video-sync.mjs").replace(
     "os.execve('tools/node', argv, {'PATH': 'tools/bin', 'LANG': 'C', 'LC_ALL': 'C'})",
-    "os.execve('tools/node', argv, {**{key: os.environ[key] for key in os.environ if key.startswith('REELBENCH_BROWSER_')}, 'PATH': 'tools/bin', 'LANG': 'C', 'LC_ALL': 'C'})",
-)
+    "os.execve('tools/node', argv, {**{key: os.environ[key] for key in os.environ if key.startswith('REELBENCH_BROWSER_')}, **({'NODE_OPTIONS':'--import=./script/browser-lease.mjs'} if 'REELBENCH_BROWSER_BUNDLE_FD' in os.environ else {}), 'PATH': 'tools/bin', 'LANG': 'C', 'LC_ALL': 'C'})",
+).replace('(8388608, 8388608)', '(2147483648, 2147483648)').replace("key.startswith('REELBENCH_BROWSER_')", "key.startswith(('REELBENCH_BROWSER_', 'REELBENCH_SYNC_'))")
+# Node closes non-stdio descriptors in execFileSync. Bridge only the fixed
+# browser proxy and preserve its two capability descriptors in their slots.
+BROWSER_PRELOAD = b'''import cp from 'node:child_process';
+import {syncBuiltinESMExports} from 'node:module';
+const original = cp.execFileSync;
+cp.execFileSync = function(file, args, options) {
+  if(file !== 'tools/browser-proxy') return original.apply(this, arguments);
+  const descriptors = ['REELBENCH_BROWSER_BUNDLE_FD','REELBENCH_BROWSER_EXECUTABLE_FD'].map(k => Number(process.env[k]));
+  if(descriptors.some(n => !Number.isInteger(n) || n < 3 || n > 4096)) throw new Error('invalid browser lease');
+  const configured = options?.stdio ?? 'pipe';
+  const stdio = Array.isArray(configured) ? [...configured] : [configured,configured,configured];
+  for(const fd of descriptors) { while(stdio.length <= fd) stdio.push('ignore'); stdio[fd] = fd; }
+  return original.call(this, file, args, {...options, stdio});
+};
+syncBuiltinESMExports();
+'''
+PINNED_SYNC_SCRIPTS = {
+    'video-sync.mjs': ('ad0386fbe90bdfbd8ede5d870dd1ffd477f386b5cdd9ceb7fec085c4edcd3b4d', 30541),
+    'panel.css': ('e27dd1ad24d161c501cce6cf2fea3e0bda2b5a1a17285b38f688f33473f4ce9b', 6971),
+    'panel.html': ('9729bf9572e3650699bdeec0a97f81992bfd5a4fe65c27ee771a7ff72b6977b6', 5537),
+}
 BROWSER_PROXY_CODE = b'''#!/usr/bin/python3
 import hashlib, os, sys
 bundle_fd = int(os.environ["REELBENCH_BROWSER_BUNDLE_FD"])
@@ -34,7 +56,11 @@ executable_fd = int(os.environ["REELBENCH_BROWSER_EXECUTABLE_FD"])
 relative = os.environ["REELBENCH_BROWSER_RELATIVE"]
 expected = os.environ["REELBENCH_BROWSER_SHA256"]
 os.fchdir(bundle_fd)
-parent = os.open("Contents/MacOS", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+parent = os.open("Contents", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    child = os.open("MacOS", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+finally: os.close(parent)
+parent = child
 try:
     name = relative.rsplit("/", 1)[-1]
     current = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
@@ -125,6 +151,7 @@ class ReelBenchAdapter:
         self._runner = runner
         self._ENGLISH_GATE_LABELS = _ENGLISH_GATE_LABELS
         self._workspace = ContextVar("reelbench_workspace", default=None)
+        self._sync_duration = ContextVar('reelbench_sync_duration', default=None)
 
     @contextmanager
     def execution_workspace(self, descriptor: int, consumed=(), *, workflow: str = "shots", browser_lease=None):
@@ -142,6 +169,7 @@ class ReelBenchAdapter:
             identities = []
             for kind in ("node", "ffmpeg", "ffprobe"):
                 target = "tools/node" if kind == "node" else f"tools/bin/{kind}"
+                if workflow == 'sync' and kind == 'ffmpeg': target = 'tools/bin/ffmpeg-real'
                 tool = staged[kind]
                 path = Path(tool.staged_path)
                 parent = workspace.open_absolute(path.parent)
@@ -153,6 +181,11 @@ class ReelBenchAdapter:
                 identities.append({"kind": kind, "source_path": target, "owner_uid": info.st_uid,
                     "mode": stat.S_IMODE(info.st_mode), "device": info.st_dev, "inode": info.st_ino, **record})
                 manifest[target] = {**record, "inode": info.st_ino, "device": info.st_dev, "mode": stat.S_IMODE(info.st_mode)}
+            if workflow == 'sync':
+                if (len(SYNC_FFMPEG_PROXY), hashlib.sha256(SYNC_FFMPEG_PROXY).hexdigest()) != (2967, 'e24298262ad84c78769ff94f1c271c30337ad2647b625f922453d19f42d47551'):
+                    raise ReelBenchAdapterError('sync media proxy differs from independent pin')
+                workspace.write(descriptor, 'tools/bin/ffmpeg', SYNC_FFMPEG_PROXY, mode=0o500, quota=True)
+                manifest['tools/bin/ffmpeg'] = {'size_bytes':len(SYNC_FFMPEG_PROXY), 'sha256':hashlib.sha256(SYNC_FFMPEG_PROXY).hexdigest()}
             selected_script = self._shots_script if workflow == "shots" else self._sync_script
             script_parent = workspace.open_absolute(selected_script.parent)
             try:
@@ -170,6 +203,8 @@ class ReelBenchAdapter:
                 raise ReelBenchAdapterError("packaged ReelBench script differs from its lock")
             if workflow == "shots" and (hashlib.sha256(script).hexdigest(), len(script)) != _PINNED_SHOTS_SCRIPTS['script/video-shots.mjs']:
                 raise ValueError('packaged script differs from independent pinned digest')
+            if workflow == 'sync' and (hashlib.sha256(script).hexdigest(), len(script)) != PINNED_SYNC_SCRIPTS[selected_script.name]:
+                raise ValueError('packaged sync script differs from independent pinned digest')
             script_target = f"script/{selected_script.name}"
             workspace.write(descriptor, script_target, script, mode=0o400, quota=True)
             manifest[script_target] = {"size_bytes": len(script), "sha256": hashlib.sha256(script).hexdigest()}
@@ -185,9 +220,17 @@ class ReelBenchAdapter:
                     raise ReelBenchAdapterError("packaged report asset differs from its lock")
                 if workflow == "shots" and (hashlib.sha256(content).hexdigest(), len(content)) != _PINNED_SHOTS_SCRIPTS['script/' + filename]:
                     raise ValueError('packaged report asset differs from independent pinned digest')
+                if workflow == 'sync' and (hashlib.sha256(content).hexdigest(), len(content)) != PINNED_SYNC_SCRIPTS[filename]:
+                    raise ValueError('packaged sync asset differs from independent pinned digest')
                 workspace.write(descriptor, "script/" + filename, content, mode=0o400, quota=True)
                 manifest["script/" + filename] = {"size_bytes": len(content), "sha256": expected}
             if browser_lease is not None:
+                if (len(BROWSER_PRELOAD), hashlib.sha256(BROWSER_PRELOAD).hexdigest()) != (819, '4e9cb955ef03a99a883e2f4760431f5ba373a3e0b50fe51b9e1c29fa65e2f2c3'):
+                    raise ReelBenchAdapterError('browser preload differs from independent pin')
+                if (len(BROWSER_PROXY_CODE), hashlib.sha256(BROWSER_PROXY_CODE).hexdigest()) != (1286, 'f8a1e14e75c1d5f0b0eea01794a30ee7834688236e8b0380f5e13e04b6bc925a'):
+                    raise ReelBenchAdapterError('browser proxy differs from independent pin')
+                workspace.write(descriptor, 'script/browser-lease.mjs', BROWSER_PRELOAD, mode=0o400, quota=True)
+                manifest['script/browser-lease.mjs'] = {'size_bytes': len(BROWSER_PRELOAD), 'sha256': hashlib.sha256(BROWSER_PRELOAD).hexdigest()}
                 workspace.write(descriptor, "tools/browser-proxy", BROWSER_PROXY_CODE, mode=0o500, quota=True)
                 with workspace.directory(descriptor, "tools") as tools_fd:
                     info = os.stat("browser-proxy", dir_fd=tools_fd, follow_symlinks=False)
@@ -284,10 +327,10 @@ class ReelBenchAdapter:
         manifest = dict(active[2])
         # Bound every input available to the unchanged upstream script. Output
         # files from earlier commands are included before the next command.
-        for root in ("output",):
+        for root in (("output", "source") if workflow == 'sync' else ("output",)):
             try:
                 manifest.update({f"{root}/{key}": value for key, value in workspace.inventory(descriptor, root,
-                    max_bytes=2 * 1024 * 1024 * 1024, file_maximum=2 * 1024 * 1024 * 1024).items()})
+                    max_bytes=4608 * 1024**2 if workflow == 'sync' else 2 * 1024**3, file_maximum=2 * 1024**3).items()})
             except FileNotFoundError:
                 pass
         argv = ["/usr/bin/python3", "-I", "-c", HELPER_CODE if workflow == "shots" else SYNC_HELPER_CODE, str(descriptor),
@@ -296,10 +339,12 @@ class ReelBenchAdapter:
         lease = active[4]
         if lease is not None:
             environment.update(lease.proxy_environment)
+        if workflow == 'sync' and self._sync_duration.get() is not None:
+            environment['REELBENCH_SYNC_DURATION'] = str(self._sync_duration.get())
         try:
-            result = self._runner(argv, env=environment, timeout_seconds=MAX_ACTION_SECONDS,
+            result = self._runner(argv, env=environment, timeout_seconds=1800 if workflow == 'sync' and action == 'export' else MAX_ACTION_SECONDS,
                 stdout_cap=MAX_STDOUT_BYTES, stderr_cap=MAX_STDERR_BYTES,
-                pass_fds=(active[0], *(lease.pass_fds if lease is not None else ())), monitor=lambda: workspace.check_action_quota(active[0]))
+                pass_fds=(active[0], *(lease.pass_fds if lease is not None else ())), monitor=lambda: workspace.check_sync_action_quota(active[0]) if workflow == 'sync' else workspace.check_action_quota(active[0]))
         except (BoundedProcessError, OSError) as exc:
             raise ReelBenchAdapterError(f"{action} did not complete safely") from exc
         if not isinstance(result, BoundedProcessResult):
@@ -311,7 +356,39 @@ class ReelBenchAdapter:
             logical = [item.removeprefix(prefix) for item in logical]
         return ReelBenchAdapterResult(action, logical if active else list(argv), False,
                                       result.stdout, result.stderr, result.returncode, (), identities,
-                                      tuple({"path": key, **value} for key, value in active[2].items() if key.startswith("script/")))
+                                      tuple({"path": key, **value} for key, value in active[2].items() if key.startswith("script/") or (workflow == 'sync' and key in {'tools/bin/ffmpeg', 'tools/browser-proxy'})))
+
+    def sync_media(self, kind: str, arguments: Sequence[str]) -> ReelBenchAdapterResult:
+        """Execute a service-built probe or media command with the same staged identities."""
+        active = self._workspace.get()
+        if active is None or active[3] != 'sync' or kind not in {'ffmpeg', 'ffprobe'}:
+            raise ReelBenchAdapterError('media execution requires a sync workspace')
+        manifest = dict(active[2])
+        for directory in ('source', 'inputs', 'output'):
+            try:
+                manifest.update({directory + '/' + k: v for k, v in workspace.inventory(active[0], directory,
+                    max_bytes=4608 * 1024**2, file_maximum=2 * 1024**3).items()})
+            except FileNotFoundError:
+                pass
+        executable = 'tools/bin/ffmpeg-real' if kind == 'ffmpeg' else 'tools/bin/ffprobe'
+        helper = HELPER_CODE.replace("if argv[:2] != ['tools/node', 'script/video-shots.mjs']:",
+            "if argv[0] != '" + executable + "':").replace("os.execve('tools/node', argv,", "os.execve('" + executable + "', argv,").replace('(8388608, 8388608)', '(2147483648, 2147483648)')
+        logical = [executable, *arguments]
+        result = self._runner(['/usr/bin/python3', '-I', '-c', helper, str(active[0]), json.dumps(manifest), *logical],
+            env={'PATH': 'tools/bin', 'LANG': 'C', 'LC_ALL': 'C'}, timeout_seconds=1800,
+            stdout_cap=32 * 1024**2, stderr_cap=MAX_STDERR_BYTES, pass_fds=(active[0],),
+            monitor=lambda: workspace.check_sync_action_quota(active[0]))
+        if result.returncode != 0:
+            raise ReelBenchAdapterError('trusted ' + kind + ' failed: ' + result.stderr[-1000:])
+        return ReelBenchAdapterResult(kind, logical, False, result.stdout, result.stderr, result.returncode,
+            (), tuple(active[1]), tuple({'path': key, **value} for key, value in active[2].items() if key.startswith('script/') or key in {'tools/bin/ffmpeg', 'tools/browser-proxy'}))
+
+    def set_sync_duration(self, duration: float) -> None:
+        """Bind the probed duration to this context's fixed composition proxy."""
+        if self._workspace.get() is None or self._workspace.get()[3] != 'sync':
+            raise ReelBenchAdapterError('sync duration needs an active workspace')
+        self._bounded_number('duration', duration, .001, 1800)
+        self._sync_duration.set(duration)
 
     def _paths(self, *values: Path) -> tuple[Path, ...]:
         return tuple(self._project_path(value) for value in values)

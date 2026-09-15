@@ -164,6 +164,8 @@ class FinalMediaService:
         receipt so the caller can report all of them at once.
         """
         path = Path(final_mp4)
+        if 'reelbench_sync_media' in path.parts or (isinstance(expected_plan, Mapping) and expected_plan.get('artifact_role') == 'synchronized_review'):
+            raise FinalMediaValidationError('synchronized review media cannot satisfy final verification')
         if not path.is_absolute():
             raise FinalMediaValidationError("final media path must be absolute")
         if path.is_symlink() or not path.is_file():
@@ -405,6 +407,8 @@ class FinalMediaService:
         and the copy lands through a temporary file plus ``os.replace``, so an
         interrupted export cannot leave a partial file at the destination.
         """
+        if receipt.get('artifact_role') == 'synchronized_review' or 'reelbench_sync_media' in Path(source).parts:
+            raise FinalMediaValidationError('synchronized review media cannot satisfy final export')
         self._assert_all_required_gates_pass(receipt)
         self._confirm_exact_destination(Path(destination), approved_roots)
 
