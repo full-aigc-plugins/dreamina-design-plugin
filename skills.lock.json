@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "package": "dreamina-skills",
+      "repo": "https://github.com/full-aigc-skills/dreamina-skills.git",
+      "ref": "v1.6.0",
+      "sha": "0358da3717b45d939d941016a6532df60b773206",
+      "skills": [
+        "dreamina-cli",
+        "dreamina-cli-image2image",
+        "dreamina-cli-image2video",
+        "dreamina-cli-text2image",
+        "dreamina-cli-text2video",
+        "dreamina-design-use",
+        "dreamina-opencli-image2image",
+        "dreamina-opencli-image2video",
+        "dreamina-opencli-text2image",
+        "dreamina-opencli-text2video",
+        "dreamina-prompt-image2image",
+        "dreamina-prompt-image2video",
+        "dreamina-prompt-text2image",
+        "dreamina-prompt-text2video",
+        "dreamina-shot-annotator",
+        "dreamina-video-evaluator",
+        "dreamina-video-production"
+      ],
+      "dest": "skills/",
+      "sha256": {
+        "dreamina-cli": "5247f293cf34be47578eca344be913ac4a1ab0d4ad5829b287ba6505db37ae1d",
+        "dreamina-cli-image2image": "31625ff66a58df63691a08e81fb24a03b9040dc2bfcabf4093f599be17c3beaf",
+        "dreamina-cli-image2video": "c55155e8841fede4edbaae622c955238765b3cd2ba743db7a231880684db045d",
+        "dreamina-cli-text2image": "f68102be668132983e058573bd35b34f746367d562123d91070484e7167ef48a",
+        "dreamina-cli-text2video": "46af3402c6cea1a6a6313ebe0b095d4d8c741f5cb0146f4c89f1f13d36fcae4c",
+        "dreamina-design-use": "490d1cb2aad81de2689d5af64bc541cd74d90443638edf04fdc1c294b48eb61f",
+        "dreamina-opencli-image2image": "a9607a9b38a3a86742396217f72442ae7e7dcb3595a54b17f7b9ccd14af24af3",
+        "dreamina-opencli-image2video": "ce983d2cf476e440a55a2fa684d698d5e104642e64bdbfadf8968eb96d0d3532",
+        "dreamina-opencli-text2image": "b67bb3b50f303c82e24ce32e5ce513d89caee1dbd573dc9f7440639b69b1f51f",
+        "dreamina-opencli-text2video": "c5833021186a19ea49d4cecf7142bf0633ab16f81e77362390b2829f205fefa7",
+        "dreamina-prompt-image2image": "ba456c5a74278757e68bede00c83fdbb0e9edd682e57507a3acf1911e91c924e",
+        "dreamina-prompt-image2video": "26ae8d2fea9f2a1223d8b034e01bc807984753782f4948f187d31f616a08d5b6",
+        "dreamina-prompt-text2image": "b1e64f22222725ac6a7b803bcbaae286d8e54c788ce7d72c3c92720a615ae80f",
+        "dreamina-prompt-text2video": "bd0d9995cfcf94d139b7e1adf351d61aa853177767688c2e81615b23c0a9f3de",
+        "dreamina-shot-annotator": "d112445936462fd66e19d463c9803387600525815e3b1e6180cfc7ba9526dfdf",
+        "dreamina-video-evaluator": "05cc8cc77ae675daa9c58821a52eecc7f65a09ee2d173e83d8440e9430852ac8",
+        "dreamina-video-production": "a5f2e6aff3301440c76420432b23450be332db71da2a7368b06d05f239b651a9"
+      }
+    }
+  ]
+}

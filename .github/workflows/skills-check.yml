@@ -1,0 +1,29 @@
+name: skills-check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  vendor-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Verify vendored skills match the lockfile digests
+        run: python3 scripts/vendor/skill_vendor.py check --offline
+      - name: Verify lockfile pins still match upstream
+        run: python3 scripts/vendor/skill_vendor.py check
+      - name: Reject direct skill edits that bypass the source package
+        if: github.event_name == 'pull_request'
+        run: |
+          changed="$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")"
+          if echo "$changed" | grep -q '^skills/' && ! echo "$changed" | grep -q '^skills\.lock\.json$'; then
+            echo "::error::skills/ changed without skills.lock.json. Skill bodies are vendored; edit the source package and run scripts/vendor/skill_vendor.py update."
+            exit 1
+          fi
