@@ -32,7 +32,9 @@ if len(tail) != 12 or tail[:5] != ['-c:v','libx264','-preset','medium','-crf'] o
 if tail[6:11] != ['-pix_fmt','yuv420p','-movflags','+faststart','-shortest']: raise SystemExit('unexpected encoding suffix')
 out = args[-1]
 if out not in ('output/review.mp4','output/upstream.mp4') or os.path.lexists(out): raise SystemExit('unsafe output')
-actual = ['tools/bin/ffmpeg-real', *args[:-1], '-t', format(duration,'.6f'), out]
+expanded=list(args)
+expanded[18]=f.replace(cmd,'output/panels/motion.cmd')
+actual = ['tools/bin/ffmpeg-real', *expanded[:-1], '-t', format(duration,'.6f'), out]
 fd = os.open('output/compose-argv.json', os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
 try:
     payload = json.dumps({'upstream_argv':['tools/bin/ffmpeg',*args], 'actual_argv':actual}, sort_keys=True).encode()

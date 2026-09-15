@@ -50,11 +50,50 @@ PINNED_SYNC_SCRIPTS = {
     'panel.html': ('9729bf9572e3650699bdeec0a97f81992bfd5a4fe65c27ee771a7ff72b6977b6', 5537),
 }
 BROWSER_PROXY_CODE = b'''#!/usr/bin/python3
-import hashlib, os, sys
+import hashlib, os, secrets, stat, subprocess, sys
+from urllib.parse import unquote, urlsplit
 bundle_fd = int(os.environ["REELBENCH_BROWSER_BUNDLE_FD"])
 executable_fd = int(os.environ["REELBENCH_BROWSER_EXECUTABLE_FD"])
 relative = os.environ["REELBENCH_BROWSER_RELATIVE"]
 expected = os.environ["REELBENCH_BROWSER_SHA256"]
+arguments = list(sys.argv[1:])
+cwd = os.getcwd()
+pages = [a for a in arguments if a.startswith('file://')]
+if len(pages) != 1: raise SystemExit('expected one owned panel page')
+url = urlsplit(pages[0])
+if url.netloc or unquote(url.path) != cwd + '/output/panels/panel.html' or url.fragment not in ('measure','static','tall','tall-lit'): raise SystemExit('unexpected panel page')
+owned = [os.open('.', os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)]
+screen_parent = screen_temp = None
+screen_name = target_name = None
+try:
+    for part in ('output','panels'):
+        owned.append(os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=owned[-1]))
+    page = os.open('panel.html',os.O_RDONLY|os.O_NOFOLLOW,dir_fd=owned[-1])
+    try:
+        if os.fstat(page).st_size > 8388608: raise SystemExit('panel page exceeds byte bound')
+        os.dup2(page,0)
+    finally: os.close(page)
+    arguments[arguments.index(pages[0])]='file:///dev/fd/0#'+url.fragment
+    screenshots=[a for a in arguments if a.startswith('--screenshot=')]
+    if url.fragment == 'measure':
+        if screenshots or '--dump-dom' not in arguments: raise SystemExit('unexpected measure arguments')
+    else:
+        if len(screenshots)!=1: raise SystemExit('expected one screenshot')
+        name={'static':'static.png','tall':'list-dim.png','tall-lit':'list-lit.png'}[url.fragment]
+        if screenshots[0]!='--screenshot='+cwd+'/output/panels/'+name: raise SystemExit('unexpected screenshot path')
+        screen_parent=os.dup(owned[-1])
+        target_name=name
+        try:
+            os.stat(target_name,dir_fd=screen_parent,follow_symlinks=False)
+            raise SystemExit('screenshot destination already exists')
+        except FileNotFoundError: pass
+        screen_name='.browser-'+secrets.token_hex(12)
+        os.mkdir(screen_name,0o700,dir_fd=screen_parent)
+        screen_temp=os.open(screen_name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=screen_parent)
+        os.fsync(screen_parent)
+        arguments[arguments.index(screenshots[0])]='--screenshot='+cwd+'/output/panels/'+screen_name+'/capture.png'
+finally:
+    for fd in reversed(owned): os.close(fd)
 os.fchdir(bundle_fd)
 parent = os.open("Contents", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 try:
@@ -75,8 +114,49 @@ try:
         if digest.hexdigest() != expected: raise SystemExit("browser digest changed")
     finally: os.close(current)
     os.fchdir(parent)
-    os.execve("./" + name, [relative, *sys.argv[1:]], {"PATH":"/usr/bin:/bin", "LANG":"C", "LC_ALL":"C"})
-finally: os.close(parent)
+    completed=subprocess.call([relative,*arguments],executable='./'+name,env={"PATH":"/usr/bin:/bin", "LANG":"C", "LC_ALL":"C"},close_fds=True)
+    if completed: raise SystemExit(completed)
+    if screen_temp is not None:
+        def identity(info): return (info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+        directory=os.fstat(screen_temp)
+        entry=os.stat(screen_name,dir_fd=screen_parent,follow_symlinks=False)
+        if (directory.st_dev,directory.st_ino)!=(entry.st_dev,entry.st_ino): raise SystemExit('screenshot temp directory changed')
+        source=os.open('capture.png',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=screen_temp)
+        try:
+            before=os.fstat(source)
+            if not stat.S_ISREG(before.st_mode) or before.st_uid!=os.getuid() or stat.S_IMODE(before.st_mode)!=0o600 or not 8<=before.st_size<=67108864 or os.pread(source,8,0)!=b'\\x89PNG\\r\\n\\x1a\\n': raise SystemExit('invalid bounded screenshot')
+            out=os.open(target_name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=screen_parent)
+            digest=hashlib.sha256()
+            try:
+                total=0
+                while True:
+                    chunk=os.read(source,1048576)
+                    if not chunk: break
+                    total+=len(chunk)
+                    if total>67108864: raise SystemExit('screenshot exceeds byte bound')
+                    digest.update(chunk)
+                    while chunk:
+                        n=os.write(out,chunk)
+                        if n<=0: raise SystemExit('short screenshot write')
+                        chunk=chunk[n:]
+                if identity(before)!=identity(os.fstat(source)) or identity(before)!=identity(os.stat('capture.png',dir_fd=screen_temp,follow_symlinks=False)): raise SystemExit('screenshot identity changed')
+                os.fsync(out)
+            finally: os.close(out)
+            os.fsync(screen_parent)
+        finally: os.close(source)
+finally:
+    os.close(parent)
+    if screen_temp is not None:
+        directory=os.fstat(screen_temp)
+        entry=os.stat(screen_name,dir_fd=screen_parent,follow_symlinks=False)
+        if (directory.st_dev,directory.st_ino)!=(entry.st_dev,entry.st_ino): raise SystemExit('screenshot cleanup identity changed')
+        try: os.unlink('capture.png',dir_fd=screen_temp)
+        except FileNotFoundError: pass
+        os.fsync(screen_temp)
+        os.close(screen_temp)
+        os.rmdir(screen_name,dir_fd=screen_parent)
+        os.fsync(screen_parent)
+    if screen_parent is not None: os.close(screen_parent)
 '''
 
 
@@ -182,7 +262,7 @@ class ReelBenchAdapter:
                     "mode": stat.S_IMODE(info.st_mode), "device": info.st_dev, "inode": info.st_ino, **record})
                 manifest[target] = {**record, "inode": info.st_ino, "device": info.st_dev, "mode": stat.S_IMODE(info.st_mode)}
             if workflow == 'sync':
-                if (len(SYNC_FFMPEG_PROXY), hashlib.sha256(SYNC_FFMPEG_PROXY).hexdigest()) != (2967, 'e24298262ad84c78769ff94f1c271c30337ad2647b625f922453d19f42d47551'):
+                if (len(SYNC_FFMPEG_PROXY), hashlib.sha256(SYNC_FFMPEG_PROXY).hexdigest()) != (3046, 'eb91010e15e7cb6b16aae3a1489e207893577e10cf864214fc1372eb90c8e293'):
                     raise ReelBenchAdapterError('sync media proxy differs from independent pin')
                 workspace.write(descriptor, 'tools/bin/ffmpeg', SYNC_FFMPEG_PROXY, mode=0o500, quota=True)
                 manifest['tools/bin/ffmpeg'] = {'size_bytes':len(SYNC_FFMPEG_PROXY), 'sha256':hashlib.sha256(SYNC_FFMPEG_PROXY).hexdigest()}
@@ -227,7 +307,7 @@ class ReelBenchAdapter:
             if browser_lease is not None:
                 if (len(BROWSER_PRELOAD), hashlib.sha256(BROWSER_PRELOAD).hexdigest()) != (819, '4e9cb955ef03a99a883e2f4760431f5ba373a3e0b50fe51b9e1c29fa65e2f2c3'):
                     raise ReelBenchAdapterError('browser preload differs from independent pin')
-                if (len(BROWSER_PROXY_CODE), hashlib.sha256(BROWSER_PROXY_CODE).hexdigest()) != (1286, 'f8a1e14e75c1d5f0b0eea01794a30ee7834688236e8b0380f5e13e04b6bc925a'):
+                if (len(BROWSER_PROXY_CODE), hashlib.sha256(BROWSER_PROXY_CODE).hexdigest()) != (5989, '015a6782cf5ff2d8b6612c868f57fbef49d616ac812c1f6478c186acf25dfbf7'):
                     raise ReelBenchAdapterError('browser proxy differs from independent pin')
                 workspace.write(descriptor, 'script/browser-lease.mjs', BROWSER_PRELOAD, mode=0o400, quota=True)
                 manifest['script/browser-lease.mjs'] = {'size_bytes': len(BROWSER_PRELOAD), 'sha256': hashlib.sha256(BROWSER_PRELOAD).hexdigest()}
@@ -350,7 +430,7 @@ class ReelBenchAdapter:
         if not isinstance(result, BoundedProcessResult):
             raise ReelBenchAdapterError("bounded runner returned an invalid result")
         if result.returncode != 0 and not allow_failure:
-            raise ReelBenchAdapterError(f"{action} failed with exit {result.returncode}")
+            raise ReelBenchAdapterError(f"{action} failed with exit {result.returncode}: {result.stderr[-2000:]}")
         if active:
             prefix = f"/dev/fd/{active[0]}/"
             logical = [item.removeprefix(prefix) for item in logical]
