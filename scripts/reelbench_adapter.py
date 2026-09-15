@@ -23,7 +23,35 @@ from scripts.reelbench_exec_helper import HELPER_CODE
 
 # The upstream entrypoint is fixed by this module, not caller input.  Its
 # descriptor launcher differs only in the one allowed pinned program name.
-SYNC_HELPER_CODE = HELPER_CODE.replace("script/video-shots.mjs", "script/video-sync.mjs")
+SYNC_HELPER_CODE = HELPER_CODE.replace("script/video-shots.mjs", "script/video-sync.mjs").replace(
+    "os.execve('tools/node', argv, {'PATH': 'tools/bin', 'LANG': 'C', 'LC_ALL': 'C'})",
+    "os.execve('tools/node', argv, {**{key: os.environ[key] for key in os.environ if key.startswith('REELBENCH_BROWSER_')}, 'PATH': 'tools/bin', 'LANG': 'C', 'LC_ALL': 'C'})",
+)
+BROWSER_PROXY_CODE = b'''#!/usr/bin/python3
+import hashlib, os, sys
+bundle_fd = int(os.environ["REELBENCH_BROWSER_BUNDLE_FD"])
+executable_fd = int(os.environ["REELBENCH_BROWSER_EXECUTABLE_FD"])
+relative = os.environ["REELBENCH_BROWSER_RELATIVE"]
+expected = os.environ["REELBENCH_BROWSER_SHA256"]
+os.fchdir(bundle_fd)
+parent = os.open("Contents/MacOS", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    name = relative.rsplit("/", 1)[-1]
+    current = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+    try:
+        a, b = os.fstat(current), os.fstat(executable_fd)
+        if (a.st_dev, a.st_ino, a.st_size, a.st_mode, a.st_uid) != (b.st_dev, b.st_ino, b.st_size, b.st_mode, b.st_uid): raise SystemExit("browser identity changed")
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(current, 65536)
+            if not chunk: break
+            digest.update(chunk)
+        if digest.hexdigest() != expected: raise SystemExit("browser digest changed")
+    finally: os.close(current)
+    os.fchdir(parent)
+    os.execve("./" + name, [relative, *sys.argv[1:]], {"PATH":"/usr/bin:/bin", "LANG":"C", "LC_ALL":"C"})
+finally: os.close(parent)
+'''
 
 
 MAX_STDOUT_BYTES = 8 * 1024 * 1024
@@ -99,10 +127,12 @@ class ReelBenchAdapter:
         self._workspace = ContextVar("reelbench_workspace", default=None)
 
     @contextmanager
-    def execution_workspace(self, descriptor: int, consumed=(), *, workflow: str = "shots"):
+    def execution_workspace(self, descriptor: int, consumed=(), *, workflow: str = "shots", browser_lease=None):
         """Stage tools once for the complete action; release every acquired handle."""
         if workflow not in {"shots", "sync"}:
             raise ValueError("unknown pinned ReelBench workflow")
+        if browser_lease is not None and workflow != "sync":
+            raise ValueError("browser lease is only valid for the pinned sync workflow")
         staged = {}
         token = None
         manifest = {item["workspace_path"]: {key: item[key] for key in ("size_bytes", "sha256")} for item in consumed}
@@ -157,7 +187,12 @@ class ReelBenchAdapter:
                     raise ValueError('packaged report asset differs from independent pinned digest')
                 workspace.write(descriptor, "script/" + filename, content, mode=0o400, quota=True)
                 manifest["script/" + filename] = {"size_bytes": len(content), "sha256": expected}
-            token = self._workspace.set((descriptor, identities, manifest, workflow))
+            if browser_lease is not None:
+                workspace.write(descriptor, "tools/browser-proxy", BROWSER_PROXY_CODE, mode=0o500, quota=True)
+                with workspace.directory(descriptor, "tools") as tools_fd:
+                    info = os.stat("browser-proxy", dir_fd=tools_fd, follow_symlinks=False)
+                manifest["tools/browser-proxy"] = {"size_bytes": len(BROWSER_PROXY_CODE), "sha256": hashlib.sha256(BROWSER_PROXY_CODE).hexdigest(), "inode": info.st_ino, "device": info.st_dev, "mode": stat.S_IMODE(info.st_mode)}
+            token = self._workspace.set((descriptor, identities, manifest, workflow, browser_lease))
             yield
         finally:
             primary = sys.exc_info()[1]
@@ -224,15 +259,15 @@ class ReelBenchAdapter:
 
     def sync_panels(self, *, shots: Path, source: Path, panels_dir: Path, browser: str) -> ReelBenchAdapterResult:
         """Render the upstream's three review panels using an already verified browser identity."""
-        if not isinstance(browser, str) or not browser.startswith("/") or "\x00" in browser:
-            raise ValueError("browser executable identity is required")
+        if browser != "tools/browser-proxy":
+            raise ValueError("sync browser must be the fixed staged proxy")
         shots_path, source_path, panels_path = self._paths(shots, source, panels_dir)
         return self._run("panels", [str(shots_path), "--video", str(source_path), "--out", str(panels_path), "--chrome", browser], workflow="sync")
 
     def sync_export(self, *, shots: Path, source: Path, panels_dir: Path, output: Path, browser: str) -> ReelBenchAdapterResult:
         """Run the unchanged one-shot upstream export with fixed, service-owned paths."""
-        if not isinstance(browser, str) or not browser.startswith("/") or "\x00" in browser:
-            raise ValueError("browser executable identity is required")
+        if browser != "tools/browser-proxy":
+            raise ValueError("sync browser must be the fixed staged proxy")
         shots_path, source_path, panels_path, output_path = self._paths(shots, source, panels_dir, output)
         return self._run("export", [str(shots_path), "--video", str(source_path), "--panels", str(panels_path), "-o", str(output_path), "--chrome", browser], workflow="sync")
 
@@ -258,10 +293,13 @@ class ReelBenchAdapter:
         argv = ["/usr/bin/python3", "-I", "-c", HELPER_CODE if workflow == "shots" else SYNC_HELPER_CODE, str(descriptor),
                 json.dumps(manifest, sort_keys=True), *logical]
         environment = {"PATH": "tools/bin", "LANG": "C", "LC_ALL": "C"}
+        lease = active[4]
+        if lease is not None:
+            environment.update(lease.proxy_environment)
         try:
             result = self._runner(argv, env=environment, timeout_seconds=MAX_ACTION_SECONDS,
                 stdout_cap=MAX_STDOUT_BYTES, stderr_cap=MAX_STDERR_BYTES,
-                pass_fds=(active[0],), monitor=lambda: workspace.check_action_quota(active[0]))
+                pass_fds=(active[0], *(lease.pass_fds if lease is not None else ())), monitor=lambda: workspace.check_action_quota(active[0]))
         except (BoundedProcessError, OSError) as exc:
             raise ReelBenchAdapterError(f"{action} did not complete safely") from exc
         if not isinstance(result, BoundedProcessResult):

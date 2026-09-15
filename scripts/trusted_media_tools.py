@@ -136,6 +136,53 @@ os.execve('./' + name, [relative, *sys.argv[5:]], {'PATH':'/usr/bin:/bin','LANG'
             if bundle_descriptor >= 0: os.close(bundle_descriptor)
 
 
+class BrowserLaunchLease:
+    """Descriptor-owned multi-launch browser capability for one bounded action.
+
+    Unlike ``BrowserLaunchHandle``, this lease intentionally remains alive for
+    the entire upstream video-sync invocation: that unchanged script starts
+    Chrome once for DOM measurement and once per panel screenshot.  It exposes
+    descriptors only to a fixed proxy process; callers never receive an
+    executable pathname.
+    """
+    def __init__(self, descriptor: int, bundle_descriptor: int, context: BrowserLaunchContext,
+                 relative_executable: str) -> None:
+        self._descriptor = descriptor
+        self._bundle_descriptor = bundle_descriptor
+        self.context = context
+        self._relative_executable = relative_executable
+
+    def __enter__(self):
+        if self._descriptor < 0 or self._bundle_descriptor < 0:
+            raise TrustedMediaToolError("browser launch lease has been closed")
+        return self
+
+    def __exit__(self, *_): self.close()
+
+    @property
+    def proxy_environment(self) -> dict[str, str]:
+        if self._descriptor < 0 or self._bundle_descriptor < 0:
+            raise TrustedMediaToolError("browser launch lease has been closed")
+        return {"REELBENCH_BROWSER_BUNDLE_FD": str(self._bundle_descriptor),
+                "REELBENCH_BROWSER_EXECUTABLE_FD": str(self._descriptor),
+                "REELBENCH_BROWSER_RELATIVE": self._relative_executable,
+                "REELBENCH_BROWSER_SHA256": self.context.executable.sha256}
+
+    @property
+    def pass_fds(self) -> tuple[int, int]:
+        if self._descriptor < 0 or self._bundle_descriptor < 0:
+            raise TrustedMediaToolError("browser launch lease has been closed")
+        return self._bundle_descriptor, self._descriptor
+
+    def close(self) -> None:
+        descriptor, bundle = self._descriptor, self._bundle_descriptor
+        self._descriptor = self._bundle_descriptor = -1
+        try:
+            if descriptor >= 0: os.close(descriptor)
+        finally:
+            if bundle >= 0: os.close(bundle)
+
+
 BROWSER_APPLICATION_POLICIES: Mapping[str, BrowserApplicationPolicy] = {
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome": BrowserApplicationPolicy(
         "com.google.Chrome", "EQHXZ8M8AV",
@@ -194,6 +241,27 @@ class TrustedMediaToolStore:
                 raise TrustedMediaToolError("browser bundle changed during signature verification")
             context = BrowserLaunchContext(executable, signature, datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"))
             return BrowserLaunchHandle(descriptor, bundle_fd, context, f"Contents/MacOS/{Path(executable.source_path).name}")
+        except BaseException:
+            try: os.close(descriptor)
+            finally:
+                if bundle_fd is not None: os.close(bundle_fd)
+            raise
+
+    def reverify_browser_for_sync_lease(self) -> BrowserLaunchLease:
+        """Return a multi-use descriptor lease for one bounded ReelBench sync action."""
+        enrolled = self._record_identity("browser", self._required_record("browser"))
+        descriptor, executable = self._open_verified_fd("browser", enrolled)
+        bundle_fd = None
+        try:
+            bundle = Path(executable.source_path).parents[2]
+            bundle_fd = os.open(bundle, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            bundle_identity = os.fstat(bundle_fd)
+            signature = self._verify_browser_signature(executable.source_path)
+            self._assert_final_path_identity(Path(executable.source_path), os.fstat(descriptor))
+            if not _same_stat_identity(bundle_identity, bundle.lstat()):
+                raise TrustedMediaToolError("browser bundle changed during signature verification")
+            context = BrowserLaunchContext(executable, signature, datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"))
+            return BrowserLaunchLease(descriptor, bundle_fd, context, f"Contents/MacOS/{Path(executable.source_path).name}")
         except BaseException:
             try: os.close(descriptor)
             finally:

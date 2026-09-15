@@ -114,6 +114,18 @@ class TrustedMediaToolStoreTests(unittest.TestCase):
                 self.assertEqual(launch.context.executable.sha256, browser["sha256"])
                 self.assertEqual(launch.context.signature.identifier, "com.google.Chrome")
 
+    def test_sync_browser_lease_exposes_only_descriptor_proxy_environment(self) -> None:
+        with patch("scripts.trusted_media_tools.BROWSER_APPLICATION_POLICIES", {str(self.chrome_path.resolve()): self._browser_policy()}), patch(
+            "scripts.trusted_media_tools.run_bounded", side_effect=self._codesign_success
+        ):
+            self.store.enroll("browser", self.chrome_path, approval_provider=self.approver)
+            with self.store.reverify_browser_for_sync_lease() as lease:
+                environment = lease.proxy_environment
+                self.assertNotIn(str(self.chrome_path), " ".join(environment.values()))
+                self.assertEqual(len(lease.pass_fds), 2)
+            with self.assertRaises(TrustedMediaToolError):
+                _ = lease.pass_fds
+
     def test_browser_rejects_unapproved_path_and_identity_changes(self) -> None:
         unapproved = self.root / "Chromium.app" / "Contents" / "MacOS" / "Chromium"
         unapproved.parent.mkdir(parents=True)

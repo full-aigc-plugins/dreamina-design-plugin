@@ -85,13 +85,12 @@ class ReelBenchSyncService:
         """Render panels via the pinned script, then prove there are exactly three PNG panels."""
         source, shots, workspace_fd, panels = self._inputs(inputs, need_output=False)
         expected = self.plan(source)
-        browser = self._browser_identity()
         try:
-            with self._adapter.execution_workspace(workspace_fd, workflow="sync"):
+            with self._browser_lease() as lease, self._adapter.execution_workspace(workspace_fd, workflow="sync", browser_lease=lease):
+                browser = {"kind": "browser", **lease.context.executable.to_record(), "verified_at": lease.context.verified_at}
                 result = self._adapter.sync_panels(shots=Path("/dev/fd") / str(workspace_fd) / "inputs/shots.json",
                     source=Path("/dev/fd") / str(workspace_fd) / "source/source.mp4",
-                    panels_dir=Path("/dev/fd") / str(workspace_fd) / panels,
-                    browser=browser["source_path"])
+                    panels_dir=Path("/dev/fd") / str(workspace_fd) / panels, browser="tools/browser-proxy")
         except (ReelBenchAdapterError, OSError) as exc:
             raise ReelBenchSyncError("guarded panel rendering failed") from exc
         layout = self._read_json(self._workspace_path(workspace_fd, panels / "layout.json"), maximum=MAX_PANEL_BYTES)
@@ -105,15 +104,15 @@ class ReelBenchSyncService:
         source, shots, workspace_fd, panels = self._inputs(inputs, need_output=True)
         expected = self.plan(source)
         policy = self._audio_policy(inputs, source)
-        browser = self._browser_identity()
         output = Path("output/synchronized-review.mp4")
         try:
-            with self._adapter.execution_workspace(workspace_fd, workflow="sync"):
+            with self._browser_lease() as lease, self._adapter.execution_workspace(workspace_fd, workflow="sync", browser_lease=lease):
+                browser = {"kind": "browser", **lease.context.executable.to_record(), "verified_at": lease.context.verified_at}
                 result = self._adapter.sync_export(shots=Path("/dev/fd") / str(workspace_fd) / "inputs/shots.json",
                     source=Path("/dev/fd") / str(workspace_fd) / "source/source.mp4",
                     panels_dir=Path("/dev/fd") / str(workspace_fd) / panels,
                     output=Path("/dev/fd") / str(workspace_fd) / output,
-                    browser=browser["source_path"])
+                    browser="tools/browser-proxy")
         except (ReelBenchAdapterError, OSError) as exc:
             raise ReelBenchSyncError("guarded review export failed") from exc
         receipt = self.verify({**inputs, "output": output.as_posix(), "layout": expected,
@@ -208,16 +207,13 @@ class ReelBenchSyncService:
             raise ReelBenchSyncError("output descriptor must be workspace-relative")
         return dict(source), dict(shots), descriptor, panels
 
-    def _browser_identity(self) -> dict[str, Any]:
+    def _browser_lease(self):
         if self._trusted_tools is None:
             raise ReelBenchSyncBlockedError()
         try:
-            with self._trusted_tools.reverify_browser_for_launch_handle() as handle:
-                record = {"kind": "browser", **handle.context.executable.to_record(),
-                    "verified_at": handle.context.verified_at}
+            return self._trusted_tools.reverify_browser_for_sync_lease()
         except (TrustedMediaToolError, AttributeError, OSError) as exc:
             raise ReelBenchSyncBlockedError() from exc
-        return record
 
     @staticmethod
     def _source(source: Mapping[str, Any]):
