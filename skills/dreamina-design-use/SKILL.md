@@ -1,9 +1,6 @@
 ---
 name: dreamina-design-use
-description: |
-  Thin router Skill for Dreamina Design image and video workflows.
-  Selects between the 13 packaged Dreamina Skills (dreamina-cli-* and
-  dreamina-prompt-*) and never duplicates their prompt or CLI bodies.
+description: Thin router Skill for Dreamina Design image and video workflows. Selects between the 13 packaged Dreamina Skills (dreamina-cli-* and dreamina-prompt-*) and never duplicates their prompt or CLI bodies.
 ---
 
 # dreamina-design-use
