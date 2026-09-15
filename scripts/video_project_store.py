@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
+import hmac
 import json
 import os
 import re
 import secrets
 import stat
+import sys
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -179,7 +182,11 @@ class VideoProjectStore:
                 for path in family_root.glob("v*.json")
                 if (match := re.fullmatch(r"v([0-9]{3,})", path.stem)) is not None
             ]
+            visible_numbers = list(numbers)
             if version is None:
+                from scripts import reelbench_workspace as ws
+                with ws.absolute_chain(self._root) as (root_fd, _, _), ws.directory(root_fd, project_id) as project_fd:
+                    numbers += self._reserved_numbers_at(project_fd, family)
                 version = f"v{max(numbers, default=0) + 1:03d}"
             elif re.fullmatch(r"v[0-9]{3,}", version) is None:
                 raise ValueError("invalid requested version")
@@ -189,7 +196,7 @@ class VideoProjectStore:
                 if not isinstance(parent_version_field, str) or not parent_version_field:
                     raise ValueError("invalid parent version field")
                 document[parent_version_field] = (
-                    f"v{max(numbers):03d}" if numbers else None
+                    f"v{max(visible_numbers):03d}" if visible_numbers else None
                 )
             if schema_name is not None:
                 validate_contract(document, schema_name)
@@ -207,65 +214,149 @@ class VideoProjectStore:
     def reserve_version(
         self, project_id: str, family: str, payload: Mapping[str, Any], *, schema_name: str,
         operation_id: str, parent_version_field: str | None = None,
+        project_fd: int | None = None, publication_guard=None,
+        fingerprint_field: str | None = None,
     ) -> dict[str, Any]:
-        """Durably reserve one exact create-only version without publishing it."""
+        """Reserve exact bytes and version; pending reservations occupy version numbers."""
         if FAMILY.fullmatch(family) is None or re.fullmatch(r"[a-f0-9]{32,64}", operation_id) is None:
             raise ValueError("invalid reservation identity")
-        with self._exclusive_lock(project_id):
-            self.get(project_id)
-            root = self.project_root(project_id)
-            family_root = root / family
-            family_root.mkdir(mode=0o700, exist_ok=True)
-            numbers = [int(match.group(1)) for path in family_root.glob("v*.json")
-                       if (match := re.fullmatch(r"v([0-9]{3,})", path.stem))]
+        if project_fd is None:
+            from scripts.reelbench_project_service import ReelBenchProjectService
+            with ReelBenchProjectService(self, None)._locked_project(project_id) as (_, fd, _, guard):
+                return self.reserve_version(project_id, family, payload, schema_name=schema_name,
+                    operation_id=operation_id, parent_version_field=parent_version_field,
+                    project_fd=fd, publication_guard=guard, fingerprint_field=fingerprint_field)
+        from scripts import reelbench_workspace as ws
+        with self._reservation_lock(project_fd):
+            ws.mkdir(project_fd, ".reservations")
+            request_fingerprint = canonical_fingerprint({"family": family, "payload": dict(payload),
+                "schema_name": schema_name, "parent_version_field": parent_version_field,
+                "fingerprint_field": fingerprint_field})
+            try:
+                existing = self._read_reservation_at(project_fd, operation_id)
+            except FileNotFoundError:
+                existing = None
+            if existing is not None:
+                if existing["request_fingerprint"] != request_fingerprint:
+                    raise ValueError("reservation differs from exact operation")
+                self._sync_reservation_at(project_fd, operation_id)
+                return existing
+            ws.mkdir(project_fd, family)
+            with ws.directory(project_fd, family) as fd:
+                visible = [int(name[1:-5]) for name in os.listdir(fd)
+                           if re.fullmatch(r"v[0-9]{3,}\.json", name)]
+            numbers = visible + self._reserved_numbers_at(project_fd, family)
             version = f"v{max(numbers, default=0) + 1:03d}"
-            document = dict(payload); document["version"] = version
+            document = dict(payload)
+            document["version"] = version
             if parent_version_field is not None:
-                document[parent_version_field] = f"v{max(numbers):03d}" if numbers else None
+                document[parent_version_field] = f"v{max(visible):03d}" if visible else None
+            if fingerprint_field is not None:
+                document[fingerprint_field] = canonical_fingerprint({k: v for k, v in document.items() if k != fingerprint_field})
             validate_contract(document, schema_name)
             record = {"operation_id": operation_id, "family": family, "version": version,
-                      "payload_fingerprint": canonical_fingerprint(document), "schema_name": schema_name}
-            reservations = root / ".reservations"
-            reservations.mkdir(mode=0o700, exist_ok=True)
-            target = reservations / f"{operation_id}.json"
-            if target.exists():
-                existing = json.loads(target.read_text(encoding="utf-8"))
-                if existing != record:
-                    raise VersionReconciliationError(project_id=project_id, family=family, version=version,
-                        path=target, reason="reservation differs from exact operation")
-                return {**record, "payload": document}
-            self._atomic_write(target, record)
-            return {**record, "payload": document}
-
-    def publish_reserved_version(self, project_id: str, reservation: Mapping[str, Any]) -> dict[str, Any]:
-        """Publish exactly a sealed reservation, never allocating a replacement version."""
-        operation_id = reservation.get("operation_id")
-        if not isinstance(operation_id, str):
-            raise ValueError("reservation operation identity is absent")
-        with self._exclusive_lock(project_id):
-            target = self.project_root(project_id) / ".reservations" / f"{operation_id}.json"
+                      "payload_fingerprint": canonical_fingerprint(document), "schema_name": schema_name,
+                      "request_fingerprint": request_fingerprint, "payload": document}
+            record["seal"] = self._reservation_signature(project_fd, record)
+            if publication_guard is not None:
+                publication_guard()
+            temporary = f".reservations/.reserve-{secrets.token_hex(12)}"
             try:
-                sealed = json.loads(target.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                raise VersionReconciliationError(project_id=project_id, family=str(reservation.get("family")),
-                    version=str(reservation.get("version")), path=target, reason="sealed reservation unavailable") from exc
-            if any(sealed.get(key) != reservation.get(key) for key in ("operation_id", "family", "version", "payload_fingerprint", "schema_name")):
-                raise VersionReconciliationError(project_id=project_id, family=sealed["family"], version=sealed["version"],
-                    path=target, reason="reservation was forged or changed")
-            payload = dict(reservation.get("payload") or {})
-            if canonical_fingerprint(payload) != sealed["payload_fingerprint"]:
-                raise VersionReconciliationError(project_id=project_id, family=sealed["family"], version=sealed["version"],
-                    path=target, reason="reserved payload fingerprint differs")
-            validate_contract(payload, sealed["schema_name"])
-            family_root = self.project_root(project_id) / sealed["family"]
-            family_root.mkdir(mode=0o700, exist_ok=True)
-            target_version = family_root / f"{sealed['version']}.json"
-            indeterminate = VersionCommitIndeterminateError(
-                project_id=project_id, family=sealed["family"], version=sealed["version"],
-                path=target_version, payload_fingerprint=sealed["payload_fingerprint"],
-            )
-            self._atomic_write(target_version, payload, indeterminate_error=indeterminate)
-            return payload
+                ws.write(project_fd, temporary, json.dumps(record, sort_keys=True).encode())
+                os.link(temporary, f".reservations/{operation_id}.json", src_dir_fd=project_fd,
+                        dst_dir_fd=project_fd, follow_symlinks=False)
+                with ws.directory(project_fd, ".reservations") as fd:
+                    os.fsync(fd)
+            finally:
+                primary = sys.exc_info()[1]
+                try:
+                    os.unlink(temporary, dir_fd=project_fd)
+                except FileNotFoundError:
+                    pass
+                except BaseException as exc:
+                    ws.cleanup_failure(primary, exc)
+            return record
+
+    def publish_reserved_version(self, project_id: str, reservation: Mapping[str, Any], *,
+                                 project_fd: int | None = None, publication_guard=None) -> dict[str, Any]:
+        """Publish exactly the reserved version without reacquiring the project lock."""
+        operation_id = reservation.get("operation_id")
+        if not isinstance(operation_id, str) or re.fullmatch(r"[a-f0-9]{32,64}", operation_id) is None:
+            raise ValueError("reservation operation identity is absent")
+        if project_fd is None:
+            from scripts.reelbench_project_service import ReelBenchProjectService
+            with ReelBenchProjectService(self, None)._locked_project(project_id) as (_, fd, _, guard):
+                return self.publish_reserved_version(project_id, reservation, project_fd=fd, publication_guard=guard)
+        with self._reservation_lock(project_fd):
+            sealed = self._read_reservation_at(project_fd, operation_id)
+            if sealed != reservation:
+                raise ValueError("reservation was forged or changed")
+            return self.write_version(project_id, sealed["family"], sealed["payload"],
+                schema_name=sealed["schema_name"], version=sealed["version"], project_fd=project_fd,
+                publication_guard=publication_guard)
+
+    def _read_reservation_at(self, project_fd, operation_id):
+        from scripts import reelbench_workspace as ws
+        if not isinstance(operation_id, str) or re.fullmatch(r"[a-f0-9]{32,64}", operation_id) is None:
+            raise ValueError("invalid reservation identity")
+        name = f".reservations/{operation_id}.json"
+        with ws.file_at(project_fd, name) as fd:
+            if stat.S_IMODE(os.fstat(fd).st_mode) != 0o600:
+                raise ValueError("reservation must be private")
+        record = json.loads(ws.read(project_fd, name))
+        if (set(record) != {"operation_id", "family", "version", "payload_fingerprint", "schema_name", "request_fingerprint", "payload", "seal"}
+            or record["operation_id"] != operation_id or FAMILY.fullmatch(record["family"]) is None
+            or re.fullmatch(r"v[0-9]{3,}", record["version"]) is None
+            or record["payload"].get("version") != record["version"]
+            or canonical_fingerprint(record["payload"]) != record["payload_fingerprint"]):
+            raise ValueError("invalid reservation record")
+        if not isinstance(record["seal"], str) or not hmac.compare_digest(record["seal"], self._reservation_signature(project_fd, record)):
+            raise ValueError("reservation seal differs")
+        validate_contract(record["payload"], record["schema_name"])
+        return record
+
+    def _reservation_signature(self, project_fd, record):
+        from scripts import reelbench_workspace as ws
+        from scripts.reelbench_operation import OperationJournal
+        info = os.fstat(project_fd)
+        body = {k: v for k, v in record.items() if k != "seal"}
+        body["project_identity"] = [info.st_dev, info.st_ino]
+        with ws.absolute_chain(self._root) as (store_fd, _, _):
+            key = OperationJournal(store_fd, project_fd, "", self._root).key
+        return hmac.new(key, canonical_fingerprint(body).encode(), hashlib.sha256).hexdigest()
+
+    def _reserved_numbers_at(self, project_fd, family):
+        from scripts import reelbench_workspace as ws
+        try:
+            with ws.directory(project_fd, ".reservations") as fd:
+                names = os.listdir(fd)
+        except FileNotFoundError:
+            return []
+        records = [self._read_reservation_at(project_fd, name[:-5]) for name in names
+                   if re.fullmatch(r"[a-f0-9]{32,64}\.json", name)]
+        return [int(r["version"][1:]) for r in records if r["family"] == family]
+
+    @staticmethod
+    def _sync_reservation_at(project_fd, operation_id):
+        from scripts import reelbench_workspace as ws
+        with ws.file_at(project_fd, f".reservations/{operation_id}.json") as fd:
+            os.fsync(fd)
+        with ws.directory(project_fd, ".reservations") as fd:
+            os.fsync(fd)
+        os.fsync(project_fd)
+
+    @staticmethod
+    @contextmanager
+    def _reservation_lock(project_fd):
+        fd = os.open(".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=project_fd)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600 or info.st_uid != os.getuid():
+                raise ValueError("project lock must be private")
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)
 
     def reconcile_reserved_version(self, project_id: str, reservation: Mapping[str, Any]) -> dict[str, Any]:
         """Read only the exact durable subject reserved by one operation."""
@@ -523,7 +614,9 @@ class VideoProjectStore:
         published = False
         try:
             os.fchmod(descriptor, 0o600)
-            with os.fdopen(descriptor, "wb") as handle:
+            handle = os.fdopen(descriptor, "wb")
+            descriptor = -1  # Ownership moved to the file object; never close a reused fd.
+            with handle:
                 handle.write(encoded)
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -543,10 +636,11 @@ class VideoProjectStore:
             finally:
                 os.close(directory)
         except BaseException as exc:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
             try:
                 os.unlink(temporary)
             except OSError:

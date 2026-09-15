@@ -127,22 +127,25 @@ class ReelBenchProjectService:
         with self._locked_project(project_id) as (_store_fd, project_fd, _root, guard):
             result = self._validate_comparison_locked(project_fd, project_id, analysis_version, reelbench_version)
             if comparison is not None:
-                expected = {
-                    "schema_version": "1.1", "project_id": project_id,
-                    "source_sha256": result["analysis"]["source"]["source_sha256"],
-                    "native_analysis_version": analysis_version,
-                    "native_analysis_fingerprint": result["analysis"]["machine_fingerprint"],
-                    "reelbench_evidence_version": reelbench_version,
-                    "reelbench_evidence_fingerprint": result["evidence"]["evidence_fingerprint"],
-                    "tolerances": dict(_COMPARISON_TOLERANCES), "domains": result["domains"],
-                    "mismatches": result["mismatches"], "overall": result["overall"],
-                }
-                if any(comparison.get(key) != value for key, value in expected.items()):
-                    raise ValueError("comparison receipt differs from recomputed immutable inputs")
-                if comparison.get("comparison_fingerprint") != canonical_fingerprint({k: v for k, v in comparison.items() if k != "comparison_fingerprint"}):
-                    raise ValueError("comparison fingerprint differs from canonical receipt")
+                self._assert_comparison(result, project_id, analysis_version, reelbench_version, comparison)
             guard()
             return result
+
+    @staticmethod
+    def _assert_comparison(result, project_id, analysis_version, reelbench_version, comparison):
+        validate_reelbench_comparison(comparison)
+        expected = {
+            "schema_version": "1.1", "project_id": project_id,
+            "source_sha256": result["analysis"]["source"]["source_sha256"],
+            "native_analysis_version": analysis_version,
+            "native_analysis_fingerprint": result["analysis"]["machine_fingerprint"],
+            "reelbench_evidence_version": reelbench_version,
+            "reelbench_evidence_fingerprint": result["evidence"]["evidence_fingerprint"],
+            "tolerances": dict(_COMPARISON_TOLERANCES), "domains": result["domains"],
+            "mismatches": result["mismatches"], "overall": result["overall"],
+        }
+        if any(comparison.get(key) != value for key, value in expected.items()):
+            raise ValueError("comparison receipt differs from recomputed immutable inputs")
 
     def _validate_comparison_locked(self, project_fd, project_id, analysis_version, reelbench_version):
         analysis = self._store.read_version(project_id, "analysis", analysis_version, "shot_analysis.schema.json")
@@ -259,10 +262,10 @@ class ReelBenchProjectService:
         native_duration = native_source["duration_seconds"]
         if not math.isclose(native_duration, reel_duration, rel_tol=0.0, abs_tol=duration_tolerance):
             mismatch("duration", "duration", f"{native_duration:.6f}", f"{reel_duration:.6f}")
-        for index, reason in enumerate(cls._timeline_mismatches(native_shots, native_duration, "native"), 1):
-            mismatch("timeline_continuity", "native_timeline", "continuous timeline", reason, f"S{index:02d}")
-        for index, reason in enumerate(cls._timeline_mismatches(reel_shots, reel_duration, "reelbench"), 1):
-            mismatch("timeline_continuity", "reelbench_timeline", "continuous timeline", reason, f"S{index:02d}")
+        for shot_id, reason in cls._timeline_mismatches(native_shots, native_duration, "native"):
+            mismatch("timeline_continuity", "native_timeline", "continuous timeline", reason, shot_id)
+        for shot_id, reason in cls._timeline_mismatches(reel_shots, reel_duration, "reelbench"):
+            mismatch("timeline_continuity", "reelbench_timeline", "continuous timeline", reason, shot_id)
         if len(native_shots) != len(reel_shots):
             mismatch("shot_count", "shot_count", len(native_shots), len(reel_shots))
         for native in native_shots[len(reel_shots):]:
@@ -324,16 +327,16 @@ class ReelBenchProjectService:
             start = measured.get("start_seconds", measured.get("start"))
             end = measured.get("end_seconds", measured.get("end"))
             if not cls._finite_number(start) or not cls._finite_number(end) or end <= start:
-                reasons.append(f"{label} shot {index} has invalid boundaries")
+                reasons.append((shot["id"], f"{label} shot {index} has invalid boundaries"))
                 continue
             if not math.isclose(start, previous_end, rel_tol=0.0, abs_tol=0.001):
                 reasons.append(
-                    f"{label} shot {index} is discontinuous: start={start:.6f}, expected={previous_end:.6f}"
+                    (shot["id"], f"{label} shot {index} is discontinuous: start={start:.6f}, expected={previous_end:.6f}")
                 )
             previous_end = end
         if not math.isclose(previous_end, total_duration, rel_tol=0.0, abs_tol=0.001):
             reasons.append(
-                f"{label} timeline end differs from duration: end={previous_end:.6f}, duration={total_duration:.6f}"
+                (None, f"{label} timeline end differs from duration: end={previous_end:.6f}, duration={total_duration:.6f}")
             )
         return reasons
 
@@ -356,7 +359,7 @@ class ReelBenchProjectService:
         samples = [value for value in values[max(0, start_index):max(0, end_index) + 1]
                    if cls._finite_number(value)]
         if not samples:
-            return None, True
+            return None, False
         samples.sort()
         middle = len(samples) // 2
         median = samples[middle] if len(samples) % 2 else (samples[middle - 1] + samples[middle]) / 2
@@ -776,22 +779,10 @@ class ReelBenchProjectService:
                 "reelbench_comparison.schema.json",
             )
             validate_reelbench_comparison(receipt)
-            self._validate_comparison_locked(project_fd, error.project_id,
-                                             receipt["native_analysis_version"], receipt["reelbench_evidence_version"])
-            # Reuse the public comparison contract's exact-field checks without
-            # reopening a second project lock.
             expected = self._validate_comparison_locked(project_fd, error.project_id,
-                                                        receipt["native_analysis_version"], receipt["reelbench_evidence_version"])
-            fields = {"schema_version": "1.1", "project_id": error.project_id,
-                      "source_sha256": expected["analysis"]["source"]["source_sha256"],
-                      "native_analysis_version": receipt["native_analysis_version"],
-                      "native_analysis_fingerprint": expected["analysis"]["machine_fingerprint"],
-                      "reelbench_evidence_version": receipt["reelbench_evidence_version"],
-                      "reelbench_evidence_fingerprint": expected["evidence"]["evidence_fingerprint"],
-                      "tolerances": _COMPARISON_TOLERANCES, "domains": expected["domains"],
-                      "mismatches": expected["mismatches"], "overall": expected["overall"]}
-            if any(receipt.get(key) != value for key, value in fields.items()):
-                raise ValueError("comparison recovery does not match current immutable inputs")
+                receipt["native_analysis_version"], receipt["reelbench_evidence_version"])
+            self._assert_comparison(expected, error.project_id, receipt["native_analysis_version"],
+                receipt["reelbench_evidence_version"], receipt)
             guard()
             return receipt
 
