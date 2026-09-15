@@ -122,12 +122,18 @@ class ShotAnalysisService:
         if not blocking:
             document = {**candidate, "analysis_version": analysis_version}
             if indeterminate_commit is None:
-                persisted = self._store.write_version(
-                    project_id,
-                    "annotation",
-                    document,
-                    schema_name="shot_annotation.schema.json",
-                )
+                if comparison_version is None:
+                    persisted = self._store.write_version(
+                        project_id, "annotation", document, schema_name="shot_annotation.schema.json",
+                    )
+                else:
+                    operation_id = canonical_fingerprint({"family": "annotation", "project_id": project_id,
+                                                         "document": document, "comparison_version": comparison_version})
+                    reservation = self._store.reserve_version(
+                        project_id, "annotation", document, schema_name="shot_annotation.schema.json",
+                        operation_id=operation_id,
+                    )
+                    persisted = self._store.publish_reserved_version(project_id, reservation)
             else:
                 expected_path = (
                     self._store.project_root(project_id)

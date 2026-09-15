@@ -206,7 +206,7 @@ class VideoProjectStore:
 
     def reserve_version(
         self, project_id: str, family: str, payload: Mapping[str, Any], *, schema_name: str,
-        operation_id: str,
+        operation_id: str, parent_version_field: str | None = None,
     ) -> dict[str, Any]:
         """Durably reserve one exact create-only version without publishing it."""
         if FAMILY.fullmatch(family) is None or re.fullmatch(r"[a-f0-9]{32,64}", operation_id) is None:
@@ -220,6 +220,8 @@ class VideoProjectStore:
                        if (match := re.fullmatch(r"v([0-9]{3,})", path.stem))]
             version = f"v{max(numbers, default=0) + 1:03d}"
             document = dict(payload); document["version"] = version
+            if parent_version_field is not None:
+                document[parent_version_field] = f"v{max(numbers):03d}" if numbers else None
             validate_contract(document, schema_name)
             record = {"operation_id": operation_id, "family": family, "version": version,
                       "payload_fingerprint": canonical_fingerprint(document), "schema_name": schema_name}
@@ -254,7 +256,16 @@ class VideoProjectStore:
             if canonical_fingerprint(payload) != sealed["payload_fingerprint"]:
                 raise VersionReconciliationError(project_id=project_id, family=sealed["family"], version=sealed["version"],
                     path=target, reason="reserved payload fingerprint differs")
-            return self.write_version(project_id, sealed["family"], payload, schema_name=sealed["schema_name"], version=sealed["version"])
+            validate_contract(payload, sealed["schema_name"])
+            family_root = self.project_root(project_id) / sealed["family"]
+            family_root.mkdir(mode=0o700, exist_ok=True)
+            target_version = family_root / f"{sealed['version']}.json"
+            indeterminate = VersionCommitIndeterminateError(
+                project_id=project_id, family=sealed["family"], version=sealed["version"],
+                path=target_version, payload_fingerprint=sealed["payload_fingerprint"],
+            )
+            self._atomic_write(target_version, payload, indeterminate_error=indeterminate)
+            return payload
 
     def reconcile_reserved_version(self, project_id: str, reservation: Mapping[str, Any]) -> dict[str, Any]:
         """Read only the exact durable subject reserved by one operation."""

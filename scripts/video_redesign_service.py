@@ -134,13 +134,21 @@ class VideoRedesignService:
             "design_fingerprint": fingerprint,
             "committed_at": _now(),
         }
-        design = self._store.write_version(
-            project_id,
-            "redesign",
-            document,
-            schema_name="video_redesign.schema.json",
-            parent_version_field="parent_version",
-        )
+        if comparison_version is None:
+            design = self._store.write_version(
+                project_id, "redesign", document, schema_name="video_redesign.schema.json",
+                parent_version_field="parent_version",
+            )
+        else:
+            # The sealed reservation is the composite operation intent: the
+            # exact design bytes/version are durable before sidecar binding.
+            operation_id = canonical_fingerprint({"family": "redesign", "project_id": project_id,
+                                                  "document": document, "comparison_version": comparison_version})
+            reservation = self._store.reserve_version(
+                project_id, "redesign", document, schema_name="video_redesign.schema.json",
+                operation_id=operation_id, parent_version_field="parent_version",
+            )
+            design = self._store.publish_reserved_version(project_id, reservation)
         if comparison_version is not None:
             from scripts.reelbench_binding_service import ReelBenchBindingService
             ReelBenchBindingService(self._store).bind(
