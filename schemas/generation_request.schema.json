@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/generation_request.schema.json",
+  "$id": "https://github.com/partme-ai/partme-dreamina-design/schemas/generation_request.schema.json",
   "title": "Dreamina Generation Request",
   "type": "object",
   "additionalProperties": false,

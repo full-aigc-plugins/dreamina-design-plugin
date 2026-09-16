@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-15  
 **Status:** Proposed for implementation  
-**Repository:** `partme-ai/codex-dreamina-design-plugin`  
+**Repository:** `partme-ai/partme-dreamina-design`  
 **Upstream:** `eternityspring/reelbench-skills@18f2f63987337df0975a89973d38d50f3231ee31`
 
 ## 1. Objective

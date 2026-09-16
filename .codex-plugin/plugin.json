@@ -6,8 +6,8 @@
     "name": "Full Stack Skills / PartMe.AI",
     "url": "https://github.com/partme-ai"
   },
-  "homepage": "https://github.com/partme-ai/codex-dreamina-design-plugin",
-  "repository": "https://github.com/partme-ai/codex-dreamina-design-plugin",
+  "homepage": "https://github.com/partme-ai/partme-dreamina-design",
+  "repository": "https://github.com/partme-ai/partme-dreamina-design",
   "license": "Apache-2.0",
   "keywords": [
     "dreamina",
@@ -29,9 +29,9 @@
       "Read",
       "Write"
     ],
-    "websiteURL": "https://github.com/partme-ai/codex-dreamina-design-plugin",
-    "privacyPolicyURL": "https://github.com/partme-ai/codex-dreamina-design-plugin/blob/main/PRIVACY.md",
-    "termsOfServiceURL": "https://github.com/partme-ai/codex-dreamina-design-plugin/blob/main/TERMS.md",
+    "websiteURL": "https://github.com/partme-ai/partme-dreamina-design",
+    "privacyPolicyURL": "https://github.com/partme-ai/partme-dreamina-design/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/partme-ai/partme-dreamina-design/blob/main/TERMS.md",
     "defaultPrompt": [
       "Create a Dreamina image from this design brief",
       "Turn these references into a Dreamina video",

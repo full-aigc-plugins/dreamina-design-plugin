@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/dcc_previs_receipt.schema.json",
+  "$id": "https://github.com/partme-ai/partme-dreamina-design/schemas/dcc_previs_receipt.schema.json",
   "title": "DccPrevisReceipt",
   "description": "Receipt emitted by codex-blender or codex-maya preview export, consumed by the dreamina-design seedance_pipeline handoff validator.",
   "type": "object",

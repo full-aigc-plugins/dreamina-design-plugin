@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/artifact_receipt.schema.json",
+  "$id": "https://github.com/partme-ai/partme-dreamina-design/schemas/artifact_receipt.schema.json",
   "title": "Dreamina Artifact Receipt",
   "type": "object",
   "additionalProperties": false,

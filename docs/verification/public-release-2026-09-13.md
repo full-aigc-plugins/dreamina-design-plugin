@@ -5,7 +5,7 @@
 - plugin version: `0.2.0`
 - public marketplace: `partme-ai-dreamina-design`
 - plugin selector: `codex-dreamina-design@partme-ai-dreamina-design`
-- source: `https://github.com/partme-ai/codex-dreamina-design-plugin.git`, ref `main`
+- source: `https://github.com/partme-ai/partme-dreamina-design.git`, ref `main`
 
 ## Installed cache
 

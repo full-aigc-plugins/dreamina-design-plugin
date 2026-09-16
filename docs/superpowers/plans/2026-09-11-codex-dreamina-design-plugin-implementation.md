@@ -8,7 +8,7 @@
 
 **Tech Stack:** Codex plugin, Agent Skills, Python, JSON Schema, unittest/pytest.
 
-**Spec:** `docs/superpowers/specs/2026-09-11-codex-dreamina-design-plugin-design.md`
+**Spec:** `docs/superpowers/specs/2026-09-11-partme-dreamina-design-design.md`
 
 **Completion audit (2026-09-12):** all seven tasks are implemented and the
 checkboxes below were reconciled against source, commit history, 203 passing

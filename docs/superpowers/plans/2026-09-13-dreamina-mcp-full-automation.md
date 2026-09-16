@@ -687,9 +687,9 @@ git push origin main
 
 - [x] **Step 8: Wait for terminal GitHub CI success**
 
-Run: `gh run list --repo partme-ai/codex-dreamina-design-plugin --commit "$(git rev-parse HEAD)" --limit 1`
+Run: `gh run list --repo partme-ai/partme-dreamina-design --commit "$(git rev-parse HEAD)" --limit 1`
 
-Then wait on the returned run with `gh run watch <run-id> --repo partme-ai/codex-dreamina-design-plugin --exit-status`.
+Then wait on the returned run with `gh run watch <run-id> --repo partme-ai/partme-dreamina-design --exit-status`.
 
 Expected: terminal conclusion `success`.
 

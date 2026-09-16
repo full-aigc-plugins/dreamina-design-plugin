@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ID = "codex-dreamina-design"
 DISPLAY_NAME = "Dreamina Design"
-REPOSITORY = "https://github.com/partme-ai/codex-dreamina-design-plugin"
+REPOSITORY = "https://github.com/partme-ai/partme-dreamina-design"
 BRAND_COLOR = "#EC4899"
 
 def load_json(relative: str) -> dict:

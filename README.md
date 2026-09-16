@@ -6,7 +6,7 @@
 
 > Create Dreamina images and videos from Codex, with runtime CLI discovery, explicit approval for every paid call, and submissions you can resume by identifier.
 
-[![Version](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/partme-ai/codex-dreamina-design-plugin)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/partme-ai/partme-dreamina-design)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [Install](#installation) · [Quick start](#quick-start) · [MCP tools](#mcp-tools) · [Troubleshooting](#troubleshooting)
@@ -148,7 +148,7 @@ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ### From the plugin marketplace
 
 ```bash
-codex plugin marketplace add partme-ai/codex-dreamina-design-plugin --ref main
+codex plugin marketplace add partme-ai/partme-dreamina-design --ref main
 codex plugin add codex-dreamina-design@partme-ai-dreamina-design
 ```
 
@@ -309,7 +309,7 @@ Recorded evidence:
 ## Project structure
 
 ```text
-codex-dreamina-design-plugin/
+partme-dreamina-design/
 ├── .codex-plugin/plugin.json   # identity and presentation metadata
 ├── .mcp.json                   # local stdio MCP server declaration
 ├── .agents/plugins/marketplace.json
@@ -323,12 +323,12 @@ codex-dreamina-design-plugin/
 
 - [Architecture](docs/Codex-Dreamina-Design-Plugin-Architecture.md) · [架构文档](docs/Codex-Dreamina-Design-Plugin-Architecture.zh_CN.md)
 - [Technical solution](docs/Codex-Dreamina-Design-Plugin-Technical-Solution.md) · [技术方案](docs/Codex-Dreamina-Design-Plugin-Technical-Solution.zh_CN.md)
-- [Design spec](docs/superpowers/specs/2026-09-11-codex-dreamina-design-plugin-design.md)
+- [Design spec](docs/superpowers/specs/2026-09-11-partme-dreamina-design-design.md)
 - [Production-readiness hardening plan](docs/superpowers/plans/2026-09-12-production-readiness-hardening.md)
 
 ## Contributing and support
 
-Open functional issues at <https://github.com/partme-ai/codex-dreamina-design-plugin/issues>. Before proposing a change, state the CLI version you verified against, whether it alters the approval envelope or the receipt format, and include the affected gate output.
+Open functional issues at <https://github.com/partme-ai/partme-dreamina-design/issues>. Before proposing a change, state the CLI version you verified against, whether it alters the approval envelope or the receipt format, and include the affected gate output.
 
 ## License
 

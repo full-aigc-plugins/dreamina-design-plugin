@@ -77,7 +77,7 @@ def _write_minimal_repo(tmp: Path) -> Path:
             {
                 "name": "codex-dreamina-design",
                 "version": "0.1.0",
-                "repository": "https://github.com/partme-ai/codex-dreamina-design-plugin",
+                "repository": "https://github.com/partme-ai/partme-dreamina-design",
                 "skills": "./skills/",
                 "interface": {
                     "displayName": "Dreamina Design",
@@ -104,7 +104,7 @@ def _write_minimal_repo(tmp: Path) -> Path:
                         "name": "codex-dreamina-design",
                         "source": {
                             "source": "url",
-                            "url": "https://github.com/partme-ai/codex-dreamina-design-plugin.git",
+                            "url": "https://github.com/partme-ai/partme-dreamina-design.git",
                             "ref": "main",
                         },
                         "policy": {"installation": "AVAILABLE", "authentication": "ON_USE"},
@@ -293,7 +293,7 @@ class LinkAuditTests(unittest.TestCase):
         verifier = DistributionV7Verifier(root=self.root)
         report = verifier.run()
         self.assertTrue(report.marketplace_url_matches)
-        self.assertEqual(report.repository_url, "https://github.com/partme-ai/codex-dreamina-design-plugin")
+        self.assertEqual(report.repository_url, "https://github.com/partme-ai/partme-dreamina-design")
 
 
 class PluginValidatorIntegrationTests(unittest.TestCase):

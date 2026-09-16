@@ -6,7 +6,7 @@
 
 > 在 Codex 中创作 Dreamina 图片与视频：运行时发现 CLI 能力、每次付费调用都要明确批准、提交结果可凭标识续查。
 
-[![版本](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/partme-ai/codex-dreamina-design-plugin)
+[![版本](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/partme-ai/partme-dreamina-design)
 [![许可证](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [安装](#安装) · [快速开始](#快速开始) · [MCP 工具](#mcp-工具) · [故障排查](#故障排查)
@@ -148,7 +148,7 @@ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ### 从插件市场安装
 
 ```bash
-codex plugin marketplace add partme-ai/codex-dreamina-design-plugin --ref main
+codex plugin marketplace add partme-ai/partme-dreamina-design --ref main
 codex plugin add codex-dreamina-design@partme-ai-dreamina-design
 ```
 
@@ -309,7 +309,7 @@ python3 scripts/unlock_runtime_gates.py status
 ## 项目结构
 
 ```text
-codex-dreamina-design-plugin/
+partme-dreamina-design/
 ├── .codex-plugin/plugin.json   # 身份与展示元数据
 ├── .mcp.json                   # 本地 stdio MCP 服务器声明
 ├── .agents/plugins/marketplace.json
@@ -323,12 +323,12 @@ codex-dreamina-design-plugin/
 
 - [Architecture](docs/Codex-Dreamina-Design-Plugin-Architecture.md) · [架构文档](docs/Codex-Dreamina-Design-Plugin-Architecture.zh_CN.md)
 - [Technical solution](docs/Codex-Dreamina-Design-Plugin-Technical-Solution.md) · [技术方案](docs/Codex-Dreamina-Design-Plugin-Technical-Solution.zh_CN.md)
-- [设计规格](docs/superpowers/specs/2026-09-11-codex-dreamina-design-plugin-design.md)
+- [设计规格](docs/superpowers/specs/2026-09-11-partme-dreamina-design-design.md)
 - [生产就绪加固计划](docs/superpowers/plans/2026-09-12-production-readiness-hardening.md)
 
 ## 贡献与支持
 
-功能问题请提交到 <https://github.com/partme-ai/codex-dreamina-design-plugin/issues>。提交变更前，请说明你验证所用的 CLI 版本、是否改动批准信封或回执格式，并附上受影响的门禁输出。
+功能问题请提交到 <https://github.com/partme-ai/partme-dreamina-design/issues>。提交变更前，请说明你验证所用的 CLI 版本、是否改动批准信封或回执格式，并附上受影响的门禁输出。
 
 ## 许可证
 
