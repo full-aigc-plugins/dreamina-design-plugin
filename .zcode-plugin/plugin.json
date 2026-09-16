@@ -1,0 +1,41 @@
+{
+  "name": "dreamina-design",
+  "displayName": "Dreamina Design",
+  "displayName_i18n": {
+    "en": "Dreamina Design",
+    "zh-CN": "即梦设计"
+  },
+  "version": "0.4.0",
+  "description": "Dreamina image and video design workflows with runtime CLI discovery and resumable operations.",
+  "description_i18n": {
+    "en": "Dreamina image and video design workflows with runtime CLI discovery and resumable operations.",
+    "zh-CN": "即梦（Dreamina）图片与视频设计工作流：运行时 CLI 发现、断点续跑、Seedance 视频编排与批量出图。"
+  },
+  "author": {
+    "name": "Full Stack Skills / PartMe.AI",
+    "url": "https://github.com/partme-ai"
+  },
+  "homepage": "https://github.com/partme-ai/codex-dreamina-design-plugin",
+  "repository": "https://github.com/partme-ai/codex-dreamina-design-plugin",
+  "license": "Apache-2.0",
+  "keywords": [
+    "dreamina",
+    "jimeng",
+    "seedance",
+    "text2image",
+    "text2video"
+  ],
+  "skills": "skills",
+  "commands": "commands",
+  "mcpServers": {
+    "dreamina_design": {
+      "command": "/usr/bin/python3",
+      "args": ["-m", "scripts.dreamina_mcp_server"],
+      "cwd": "${ZCODE_PLUGIN_ROOT}",
+      "env": {
+        "PYTHONPATH": "${ZCODE_PLUGIN_ROOT}"
+      },
+      "timeoutMs": 3600000
+    }
+  }
+}

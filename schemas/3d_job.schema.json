@@ -1,0 +1,351 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/partme-ai/codex-dreamina-3d-plugin/schemas/3d_job.schema.json",
+  "title": "Dreamina3DJob",
+  "description": "End-to-end job ledger entry for codex-dreamina-3d. References receipts by immutable ID and SHA-256; never embeds credentials or scene data.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "job_id",
+    "state",
+    "revision",
+    "created_at",
+    "updated_at",
+    "selected_companion",
+    "preview",
+    "quote_inputs",
+    "submit",
+    "submission_intent",
+    "history"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "job_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "Draft",
+        "DccSelected",
+        "PreviewSpecified",
+        "PreviewValidated",
+        "CapabilityResolved",
+        "Quoted",
+        "Approved",
+        "Submitted",
+        "Querying",
+        "Completed",
+        "Failed",
+        "Unknown"
+      ]
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonic revision; bumps on every committed transition."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "error_category": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        null,
+        "missing_companion",
+        "stale_preview",
+        "hash_mismatch",
+        "unsupported_media",
+        "restoration_unconfirmed",
+        "quote_changed",
+        "duplicate_submit",
+        "timeout",
+        "design_error",
+        "unknown"
+      ]
+    },
+    "execution_policy": {
+      "type": "object",
+      "description": "Non-secret automatic-run envelope; immutable once quoting begins.",
+      "required": [
+        "mode",
+        "max_charge",
+        "permit_one_submission",
+        "permit_reference_upload",
+        "permit_unquoted_exact_request"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "interactive",
+            "auto_with_budget",
+            "auto_exact_request",
+            "review_only"
+          ]
+        },
+        "max_charge": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9]+(?:\\.[0-9]+)?$"
+        },
+        "permit_one_submission": {
+          "type": "boolean"
+        },
+        "permit_reference_upload": {
+          "type": "boolean"
+        },
+        "permit_unquoted_exact_request": {
+          "type": "boolean"
+        },
+        "download_root": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Approved root for downloaded result artifacts. The orchestrator rejects any artifact that resolves outside this root."
+        }
+      }
+    },
+    "submission_intent": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "request_fingerprint",
+        "status"
+      ],
+      "properties": {
+        "request_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "accepted",
+            "unknown"
+          ]
+        }
+      }
+    },
+    "selected_companion": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "plugin_id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "contract_version": {
+          "type": "string"
+        }
+      }
+    },
+    "preview": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Immutable reference to the validated preview receipt.",
+      "required": [
+        "artifact_id",
+        "sha256",
+        "producer_plugin",
+        "producer_version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "producer_plugin": {
+          "type": "string"
+        },
+        "producer_version": {
+          "type": "string"
+        }
+      }
+    },
+    "quote_inputs": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Inputs to the most recent quote. Any change to these values invalidates Quoted/Approved.",
+      "required": [
+        "prompt",
+        "model",
+        "resolution",
+        "ratio",
+        "duration_seconds"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resolution": {
+          "type": "string",
+          "pattern": "^([0-9]{2,4}x[0-9]{2,4}|[0-9]{3,4}p)$",
+          "description": "Exact resolution as accepted by the Dreamina MCP: '720p' or '1280x720'."
+        },
+        "ratio": {
+          "type": "string",
+          "pattern": "^[0-9]+:[0-9]+$"
+        },
+        "duration_seconds": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 60
+        },
+        "reference_artifact_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "submit": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Persisted only after the design plugin returns a submit id.",
+      "additionalProperties": false,
+      "properties": {
+        "design_submit_id": {
+          "type": "string"
+        },
+        "submitted_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "last_queried_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "design_status": {
+          "type": "string",
+          "enum": [
+            "submitted",
+            "succeeded",
+            "failed",
+            "unknown"
+          ]
+        }
+      }
+    },
+    "result": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Final artifact reference; populated only on Completed.",
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    "preview_hash_validated": {
+      "type": "boolean"
+    },
+    "resolved_capability": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "quote": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": true
+    },
+    "approval": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": true
+    },
+    "approved_by": {
+      "type": "string"
+    },
+    "approved_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "history": {
+      "type": "array",
+      "description": "Append-only transition log.",
+      "items": {
+        "type": "object",
+        "required": [
+          "from_state",
+          "to_state",
+          "at"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "from_state": {
+            "type": "string"
+          },
+          "to_state": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

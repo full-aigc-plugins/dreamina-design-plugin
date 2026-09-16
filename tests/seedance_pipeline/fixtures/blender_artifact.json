@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "producer_plugin": "codex-blender",
+  "producer_version": "0.1.0",
+  "artifact_id": "blender_preview_abc123",
+  "path": "/tmp/fixtures/blender_preview.mp4",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "codec": "h264",
+  "container": "mp4",
+  "dimensions": {"width": 1280, "height": 720},
+  "fps": 24.0,
+  "duration_seconds": 4.0,
+  "bytes": 524288,
+  "camera": {"name": "Camera.001", "focal_length_mm": 50.0},
+  "frame_range": {"start": 1, "end": 96},
+  "preview_mode": "camera_render",
+  "restoration": {"status": "confirmed", "evidence": "scene_state_restored"}
+}

@@ -1,0 +1,121 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/partme-ai/codex-dreamina-design-plugin/schemas/dcc_previs_receipt.schema.json",
+  "title": "DccPrevisReceipt",
+  "description": "Receipt emitted by codex-blender or codex-maya preview export, consumed by the dreamina-design seedance_pipeline handoff validator.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "producer_plugin",
+    "producer_version",
+    "artifact_id",
+    "path",
+    "sha256",
+    "codec",
+    "dimensions",
+    "fps",
+    "duration_seconds",
+    "bytes",
+    "camera",
+    "frame_range",
+    "preview_mode",
+    "restoration"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0",
+      "description": "Receipt schema version. The orchestrator only accepts 1.0.0."
+    },
+    "producer_plugin": {
+      "type": "string",
+      "enum": ["codex-blender", "codex-maya"]
+    },
+    "producer_version": {
+      "type": "string",
+      "description": "Producer plugin version. Must satisfy the orchestrator's supported range."
+    },
+    "artifact_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$",
+      "description": "Stable, opaque producer-assigned identifier. Referenced immutably by jobs."
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute or user-approved path to the preview artifact."
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Lowercase hex SHA-256 of the artifact bytes."
+    },
+    "codec": {
+      "type": "string",
+      "const": "h264"
+    },
+    "container": {
+      "type": "string",
+      "const": "mp4"
+    },
+    "dimensions": {
+      "type": "object",
+      "required": ["width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "width": {"type": "integer", "minimum": 16, "maximum": 4096},
+        "height": {"type": "integer", "minimum": 16, "maximum": 4096}
+      }
+    },
+    "fps": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 120
+    },
+    "duration_seconds": {
+      "type": "number",
+      "minimum": 0.1,
+      "maximum": 60.0
+    },
+    "bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "camera": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": true,
+      "properties": {
+        "name": {"type": "string", "minLength": 1}
+      }
+    },
+    "frame_range": {
+      "type": "object",
+      "required": ["start", "end"],
+      "additionalProperties": false,
+      "properties": {
+        "start": {"type": "integer", "minimum": 0},
+        "end": {"type": "integer", "minimum": 0}
+      }
+    },
+    "preview_mode": {
+      "type": "string",
+      "enum": ["camera_render", "local_video"]
+    },
+    "restoration": {
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": true,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["confirmed", "unknown", "skipped"]
+        },
+        "evidence": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

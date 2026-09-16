@@ -1,0 +1,42 @@
+{
+  "name": "dreamina-design",
+  "version": "0.4.0",
+  "description": "Dreamina image and video design workflows with runtime CLI discovery and resumable operations.",
+  "author": {
+    "name": "Full Stack Skills / PartMe.AI"
+  },
+  "homepage": "https://github.com/partme-ai/codex-dreamina-design-plugin",
+  "license": "Apache-2.0",
+  "keywords": [
+    "dreamina",
+    "jimeng",
+    "seedance"
+  ],
+  "interface": {
+    "displayName": "Dreamina Design",
+    "shortDescription": "Dreamina image and video design workflows",
+    "longDescription": "Operate Dreamina (即梦) from your coding agent: text2image, image2image, text2video, image2video, Seedance pipeline orchestration with submit-once recovery, and prompt guidance for every mode.",
+    "developerName": "Full Stack Skills / PartMe.AI",
+    "websiteURL": "https://github.com/partme-ai/codex-dreamina-design-plugin"
+  },
+  "skills": "./skills/",
+  "commands": "./commands/",
+  "mcpServers": {
+    "dreamina_design": {
+      "command": "/usr/bin/python3",
+      "args": ["-m", "scripts.dreamina_mcp_server"]
+    }
+  },
+  "hooks": [
+    {
+      "event": "SessionStart",
+      "command": "python3 ./hooks/env_check.py",
+      "timeout": 30
+    },
+    {
+      "event": "UserPromptSubmit",
+      "command": "python3 ./hooks/check_dreamina_intent.py",
+      "timeout": 15
+    }
+  ]
+}
