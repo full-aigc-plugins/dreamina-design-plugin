@@ -174,6 +174,28 @@ codex mcp list
 
 让 Codex 读取 CLI 状态与账号就绪度。只读工具不会弹窗；付费工具会拉起原生确认。
 
+### 国内镜像（AtomGit）
+
+如果 GitHub 访问缓慢或不可达，可改用 AtomGit 镜像安装。命令完全一致，只把市场地址换成镜像：
+
+```bash
+codex plugin marketplace add https://atomgit.com/partme-ai/partme-dreamina-design.git --ref main
+codex plugin add dreamina-design@partme-ai-dreamina-design
+```
+
+如需一步安装 partme-ai 全部插件目录：
+
+```bash
+codex plugin marketplace add https://atomgit.com/partme-ai/plugins.git
+codex plugin add dreamina-design@partme-ai-dreamina-design
+```
+
+注意事项：
+
+- AtomGit 源与 GitHub 源共用市场名，后添加的会覆盖先添加的。切回官方源执行
+  `codex plugin marketplace add https://github.com/partme-ai/plugins.git`。
+- ZCode 与 Kimi 用户可先将镜像仓库克隆到本地，再在各平台的 marketplace 配置中登记本地目录。
+
 ## 快速开始
 
 ### 1. 先完成一次 CLI 信任注册
