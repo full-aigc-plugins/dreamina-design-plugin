@@ -1,1 +1,29 @@
-{"name":"partme-ai-dreamina-design","interface":{"displayName":"PartMe.AI Dreamina Design"},"plugins":[{"name":"codex-dreamina-design","source":{"source":"url","url":"https://github.com/partme-ai/partme-dreamina-design.git","ref":"main"},"policy":{"installation":"AVAILABLE","authentication":"ON_USE"},"category":"Creativity"}]}
+{
+  "name": "partme-ai-dreamina-design",
+  "interface": {
+    "displayName": "Dreamina Design"
+  },
+  "plugins": [
+    {
+      "name": "dreamina-design",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/partme-ai/partme-dreamina-design.git",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Creativity",
+      "version": "0.4.0",
+      "description": "Create and edit Dreamina images and videos with approval-aware, resumable operations and verified downloads.",
+      "icon": "https://raw.githubusercontent.com/partme-ai/partme-dreamina-design/main/assets/logo-approved.png",
+      "interface": {
+        "displayName": "Dreamina Design",
+        "shortDescription": "Create images and videos with Dreamina",
+        "logo": "https://raw.githubusercontent.com/partme-ai/partme-dreamina-design/main/assets/logo-approved.png"
+      }
+    }
+  ]
+}

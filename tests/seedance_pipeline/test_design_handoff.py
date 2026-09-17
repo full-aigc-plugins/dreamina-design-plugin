@@ -4,7 +4,7 @@ The design handoff must:
   - send a normalized multimodal request containing the validated preview
     receipt/hash + user prompt and never the DCC scene data;
   - delegate capability resolution, quote, approve, submit, query, and
-    download through the public codex-dreamina-design receipt interface;
+    download through the public dreamina-design receipt interface;
   - persist the design submit ID BEFORE reporting success;
   - on duplicate submit return the existing submit id (no new paid action);
   - on quote mismatch invalidate the quote;

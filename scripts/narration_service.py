@@ -21,7 +21,7 @@ from scripts.json_contracts import ContractValidationError, canonical_fingerprin
 AUDIO_POLICIES = frozenset({"full_redesign", "preserve_authorized_audio", "subtitles_only", "silent"})
 AUDIO_CLASSES = frozenset({"voice", "dialogue", "music", "effects", "ambience"})
 _DIGEST = re.compile(r"^[a-f0-9]{64}$")
-_ATTESTATION_DOMAIN = b"codex-dreamina-design/audio-artifact/v1\x00"
+_ATTESTATION_DOMAIN = b"dreamina-design/audio-artifact/v1\x00"
 
 
 class AudioReceiptKeyUnavailableError(PermissionError):
@@ -30,7 +30,7 @@ class AudioReceiptKeyUnavailableError(PermissionError):
 
 class FileAudioReceiptKeyStore:
     def __init__(self, path: Path | None = None) -> None:
-        self.path = Path(path) if path else Path.home() / ".config/codex-dreamina-design/audio-receipt.key"
+        self.path = Path(path) if path else Path.home() / ".config/dreamina-design/audio-receipt.key"
         self.marker_path = self.path.with_name(self.path.name + ".initialized")
         self.history_path = self.path.with_name(self.path.name + ".bootstrap-history")
         self._ensure_private_parent()
@@ -113,7 +113,7 @@ class FileAudioReceiptKeyStore:
             raise AudioReceiptKeyUnavailableError("audio receipt key is invalid")
         marker = self._read_private_file(self.marker_path, maximum=512)
         key_id = hashlib.sha256(key).hexdigest()
-        expected = hmac.new(key, b"codex-dreamina-design/audio-key-marker/v1\x00" + key_id.encode(), hashlib.sha256).hexdigest()
+        expected = hmac.new(key, b"dreamina-design/audio-key-marker/v1\x00" + key_id.encode(), hashlib.sha256).hexdigest()
         try:
             payload = json.loads(marker.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -161,7 +161,7 @@ class FileAudioReceiptKeyStore:
             )
             if token != "native-audio-receipt-key-confirmed":
                 raise AudioReceiptKeyUnavailableError("native approval was not granted")
-            seal = hmac.new(key, b"codex-dreamina-design/audio-key-marker/v1\x00" + key_id.encode(), hashlib.sha256).hexdigest()
+            seal = hmac.new(key, b"dreamina-design/audio-key-marker/v1\x00" + key_id.encode(), hashlib.sha256).hexdigest()
             marker = json.dumps({"version": 1, "key_id": key_id, "seal": seal}, sort_keys=True, separators=(",", ":")).encode()
             created = []
             try:

@@ -13,7 +13,7 @@
 
 ## 项目定位
 
-`codex-dreamina-design` 通过一个本地 stdio MCP 服务器，把官方 Dreamina CLI 以 21 个带类型的工具暴露给 Codex。每次付费调用都要通过服务端确认，每次提交都会拿到稳定的 `submit_id`，每个任务在重新提交之前都必须先查询。
+`dreamina-design` 通过一个本地 stdio MCP 服务器，把官方 Dreamina CLI 以 21 个带类型的工具暴露给 Codex。每次付费调用都要通过服务端确认，每次提交都会拿到稳定的 `submit_id`，每个任务在重新提交之前都必须先查询。
 
 插件是严格包装：CLI 负责认证与远端 API，模型参数来自实时 CLI schema，任何工具都不接受任意 shell 输入。
 
@@ -39,7 +39,7 @@
       │
       ▼
 ┌──────────────────────────────────────────────────────────┐
-│ codex-dreamina-design                                    │
+│ dreamina-design                                    │
 │  ① discover   实时 CLI 能力快照与状态                    │
 │  ② contract   经过校验的生成请求                         │
 │  ③ approve    付费调用走原生确认弹窗                     │
@@ -54,7 +54,7 @@
 
 | 项目属性 | 值 |
 |---|---|
-| 插件 ID | `codex-dreamina-design` |
+| 插件 ID | `dreamina-design` |
 | 宿主 | Codex CLI 或 ChatGPT 桌面应用 |
 | 当前版本 | `0.4.0` |
 | 插件清单 | `.codex-plugin/plugin.json` |
@@ -149,7 +149,7 @@ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 
 ```bash
 codex plugin marketplace add partme-ai/partme-dreamina-design --ref main
-codex plugin add codex-dreamina-design@partme-ai-dreamina-design
+codex plugin add dreamina-design@partme-ai-dreamina-design
 ```
 
 重启 Codex 或 ChatGPT 桌面应用，然后新建任务，让 MCP 服务器启动并加载 Skills。
@@ -163,7 +163,7 @@ codex plugin list
 预期条目：
 
 ```text
-codex-dreamina-design@partme-ai-dreamina-design  installed, enabled
+dreamina-design@partme-ai-dreamina-design  installed, enabled
 ```
 
 再确认 MCP 服务器已注册、CLI 已被信任：
@@ -202,8 +202,8 @@ codex mcp list
 |---|---|---|
 | MCP 服务器 | `.mcp.json` | stdio；启动超时 10 秒，工具超时 3600 秒 |
 | 工具批准模式 | `.mcp.json` | 只读工具为 `approve`，付费与写类工具为 `prompt` |
-| 受信 CLI 记录 | `~/.config/codex-dreamina-design/trusted-cli.json` | 文件权限 `0600`，目录权限 `0700`；保存路径与摘要 |
-| 状态根目录 | `~/.local/share/codex-dreamina-design/` | 内含 `operations/` 与 `approvals/` |
+| 受信 CLI 记录 | `~/.config/dreamina-design/trusted-cli.json` | 文件权限 `0600`，目录权限 `0700`；保存路径与摘要 |
+| 状态根目录 | `~/.local/share/dreamina-design/` | 内含 `operations/` 与 `approvals/` |
 | CLI 诊断日志 | `~/.dreamina_cli/logs` | 仅通过有界且脱敏的诊断工具读取 |
 | 透传环境变量 | `HOME`、`TMPDIR`、`LANG`、`LC_ALL`、`PATH` | 在 `.mcp.json` 中声明 |
 
@@ -257,9 +257,9 @@ codex mcp list
 
 | 数据 | 位置 | 生命周期 | 是否含秘密 |
 |---|---|---|---|
-| 操作回执 | `~/.local/share/codex-dreamina-design/operations/` | 直到你删除 | 否；标识、哈希、状态与时间戳 |
-| 批准回执 | `~/.local/share/codex-dreamina-design/approvals/` | 五分钟或一次性 | 否；落盘前会剥离形似凭据的键 |
-| 受信 CLI 记录 | `~/.config/codex-dreamina-design/trusted-cli.json` | 直到你重新注册或删除 | 否；仅路径与摘要 |
+| 操作回执 | `~/.local/share/dreamina-design/operations/` | 直到你删除 | 否；标识、哈希、状态与时间戳 |
+| 批准回执 | `~/.local/share/dreamina-design/approvals/` | 五分钟或一次性 | 否；落盘前会剥离形似凭据的键 |
+| 受信 CLI 记录 | `~/.config/dreamina-design/trusted-cli.json` | 直到你重新注册或删除 | 否；仅路径与摘要 |
 | 已下载产物 | 你选择的目标位置 | 直到你删除 | 否 |
 
 ## 安全

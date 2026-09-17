@@ -81,8 +81,8 @@ Upstream remains the fact source: `dreamina-skills` is pinned by commit in `skil
 |---|---|---|
 | MCP server | `.mcp.json` | stdio; startup timeout 10 seconds, tool timeout 3600 seconds |
 | Tool approval mode | `.mcp.json` | `approve` for read-only tools, `prompt` for paid and mutating tools |
-| Trust record | `~/.config/codex-dreamina-design/trusted-cli.json` | File `0600`, directory `0700`; path and digest |
-| State root | `~/.local/share/codex-dreamina-design/` | Holds `operations/` and `approvals/` |
+| Trust record | `~/.config/dreamina-design/trusted-cli.json` | File `0600`, directory `0700`; path and digest |
+| State root | `~/.local/share/dreamina-design/` | Holds `operations/` and `approvals/` |
 | Reference policy | `scripts/reference_policy.py` | 50 MiB per image, 512 MiB per media file, containment and type checks |
 
 ## 6. Error model

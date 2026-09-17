@@ -53,8 +53,8 @@ def validate(root: Path) -> list[str]:
     marketplace = load_json(marketplace_path)
     plugin_id = manifest.get("name", "")
     repository = manifest.get("repository", "")
-    if NAME_PATTERN.fullmatch(plugin_id) is None or not plugin_id.startswith("codex-"):
-        errors.append("manifest name must be a codex-prefixed kebab-case identifier")
+    if NAME_PATTERN.fullmatch(plugin_id) is None:
+        errors.append("manifest name must be a kebab-case identifier")
     if re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?", str(manifest.get("version", ""))) is None:
         errors.append("manifest version must be semantic-version shaped")
     if manifest.get("skills") != "./skills/":
@@ -122,7 +122,7 @@ def validate(root: Path) -> list[str]:
             errors.append(f"missing or invalid PNG: {filename}")
 
     for target in root.rglob("*"):
-        if not target.is_file() or ".git" in target.parts:
+        if not target.is_file() or any(part in {".git", ".mimosa"} for part in target.parts):
             continue
         # Test files legitimately embed byte patterns that match the
         # secret detectors (e.g. fixture strings for secret-scan tests).

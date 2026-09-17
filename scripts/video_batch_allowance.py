@@ -55,7 +55,7 @@ class SealKeyUnavailableError(BatchScopeError):
     """The stable private allowance seal key is missing, changed, or unsafe."""
 
 
-_SEAL_DOMAIN = b"codex-dreamina-design/video-batch-allowance/v1\x00"
+_SEAL_DOMAIN = b"dreamina-design/video-batch-allowance/v1\x00"
 
 
 _ALLOWANCE_ID = re.compile(r"^ba_[a-f0-9]{32}$")
@@ -81,7 +81,7 @@ class FileSealKeyStore:
     """Load one stable 256-bit HMAC key from an owner-only no-follow file."""
 
     def __init__(self, path: Path | None = None) -> None:
-        self.path = Path(path) if path is not None else Path.home() / ".config" / "codex-dreamina-design" / "allowance-seal.key"
+        self.path = Path(path) if path is not None else Path.home() / ".config" / "dreamina-design" / "allowance-seal.key"
         parent = self.path.parent
         parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)

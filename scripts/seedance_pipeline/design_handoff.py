@@ -1,6 +1,6 @@
 """Dreamina Design handoff for codex-dreamina-3d.
 
-Talks to codex-dreamina-design via argv + JSON only. The orchestrator never
+Talks to dreamina-design via argv + JSON only. The orchestrator never
 imports the design plugin's modules. All operations go through the public
 receipt interface (capabilities, quote, approve, submit, query, download).
 

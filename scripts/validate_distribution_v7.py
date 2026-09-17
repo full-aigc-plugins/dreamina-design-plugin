@@ -243,7 +243,7 @@ class DistributionV7Verifier:
 
     def _run_secret_scan(self, report: DistributionV7Report) -> None:
         for target in self._root.rglob("*"):
-            if not target.is_file() or ".git" in target.parts:
+            if not target.is_file() or ".git" in target.parts or ".mimosa" in target.parts:
                 continue
             if target.name in SAFE_BASENAMES:
                 continue

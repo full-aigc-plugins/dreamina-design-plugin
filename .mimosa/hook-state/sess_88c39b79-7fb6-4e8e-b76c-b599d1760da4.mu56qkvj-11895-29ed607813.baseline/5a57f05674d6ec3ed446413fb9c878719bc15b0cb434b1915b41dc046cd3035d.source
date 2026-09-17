@@ -1,0 +1,280 @@
+"""Fixed browser bridge with an action-private profile and screenshot staging."""
+BROWSER_PROXY_CODE = b'''#!/usr/bin/python3
+import binascii, codecs, hashlib, os, secrets, selectors, signal, stat, struct, subprocess, sys, threading, time, zlib
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from html.parser import HTMLParser
+from urllib.parse import unquote, urlsplit
+def png_terminal(directory):
+    try: source=os.open('capture.png',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=directory)
+    except FileNotFoundError: return None
+    try:
+        info=os.fstat(source)
+        if not stat.S_ISREG(info.st_mode) or not 8<=info.st_size<=67108864: return None
+        payload=bytearray()
+        while True:
+            chunk=os.read(source,65536)
+            if not chunk: break
+            payload.extend(chunk)
+            if len(payload)>67108864: return None
+        if not payload.startswith(b'\\x89PNG\\r\\n\\x1a\\n'): return None
+        offset=8; compressed=bytearray(); expected=None; ended=False
+        while offset+12<=len(payload):
+            size=struct.unpack('>I',payload[offset:offset+4])[0]
+            kind=payload[offset+4:offset+8]; end=offset+12+size
+            if end>len(payload): return None
+            data=payload[offset+8:end-4]
+            if binascii.crc32(kind+data)&0xffffffff!=struct.unpack('>I',payload[end-4:end])[0]: return None
+            if kind==b'IHDR':
+                if size!=13: return None
+                width,height,depth,color,compression,filter_kind,interlace=struct.unpack('>IIBBBBB',data)
+                channels={0:1,2:3,4:2,6:4}.get(color)
+                if depth!=8 or channels is None or compression or filter_kind or interlace or width<1 or height<1: return None
+                expected=(width*channels+1)*height
+                if expected>536870912: return None
+            elif kind==b'IDAT': compressed.extend(data)
+            elif kind==b'IEND': ended=True
+            offset=end
+            if ended: break
+        if not ended or offset!=len(payload) or expected is None or not compressed: return None
+        decoder=zlib.decompressobj(); total=0; data=bytes(compressed)
+        while data:
+            out=decoder.decompress(data,1048576); total+=len(out)
+            if total>expected: return None
+            tail=decoder.unconsumed_tail
+            if not out and tail==data: return None
+            data=tail
+        if total!=expected or not decoder.eof or decoder.unused_data: return None
+        after=os.fstat(source)
+        identity=(info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+        if identity!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns): return None
+        return identity,hashlib.sha256(payload).hexdigest()
+    except (ValueError,zlib.error,struct.error): return None
+    finally: os.close(source)
+
+class TerminalDom(HTMLParser):
+    def __init__(self):
+        super().__init__(); self.started=False; self.closed=False; self.invalid=False
+    def handle_starttag(self,tag,attrs):
+        if tag=='html':
+            if self.started: self.invalid=True
+            self.started=True
+        if self.closed: self.invalid=True
+    def handle_endtag(self,tag):
+        if tag=='html':
+            if not self.started or self.closed: self.invalid=True
+            self.closed=True
+    def handle_data(self,data):
+        if self.closed and data.strip(): self.invalid=True
+
+def terminal_browser(executable,argv,environment,screenshot_directory):
+    child=subprocess.Popen(argv,executable=executable,env=environment,stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,stderr=subprocess.PIPE,close_fds=True,start_new_session=True)
+    read_fd,write_fd=os.pipe()
+    watch_code="import os,select,signal,sys; fd=int(sys.argv[1]); pid=int(sys.argv[2]); ready=select.select([fd],[],[],65)[0]; data=os.read(fd,1) if ready else b''; os.close(fd); exec(\"if data!=b'D':\\n try: os.killpg(pid,signal.SIGKILL)\\n except ProcessLookupError: pass\")"
+    watchdog=subprocess.Popen(['/usr/bin/python3','-I','-c',watch_code,str(read_fd),str(child.pid)],
+        pass_fds=(read_fd,),stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+    os.close(read_fd)
+    selector=selectors.DefaultSelector(); output=bytearray(); errors=bytearray()
+    decoder=codecs.getincrementaldecoder('utf-8')('strict'); parser=TerminalDom(); prior_png=None
+    def stop():
+        try: os.killpg(child.pid,signal.SIGTERM)
+        except ProcessLookupError: pass
+        try: child.wait(timeout=.2)
+        except subprocess.TimeoutExpired: pass
+        try: os.killpg(child.pid,signal.SIGKILL)
+        except ProcessLookupError: pass
+        child.wait(timeout=1)
+    def interrupted(signum,frame):
+        stop()
+        raise SystemExit(128+signum)
+    original_term=signal.signal(signal.SIGTERM,interrupted)
+    original_int=signal.signal(signal.SIGINT,interrupted)
+    deadline=time.monotonic()+60; complete=False
+    try:
+        for stream,label in ((child.stdout,'out'),(child.stderr,'err')):
+            os.set_blocking(stream.fileno(),False); selector.register(stream,selectors.EVENT_READ,label)
+        while time.monotonic()<deadline:
+            for event,_ in selector.select(.05):
+                chunk=os.read(event.fd,65536)
+                if not chunk: selector.unregister(event.fileobj); continue
+                target=output if event.data=='out' else errors
+                target.extend(chunk)
+                if len(target)>(8388608 if event.data=='out' else 1048576): raise SystemExit('browser output exceeded bound')
+                if event.data=='out' and screenshot_directory is None: parser.feed(decoder.decode(chunk))
+            if screenshot_directory is None:
+                complete=parser.closed and not parser.invalid and not decoder.getstate()[0]
+            else:
+                current=png_terminal(screenshot_directory)
+                complete=current is not None and current==prior_png
+                prior_png=current
+            if complete: break
+            if child.poll() is not None and not selector.get_map() and (screenshot_directory is None or prior_png is None): break
+        if not complete:
+            sys.stderr.buffer.write(errors)
+            raise SystemExit('browser terminal evidence unavailable before deadline')
+    finally:
+        stop()
+        selector.close(); child.stdout.close(); child.stderr.close()
+        try: os.write(write_fd,b'D')
+        except BrokenPipeError: pass
+        os.close(write_fd)
+        watchdog.wait(timeout=2)
+        signal.signal(signal.SIGTERM,original_term); signal.signal(signal.SIGINT,original_int)
+    sys.stdout.buffer.write(output); sys.stdout.buffer.flush()
+bundle_fd = int(os.environ["REELBENCH_BROWSER_BUNDLE_FD"])
+executable_fd = int(os.environ["REELBENCH_BROWSER_EXECUTABLE_FD"])
+relative = os.environ["REELBENCH_BROWSER_RELATIVE"]
+expected = os.environ["REELBENCH_BROWSER_SHA256"]
+arguments = list(sys.argv[1:])
+if any(a.startswith(('--user-data-dir','--profile-directory','--load-extension')) for a in arguments): raise SystemExit('ambient browser profile arguments forbidden')
+cwd = os.getcwd()
+pages = [a for a in arguments if a.startswith('file://')]
+if len(pages) != 1: raise SystemExit('expected one owned panel page')
+url = urlsplit(pages[0])
+if url.netloc or unquote(url.path) != cwd + '/output/panels/panel.html' or url.fragment not in ('measure','static','tall','tall-lit'): raise SystemExit('unexpected panel page')
+owned = [os.open('.', os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)]
+profile_parent=os.dup(owned[0])
+try: os.mkdir('browser_profile',0o700,dir_fd=profile_parent)
+except FileExistsError: pass
+profile=os.open('browser_profile',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=profile_parent)
+def verify_profile():
+    info=os.fstat(profile)
+    entry=os.stat('browser_profile',dir_fd=profile_parent,follow_symlinks=False)
+    if (info.st_dev,info.st_ino)!=(entry.st_dev,entry.st_ino) or info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=0o700: raise SystemExit('browser profile identity changed')
+verify_profile()
+os.fsync(profile_parent)
+try: os.mkdir('tmp',0o700,dir_fd=profile)
+except FileExistsError: pass
+temporary_profile=os.open('tmp',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=profile)
+os.close(temporary_profile)
+arguments[:0]=['--user-data-dir='+cwd+'/browser_profile','--disable-extensions','--disable-sync',
+    '--disable-background-networking','--disable-component-update','--disable-default-apps',
+    '--disable-client-side-phishing-detection','--disable-domain-reliability','--disable-breakpad',
+    '--no-first-run','--no-default-browser-check','--metrics-recording-only',
+    '--use-mock-keychain','--password-store=basic','--enable-automation','--disable-search-engine-choice-screen',
+    '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost','--disable-features=DialMediaRouteProvider,MediaRouter,OptimizationHints,AutofillServerCommunication']
+screen_parent = screen_temp = None
+screen_name = target_name = None
+try:
+    for part in ('output','panels'):
+        owned.append(os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=owned[-1]))
+    page = os.open('panel.html',os.O_RDONLY|os.O_NOFOLLOW,dir_fd=owned[-1])
+    try:
+        before=os.fstat(page)
+        if not stat.S_ISREG(before.st_mode) or before.st_uid!=os.getuid() or before.st_size > 8388608: raise SystemExit('panel page exceeds byte bound')
+        content=bytearray()
+        while True:
+            chunk=os.read(page,65536)
+            if not chunk: break
+            content.extend(chunk)
+            if len(content)>8388608: raise SystemExit('panel page exceeds byte bound')
+        after=os.fstat(page)
+        if (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns): raise SystemExit('panel page changed')
+    finally: os.close(page)
+    route='/'+secrets.token_hex(24)+'/panel.html'
+    class PageHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path!=route:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type','text/html; charset=utf-8')
+            self.send_header('Content-Length',str(len(content)))
+            self.send_header('Cache-Control','no-store')
+            self.end_headers()
+            self.wfile.write(content)
+        def log_message(self,*args): pass
+    server=HTTPServer(('127.0.0.1',0),PageHandler)
+    thread=threading.Thread(target=lambda:server.serve_forever(poll_interval=.05),daemon=True)
+    thread.start()
+    arguments[:0]=['--proxy-server=http://127.0.0.1:'+str(server.server_port),'--proxy-bypass-list=127.0.0.1:'+str(server.server_port)]
+    arguments[arguments.index(pages[0])]='http://127.0.0.1:'+str(server.server_port)+route+'#'+url.fragment
+    screenshots=[a for a in arguments if a.startswith('--screenshot=')]
+    if url.fragment == 'measure':
+        if screenshots or '--dump-dom' not in arguments: raise SystemExit('unexpected measure arguments')
+    else:
+        if len(screenshots)!=1: raise SystemExit('expected one screenshot')
+        name={'static':'static.png','tall':'list-dim.png','tall-lit':'list-lit.png'}[url.fragment]
+        if screenshots[0]!='--screenshot='+cwd+'/output/panels/'+name: raise SystemExit('unexpected screenshot path')
+        screen_parent=os.dup(owned[-1])
+        target_name=name
+        try:
+            os.stat(target_name,dir_fd=screen_parent,follow_symlinks=False)
+            raise SystemExit('screenshot destination already exists')
+        except FileNotFoundError: pass
+        screen_name='.browser-'+secrets.token_hex(12)
+        os.mkdir(screen_name,0o700,dir_fd=screen_parent)
+        screen_temp=os.open(screen_name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=screen_parent)
+        os.fsync(screen_parent)
+        arguments[arguments.index(screenshots[0])]='--screenshot='+cwd+'/output/panels/'+screen_name+'/capture.png'
+finally:
+    for fd in reversed(owned): os.close(fd)
+os.fchdir(bundle_fd)
+parent = os.open("Contents", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    child = os.open("MacOS", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+finally: os.close(parent)
+parent = child
+try:
+    name = relative.rsplit("/", 1)[-1]
+    current = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+    try:
+        a, b = os.fstat(current), os.fstat(executable_fd)
+        if (a.st_dev, a.st_ino, a.st_size, a.st_mode, a.st_uid) != (b.st_dev, b.st_ino, b.st_size, b.st_mode, b.st_uid): raise SystemExit("browser identity changed")
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(current, 65536)
+            if not chunk: break
+            digest.update(chunk)
+        if digest.hexdigest() != expected: raise SystemExit("browser digest changed")
+    finally: os.close(current)
+    os.fchdir(parent)
+    terminal_browser('./'+name,[relative,*arguments],{"PATH":"/usr/bin:/bin", "LANG":"C", "LC_ALL":"C"},screen_temp)
+    verify_profile()
+    if screen_temp is not None:
+        def identity(info): return (info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+        directory=os.fstat(screen_temp)
+        entry=os.stat(screen_name,dir_fd=screen_parent,follow_symlinks=False)
+        if (directory.st_dev,directory.st_ino)!=(entry.st_dev,entry.st_ino): raise SystemExit('screenshot temp directory changed')
+        source=os.open('capture.png',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=screen_temp)
+        try:
+            before=os.fstat(source)
+            if not stat.S_ISREG(before.st_mode) or before.st_uid!=os.getuid() or stat.S_IMODE(before.st_mode)!=0o600 or not 8<=before.st_size<=67108864 or os.pread(source,8,0)!=b'\\x89PNG\\r\\n\\x1a\\n': raise SystemExit('invalid bounded screenshot')
+            out=os.open(target_name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=screen_parent)
+            digest=hashlib.sha256()
+            try:
+                total=0
+                while True:
+                    chunk=os.read(source,1048576)
+                    if not chunk: break
+                    total+=len(chunk)
+                    if total>67108864: raise SystemExit('screenshot exceeds byte bound')
+                    digest.update(chunk)
+                    while chunk:
+                        n=os.write(out,chunk)
+                        if n<=0: raise SystemExit('short screenshot write')
+                        chunk=chunk[n:]
+                if identity(before)!=identity(os.fstat(source)) or identity(before)!=identity(os.stat('capture.png',dir_fd=screen_temp,follow_symlinks=False)): raise SystemExit('screenshot identity changed')
+                os.fsync(out)
+            finally: os.close(out)
+            os.fsync(screen_parent)
+        finally: os.close(source)
+finally:
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=1)
+    os.close(parent)
+    os.close(profile)
+    os.close(profile_parent)
+    if screen_temp is not None:
+        directory=os.fstat(screen_temp)
+        entry=os.stat(screen_name,dir_fd=screen_parent,follow_symlinks=False)
+        if (directory.st_dev,directory.st_ino)!=(entry.st_dev,entry.st_ino): raise SystemExit('screenshot cleanup identity changed')
+        try: os.unlink('capture.png',dir_fd=screen_temp)
+        except FileNotFoundError: pass
+        os.fsync(screen_temp)
+        os.close(screen_temp)
+        os.rmdir(screen_name,dir_fd=screen_parent)
+        os.fsync(screen_parent)
+    if screen_parent is not None: os.close(screen_parent)
+'''

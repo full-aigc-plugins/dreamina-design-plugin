@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-09-17T08:00:00.419Z",
+  "sessionId": "sess_88c39b79-7fb6-4e8e-b76c-b599d1760da4",
+  "event": "PostToolUse",
+  "toolName": "Edit",
+  "file": "/Users/wandl/workspaces/workspace-partme-ai/partme-maya-plugin/tests/test_distribution.py",
+  "outcome": "inconclusive",
+  "coverage": "partial",
+  "findingCount": 0,
+  "durationMs": 3,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}

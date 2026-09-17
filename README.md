@@ -13,7 +13,7 @@
 
 ## Positioning
 
-`codex-dreamina-design` exposes the official Dreamina CLI to Codex through a local stdio MCP server with 21 typed tools. Every paid call passes a server-side confirmation, every submission gets a stable `submit_id`, and every task is queried before it is ever resubmitted.
+`dreamina-design` exposes the official Dreamina CLI to Codex through a local stdio MCP server with 21 typed tools. Every paid call passes a server-side confirmation, every submission gets a stable `submit_id`, and every task is queried before it is ever resubmitted.
 
 The plugin is a strict wrapper: the CLI owns authentication and the remote API, model parameters come from the live CLI schema, and no tool accepts arbitrary shell input.
 
@@ -39,7 +39,7 @@ Creative intent
       │
       ▼
 ┌──────────────────────────────────────────────────────────┐
-│ codex-dreamina-design                                    │
+│ dreamina-design                                    │
 │  ① discover   live CLI capability snapshot and status    │
 │  ② contract   validated generation request               │
 │  ③ approve    native confirmation for paid calls         │
@@ -54,7 +54,7 @@ Downloaded image or video artifact + operation receipt
 
 | Property | Value |
 |---|---|
-| Plugin ID | `codex-dreamina-design` |
+| Plugin ID | `dreamina-design` |
 | Host | Codex CLI or ChatGPT desktop app |
 | Current version | `0.4.0` |
 | Plugin manifest | `.codex-plugin/plugin.json` |
@@ -149,7 +149,7 @@ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 
 ```bash
 codex plugin marketplace add partme-ai/partme-dreamina-design --ref main
-codex plugin add codex-dreamina-design@partme-ai-dreamina-design
+codex plugin add dreamina-design@partme-ai-dreamina-design
 ```
 
 Restart Codex or the ChatGPT desktop app, then open a new task so the MCP server starts and the Skills load.
@@ -163,7 +163,7 @@ codex plugin list
 Expected entry:
 
 ```text
-codex-dreamina-design@partme-ai-dreamina-design  installed, enabled
+dreamina-design@partme-ai-dreamina-design  installed, enabled
 ```
 
 Then confirm the MCP server is registered and the CLI is trusted:
@@ -202,8 +202,8 @@ Expected observation: the task is queried by `submit_id` and the artifact is ver
 |---|---|---|
 | MCP server | `.mcp.json` | stdio; startup timeout 10s, tool timeout 3600s |
 | Tool approval mode | `.mcp.json` | `approve` for read-only tools, `prompt` for paid and mutating tools |
-| Trusted CLI record | `~/.config/codex-dreamina-design/trusted-cli.json` | File mode `0600`, directory mode `0700`; stores the path and digest |
-| State root | `~/.local/share/codex-dreamina-design/` | Holds `operations/` and `approvals/` |
+| Trusted CLI record | `~/.config/dreamina-design/trusted-cli.json` | File mode `0600`, directory mode `0700`; stores the path and digest |
+| State root | `~/.local/share/dreamina-design/` | Holds `operations/` and `approvals/` |
 | CLI diagnostics | `~/.dreamina_cli/logs` | Read through the bounded, redacted diagnostic tool |
 | Environment passed through | `HOME`, `TMPDIR`, `LANG`, `LC_ALL`, `PATH` | Declared in `.mcp.json` |
 
@@ -257,9 +257,9 @@ Failures return a structured envelope: `error_type`, `message`, `retryable`, `re
 
 | Data | Location | Lifecycle | Secrets |
 |---|---|---|---|
-| Operation receipt | `~/.local/share/codex-dreamina-design/operations/` | Until you delete it | No; identifiers, hashes, states, timestamps |
-| Approval receipt | `~/.local/share/codex-dreamina-design/approvals/` | Five minutes or single use | No; credential-like keys are stripped before persistence |
-| Trusted CLI record | `~/.config/codex-dreamina-design/trusted-cli.json` | Until you re-enrol or delete it | No; path and digest only |
+| Operation receipt | `~/.local/share/dreamina-design/operations/` | Until you delete it | No; identifiers, hashes, states, timestamps |
+| Approval receipt | `~/.local/share/dreamina-design/approvals/` | Five minutes or single use | No; credential-like keys are stripped before persistence |
+| Trusted CLI record | `~/.config/dreamina-design/trusted-cli.json` | Until you re-enrol or delete it | No; path and digest only |
 | Downloaded artifacts | Your chosen destination | Until you delete them | No |
 
 ## Security

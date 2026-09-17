@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fake Dreamina Design adapter for offline tests.
 
-Mirrors the public codex-dreamina-design receipt interface: discover capability,
+Mirrors the public dreamina-design receipt interface: discover capability,
 quote, approve, submit, query, download. Behaviour is controlled by the
 ``force_error`` field of the JSON request:
 

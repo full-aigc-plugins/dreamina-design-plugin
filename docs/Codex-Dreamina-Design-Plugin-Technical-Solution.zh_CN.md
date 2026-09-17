@@ -81,8 +81,8 @@ tests/
 |---|---|---|
 | MCP 服务器 | `.mcp.json` | stdio；启动超时 10 秒，工具超时 3600 秒 |
 | 工具批准模式 | `.mcp.json` | 只读工具为 `approve`，付费与写类工具为 `prompt` |
-| 信任记录 | `~/.config/codex-dreamina-design/trusted-cli.json` | 文件 `0600`、目录 `0700`；保存路径与摘要 |
-| 状态根目录 | `~/.local/share/codex-dreamina-design/` | 内含 `operations/` 与 `approvals/` |
+| 信任记录 | `~/.config/dreamina-design/trusted-cli.json` | 文件 `0600`、目录 `0700`；保存路径与摘要 |
+| 状态根目录 | `~/.local/share/dreamina-design/` | 内含 `operations/` 与 `approvals/` |
 | 参考策略 | `scripts/reference_policy.py` | 单图 50 MiB、单媒体 512 MiB，含边界与类型校验 |
 
 ## 6. 错误模型

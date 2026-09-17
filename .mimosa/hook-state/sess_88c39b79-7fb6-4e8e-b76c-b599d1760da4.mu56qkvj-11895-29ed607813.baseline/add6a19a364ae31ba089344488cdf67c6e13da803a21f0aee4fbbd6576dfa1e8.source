@@ -1,0 +1,35 @@
+"""Second review regressions: lifecycle and scalable sample contracts."""
+import gc
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+from scripts.trusted_media_tools import BrowserLaunchLease
+from scripts.reelbench_sync_service import ReelBenchSyncService
+
+class RoundTwoTests(unittest.TestCase):
+    def test_abandoned_browser_lease_closes_both_descriptors(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            a=os.open(temporary,os.O_RDONLY|os.O_DIRECTORY)
+            b=os.open(temporary,os.O_RDONLY|os.O_DIRECTORY)
+            lease=BrowserLaunchLease(a,b,None,'Contents/MacOS/Browser')
+            del lease
+            gc.collect()
+            for fd in (a,b):
+                with self.assertRaises(OSError): os.fstat(fd)
+
+    def test_upstream_two_decimal_duration_is_accepted(self):
+        self.assertTrue(ReelBenchSyncService._duration_matches(8.00,8.004))
+        self.assertTrue(ReelBenchSyncService._duration_matches(8.01,8.005))
+        self.assertFalse(ReelBenchSyncService._duration_matches(8.00,8.006))
+
+    def test_120_short_shots_have_adaptive_samples_in_constant_batches(self):
+        from scripts.reelbench_sync_sampling import sample_schedule
+        shots=[{'id':f'S{i+1:02d}','start':round(i*.3,2),'end':round((i+1)*.3,2)} for i in range(120)]
+        schedule=sample_schedule(shots,30)
+        self.assertEqual(len(schedule['shots']),120)
+        self.assertLessEqual(len(schedule['frames']),480)
+        self.assertEqual(schedule['decode_passes'],2)
+        for shot,entry in zip(shots,schedule['shots']):
+            self.assertTrue(any(shot['start'] < frame/30 < shot['end'] for frame in entry['frames']))

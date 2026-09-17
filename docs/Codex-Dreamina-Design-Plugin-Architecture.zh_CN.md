@@ -151,10 +151,10 @@ flowchart LR
 
 | 数据 | 所有者 | 位置 | 一致性 |
 |---|---|---|---|
-| 操作回执 | 本插件 | `~/.local/share/codex-dreamina-design/operations/` | 带锁的原子写；以 `submit_id` 为键 |
-| 批准回执 | 批准守卫 | `~/.local/share/codex-dreamina-design/approvals/` | 一次性、五分钟有效期、剥离形似凭据的键 |
-| 信任记录 | 受信 CLI 存储 | `~/.config/codex-dreamina-design/trusted-cli.json`，文件 `0600`、目录 `0700` | 仅在原生确认后写入 |
-| 视频工程状态 | 工程存储 | `~/.local/share/codex-dreamina-design/` | 版本化状态机上的 compare-and-swap 迁移 |
+| 操作回执 | 本插件 | `~/.local/share/dreamina-design/operations/` | 带锁的原子写；以 `submit_id` 为键 |
+| 批准回执 | 批准守卫 | `~/.local/share/dreamina-design/approvals/` | 一次性、五分钟有效期、剥离形似凭据的键 |
+| 信任记录 | 受信 CLI 存储 | `~/.config/dreamina-design/trusted-cli.json`，文件 `0600`、目录 `0700` | 仅在原生确认后写入 |
+| 视频工程状态 | 工程存储 | `~/.local/share/dreamina-design/` | 版本化状态机上的 compare-and-swap 迁移 |
 | 已下载产物 | 调用方 | 已批准的下载根目录 | 记录校验和与媒体元数据 |
 | 凭据 | CLI | CLI 持有 | 本仓库从不读写 |
 

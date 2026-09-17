@@ -3,7 +3,7 @@
 These tests cover the runtime contract surface (Task 2) without invoking any
 external service. They assert that:
 
-  * the plugin manifest carries the exact identity `codex-dreamina-design`
+  * the plugin manifest carries the exact identity `dreamina-design`
     and never advertises credentials or MCP servers;
   * every schema in `schemas/` is a valid JSON Schema and refuses unknown
     properties (closed via `additionalProperties: false`);
@@ -77,7 +77,7 @@ def all_keys(node):
 class PluginIdentityTests(unittest.TestCase):
     def test_manifest_identity_is_codex_dreamina_design(self) -> None:
         manifest = load_json(MANIFEST)
-        self.assertEqual(manifest["name"], "codex-dreamina-design")
+        self.assertEqual(manifest["name"], "dreamina-design")
         self.assertEqual(manifest["version"], "0.4.0")
         self.assertFalse(manifest.get("skills", "").endswith("/*"))
         self.assertTrue(manifest["skills"].endswith("/"))

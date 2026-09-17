@@ -151,10 +151,10 @@ The result is not complete until artifact verification succeeds, and terminal st
 
 | Data | Owner | Location | Consistency |
 |---|---|---|---|
-| Operation receipt | This plugin | `~/.local/share/codex-dreamina-design/operations/` | Atomic write with a lock; keyed by `submit_id` |
-| Approval receipt | Approval guard | `~/.local/share/codex-dreamina-design/approvals/` | Single use, five-minute lifetime, credential-like keys stripped |
-| Trust record | Trusted CLI store | `~/.config/codex-dreamina-design/trusted-cli.json`, file `0600`, directory `0700` | Written only after native confirmation |
-| Video project state | Project store | `~/.local/share/codex-dreamina-design/` | Compare-and-swap transitions over a versioned state machine |
+| Operation receipt | This plugin | `~/.local/share/dreamina-design/operations/` | Atomic write with a lock; keyed by `submit_id` |
+| Approval receipt | Approval guard | `~/.local/share/dreamina-design/approvals/` | Single use, five-minute lifetime, credential-like keys stripped |
+| Trust record | Trusted CLI store | `~/.config/dreamina-design/trusted-cli.json`, file `0600`, directory `0700` | Written only after native confirmation |
+| Video project state | Project store | `~/.local/share/dreamina-design/` | Compare-and-swap transitions over a versioned state machine |
 | Downloaded artifact | Caller | Approved destination root | Checksum and media metadata recorded |
 | Credentials | The CLI | CLI-owned | Never read or written here |
 

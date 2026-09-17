@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://partme.ai/codex-dreamina-design/schemas/composition_receipt.schema.json",
+  "$id": "https://partme.ai/dreamina-design/schemas/composition_receipt.schema.json",
   "title": "CompositionReceipt",
   "description": "Closed receipt produced by verifying a temporary final MP4 against the composition plan that produced it. Every required gate must be measured, never assumed.",
   "type": "object",

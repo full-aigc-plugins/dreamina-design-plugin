@@ -1,0 +1,88 @@
+{
+  "mcpServers": {
+    "dreamina_design": {
+      "command": "/usr/bin/python3",
+      "args": [
+        "-m",
+        "scripts.dreamina_mcp_server"
+      ],
+      "cwd": ".",
+      "enabled": true,
+      "default_tools_approval_mode": "prompt",
+      "tools": {
+        "dreamina_capability_snapshot": {
+          "approval_mode": "approve"
+        },
+        "dreamina_cli_status": {
+          "approval_mode": "approve"
+        },
+        "dreamina_cli_install_or_upgrade": {
+          "approval_mode": "prompt"
+        },
+        "dreamina_auth": {
+          "approval_mode": "prompt"
+        },
+        "dreamina_account": {
+          "approval_mode": "approve"
+        },
+        "dreamina_submit_image": {
+          "approval_mode": "prompt"
+        },
+        "dreamina_submit_video": {
+          "approval_mode": "prompt"
+        },
+        "dreamina_query_task": {
+          "approval_mode": "approve"
+        },
+        "dreamina_list_tasks": {
+          "approval_mode": "approve"
+        },
+        "dreamina_session": {
+          "approval_mode": "prompt"
+        },
+        "dreamina_diagnose": {
+          "approval_mode": "approve"
+        },
+        "dreamina_quote_video_batch": {
+          "approval_mode": "approve"
+        },
+        "dreamina_analyze_reference_video": {
+          "approval_mode": "prompt"
+        },
+        "dreamina_approve_video_batch": {
+          "approval_mode": "prompt"
+        },
+        "dreamina_compose_video": {
+          "approval_mode": "prompt"
+        },
+        "dreamina_create_redesign": {
+          "approval_mode": "prompt"
+        },
+        "dreamina_evaluate_video_batch": {
+          "approval_mode": "prompt"
+        },
+        "dreamina_execute_video_batch": {
+          "approval_mode": "prompt"
+        },
+        "dreamina_export_video_project": {
+          "approval_mode": "prompt"
+        },
+        "dreamina_validate_shot_analysis": {
+          "approval_mode": "prompt"
+        },
+        "dreamina_video_project": {
+          "approval_mode": "prompt"
+        }
+      },
+      "env_vars": [
+        "HOME",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "PATH"
+      ],
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 3600
+    }
+  }
+}

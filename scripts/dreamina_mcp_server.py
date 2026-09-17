@@ -101,7 +101,7 @@ class DreaminaMcpTools:
     """Tool handlers; paid handlers are protected by Codex approval_mode=prompt."""
 
     def __init__(self, *, state_root: Path | None = None, approval_provider: Any | None = None) -> None:
-        self.state_root = state_root or (Path.home() / ".local" / "share" / "codex-dreamina-design")
+        self.state_root = state_root or (Path.home() / ".local" / "share" / "dreamina-design")
         self.approval_provider = approval_provider or NativeApprovalProvider()
         self.auth_flow_store = AuthFlowStore()
 
@@ -273,7 +273,7 @@ def _handle(message: Mapping[str, Any], tools: DreaminaMcpTools) -> dict | None:
     method = message.get("method")
     request_id = message.get("id")
     if method == "initialize":
-        return _response(request_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "dreamina-design", "version": "0.4.0"}})
+        return _response(request_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "codex-dreamina-design", "version": "0.4.0"}})
     if method == "notifications/initialized":
         return None
     if method == "tools/list":

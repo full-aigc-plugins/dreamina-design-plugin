@@ -18,7 +18,7 @@ class TrustedCliError(PermissionError):
 
 class TrustedCliStore:
     def __init__(self, path: Path | None = None) -> None:
-        self.path = path or (Path.home() / ".config" / "codex-dreamina-design" / "trusted-cli.json")
+        self.path = path or (Path.home() / ".config" / "dreamina-design" / "trusted-cli.json")
 
     def enroll(self, cli_path: Path, *, approval_provider=None) -> dict[str, str]:
         candidate = Path(cli_path)

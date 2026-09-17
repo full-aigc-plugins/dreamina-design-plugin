@@ -41,7 +41,7 @@ class TrustedMediaToolStore:
 
     def __init__(self, path: Path | None = None, staging_root: Path | None = None) -> None:
         self.path = path or (
-            Path.home() / ".config" / "codex-dreamina-design" / "trusted-media-tools.json"
+            Path.home() / ".config" / "dreamina-design" / "trusted-media-tools.json"
         )
         self._staging_root = Path(staging_root) if staging_root is not None else None
 

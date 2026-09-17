@@ -1,0 +1,150 @@
+"""Batched frame selection and the pinned upstream's continuous panel model."""
+from __future__ import annotations
+import binascii
+import math
+import struct
+import zlib
+
+def r2(value):
+    return math.floor(float(value)*100+.5)/100
+
+def selection_expression(frames):
+    """A balanced expression avoids ffmpeg's linear parser recursion limit."""
+    if not frames or len(frames)>480: raise ValueError('sample frame count outside bound')
+    def combine(values):
+        if len(values)==1: return 'eq(n'+chr(92)+','+str(values[0])+')'
+        middle=len(values)//2
+        return '('+combine(values[:middle])+'+'+combine(values[middle:])+')'
+    return combine(frames)
+
+def sample_schedule(shots, fps):
+    """At most four frames per shot, with two total video decode passes."""
+    if not 1<=len(shots)<=120 or not 1<=fps<=60: raise ValueError('sample bounds invalid')
+    entries=[]
+    all_frames=set()
+    for shot in shots:
+        start,end=float(shot['start']),float(shot['end'])
+        first=max(0,math.ceil(r2(start)*fps-1e-8))
+        last=max(first,math.floor(r2(end)*fps+1e-8)-1)
+        middle=min(last,max(first,round((start+end)/2*fps)))
+        after=min(last,first+1)
+        selected=sorted({max(0,first-1),after,middle,last})
+        entries.append({'shot_id':shot['id'],'cut_seconds':start,'frames':selected,'middle':middle})
+        all_frames.update(selected)
+    return {'frames':sorted(all_frames),'shots':entries,'decode_passes':2}
+
+def decode_png(payload):
+    """Decode only bounded noninterlaced 8-bit RGB PNGs produced by ffmpeg."""
+    if not payload.startswith(b'\x89PNG\r\n\x1a\n') or len(payload)>2*1024**2: raise ValueError('invalid sample PNG')
+    offset=8
+    data=bytearray()
+    width=height=None
+    ended=False
+    while offset<len(payload):
+        if offset+12>len(payload): raise ValueError('truncated sample PNG')
+        size=struct.unpack('>I',payload[offset:offset+4])[0]
+        kind=payload[offset+4:offset+8]
+        block=payload[offset+8:offset+8+size]
+        if len(block)!=size or offset+12+size>len(payload): raise ValueError('truncated sample PNG chunk')
+        crc=struct.unpack('>I',payload[offset+8+size:offset+12+size])[0]
+        if binascii.crc32(kind+block)&0xffffffff != crc: raise ValueError('sample PNG checksum differs')
+        if kind==b'IHDR':
+            width,height,depth,color,compression,filter_kind,interlace=struct.unpack('>IIBBBBB',block)
+            if not 1<=width<=1024 or not 1<=height<=16000 or width*height>2*1024**2 or (depth,color,compression,filter_kind,interlace)!=(8,2,0,0,0): raise ValueError('sample PNG format outside bound')
+        elif kind==b'IDAT': data.extend(block)
+        elif kind==b'IEND': ended=True
+        offset+=12+size
+        if ended: break
+    if not ended or offset!=len(payload) or width is None: raise ValueError('incomplete sample PNG')
+    expected=(width*3+1)*height
+    decoder=zlib.decompressobj()
+    raw=decoder.decompress(data,expected+1)
+    if len(raw)!=expected or not decoder.eof or decoder.unused_data: raise ValueError('sample PNG decompression bound')
+    pixels=bytearray(width*height*3)
+    stride=width*3
+    for y in range(height):
+        method=raw[y*(stride+1)]
+        if method>4: raise ValueError('unknown PNG filter')
+        row=raw[y*(stride+1)+1:(y+1)*(stride+1)]
+        if method==0:
+            pixels[y*stride:(y+1)*stride]=row
+            continue
+        for x,value in enumerate(row):
+            left=pixels[y*stride+x-3] if x>=3 else 0
+            above=pixels[(y-1)*stride+x] if y else 0
+            corner=pixels[(y-1)*stride+x-3] if y and x>=3 else 0
+            if method==1: value+=left
+            elif method==2: value+=above
+            elif method==3: value+=(left+above)//2
+            elif method==4:
+                estimate=left+above-corner
+                distances=(abs(estimate-left),abs(estimate-above),abs(estimate-corner))
+                value+=(left,above,corner)[distances.index(min(distances))]
+            pixels[y*stride+x]=value&255
+    return width,height,bytes(pixels)
+
+def crop(image,x,y,width,height):
+    iw,ih,pixels=image
+    if min(x,y)<0 or width<1 or height<1 or x+width>iw or y+height>ih: raise ValueError('sample crop escapes image')
+    return width,height,b''.join(pixels[((y+row)*iw+x)*3:((y+row)*iw+x+width)*3] for row in range(height))
+
+def paste(destination,source,x,y):
+    dw,dh,pixels=destination
+    sw,sh,content=source
+    for row in range(sh):
+        yy=y+row
+        if not 0<=yy<dh: continue
+        left=max(0,x); right=min(dw,x+sw)
+        if right>left:
+            pixels[(yy*dw+left)*3:(yy*dw+right)*3]=content[(row*sw+left-x)*3:(row*sw+right-x)*3]
+
+def distance(left,right):
+    if left[:2]!=right[:2] or not left[2]: raise ValueError('sample dimensions differ')
+    return sum(abs(a-b) for a,b in zip(left[2],right[2]))/len(left[2])
+
+def geometry(plan):
+    factor=min(1,256/max(plan['output'].values()))
+    ow=max(1,round(plan['output']['width']*factor)); oh=max(1,round(plan['output']['height']*factor))
+    vw=max(1,round(plan['video']['width']*ow/plan['output']['width']))
+    vh=max(1,round(plan['video']['height']*oh/plan['output']['height']))
+    pw=ow-vw if plan['portrait'] else ow
+    ph=oh if plan['portrait'] else oh-vh
+    return {'output':(ow,oh),'video':(vw,vh),'panel':(pw,ph),'panel_xy':(vw,0) if plan['portrait'] else (0,vh)}
+
+def panel_state(shots,layout,seconds):
+    """Evaluate r2 sendcmd times, eased crop offsets and active height bands."""
+    rows=layout['rows']; view=layout['view']
+    index=max(i for i,s in enumerate(shots) if r2(s['start'])<=seconds+1e-9)
+    current=shots[index]; row=rows[index]
+    previous=rows[max(0,index-1)]
+    anchor=rows[min(1,len(rows)-1)]['top']-rows[0]['top']
+    maximum=max(0,layout['content']-view['height'])
+    target=lambda r:min(maximum,max(0,r['top']-anchor))
+    ease=r2(min(.45,current['end']-current['start']))
+    fraction=1 if index==0 or ease<=0 else max(0,min(1,(seconds-r2(current['start']))/ease))
+    offset=r2(target(previous))+r2(target(row)-target(previous))*fraction
+    top=r2(previous['top'])+r2(row['top']-previous['top'])*fraction
+    clamp_y=lambda y,h:max(view['y'],min(max(view['y'],view['y']+view['height']-h),y))
+    bands=[{'height':row['height'],'top':top,'y':clamp_y(view['y']+top-offset,row['height'])}]
+    if index and previous['height']!=row['height'] and seconds<r2(current['start']+min(.45,current['end']-current['start']))-1e-9:
+        bands.append({'height':previous['height'],'top':previous['top'],
+            'y':clamp_y(view['y']+previous['top']-target(previous),previous['height'])})
+    return {'shot_id':current['id'],'offset':offset,'bands':sorted(bands,key=lambda b:b['height'])}
+
+def expected_panel(shots,layout,seconds,images,*,highlight=True):
+    base=images['static.png']; dim=images['list-dim.png']; lit=images['list-lit.png']
+    panel=(base[0],base[1],bytearray(base[2]))
+    sx=base[0]/layout['panel']['width']; sy=base[1]/layout['panel']['height']
+    view=layout['view']; state=panel_state(shots,layout,seconds)
+    x=round(view['x']*sx); y=round(view['y']*sy)
+    width=min(base[0]-x,max(1,round(view['width']*sx)))
+    height=min(base[1]-y,max(1,round(view['height']*sy)))
+    offset=min(dim[1]-height,max(0,round(state['offset']*sy)))
+    paste(panel,crop(dim,x,offset,width,height),x,y)
+    if highlight:
+        for band in state['bands']:
+            h=max(1,round(band['height']*sy))
+            top=min(lit[1]-h,max(0,round(band['top']*sy)))
+            yy=round(band['y']*sy)
+            paste(panel,crop(lit,x,top,width,h),x,yy)
+    return panel

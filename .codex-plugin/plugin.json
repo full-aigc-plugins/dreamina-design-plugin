@@ -1,7 +1,7 @@
 {
-  "name": "codex-dreamina-design",
+  "name": "dreamina-design",
   "version": "0.4.0",
-  "description": "Dreamina image and video design workflows with runtime CLI discovery and resumable operations.",
+  "description": "Create and edit Dreamina images and videos with approval-aware, resumable operations and verified downloads.",
   "author": {
     "name": "Full Stack Skills / PartMe.AI",
     "url": "https://github.com/partme-ai"
@@ -39,8 +39,8 @@
     ],
     "brandColor": "#EC4899",
     "composerIcon": "./assets/composer-icon.png",
-    "logo": "./assets/logo.png",
-    "logoDark": "./assets/logo-dark.png",
+    "logo": "./assets/logo-approved.png",
+    "logoDark": "./assets/logo-approved.png",
     "screenshots": []
   }
 }

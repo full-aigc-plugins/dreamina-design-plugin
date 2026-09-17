@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_ID = "codex-dreamina-design"
+PLUGIN_ID = "dreamina-design"
 DISPLAY_NAME = "Dreamina Design"
 REPOSITORY = "https://github.com/partme-ai/partme-dreamina-design"
 BRAND_COLOR = "#EC4899"
@@ -47,8 +47,8 @@ class DistributionTests(unittest.TestCase):
         interface = manifest["interface"]
         self.assertEqual(interface["displayName"], DISPLAY_NAME)
         self.assertEqual(interface["brandColor"], BRAND_COLOR)
-        self.assertEqual(interface["logo"], "./assets/logo.png")
-        self.assertEqual(interface["logoDark"], "./assets/logo-dark.png")
+        self.assertEqual(interface["logo"], "./assets/logo-approved.png")
+        self.assertEqual(interface["logoDark"], "./assets/logo-approved.png")
         self.assertEqual(interface["composerIcon"], "./assets/composer-icon.png")
         self.assertLessEqual(len(interface["defaultPrompt"]), 3)
         self.assertTrue(all(len(prompt) <= 128 for prompt in interface["defaultPrompt"]))
