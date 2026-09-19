@@ -12,7 +12,7 @@
 
 ## 3. Publication
 
-- [ ] 3.1 Validate OpenSpec artifacts and archive the completed change
-- [ ] 3.2 Commit and push the plugin, then confirm remote CI at the release commit
-- [ ] 3.3 Create the immutable plugin tag and GitHub Release
-- [ ] 3.4 Update and verify the catalog entry without including unrelated user changes
+- [x] 3.1 Validate OpenSpec artifacts and archive the completed change
+- [x] 3.2 Commit and push the plugin, then confirm remote CI at the release commit
+- [x] 3.3 Create the immutable plugin tag and GitHub Release
+- [x] 3.4 Update and verify the catalog entry without including unrelated user changes
