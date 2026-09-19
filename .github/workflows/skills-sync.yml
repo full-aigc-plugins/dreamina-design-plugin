@@ -4,8 +4,17 @@ on:
   repository_dispatch:
     types: [skills-updated]
   schedule:
-    - cron: "23 3 * * *"
+    - cron: "41 3 * * *"
   workflow_dispatch:
+    inputs:
+      ref:
+        description: Optional immutable dreamina-skills release tag
+        required: false
+        type: string
+      sha:
+        description: Required peeled commit SHA when ref is provided
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -16,18 +25,31 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.SKILLS_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+      REQUESTED_REF: ${{ github.event.client_payload.ref || inputs.ref }}
+      REQUESTED_SHA: ${{ github.event.client_payload.sha || inputs.sha }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ secrets.SKILLS_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Vendor skills from pinned sources
-        run: python3 scripts/vendor/skill_vendor.py update
+        shell: bash
+        run: |
+          arguments=(update)
+          if [[ -n "$REQUESTED_REF" || -n "$REQUESTED_SHA" ]]; then
+            if [[ -z "$REQUESTED_REF" || -z "$REQUESTED_SHA" ]]; then
+              echo "::error::Both ref and sha are required for a release upgrade"
+              exit 1
+            fi
+            arguments+=(--source-ref "dreamina-skills=$REQUESTED_REF")
+            arguments+=(--expected-sha "dreamina-skills=$REQUESTED_SHA")
+          fi
+          python3 scripts/vendor/skill_vendor.py "${arguments[@]}"
       - name: Verify the fresh snapshot
         run: python3 scripts/vendor/skill_vendor.py check
-      - name: Push the sync branch when the snapshot changed
+      - name: Push a sync branch when the snapshot changed
         id: push
         run: |
           if git diff --quiet && git diff --cached --quiet; then
@@ -39,7 +61,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B chore/skills-sync
           git add skills/ skills.lock.json
-          git commit -m "chore: sync vendored skills from source packages"
+          git commit -m "chore: sync vendored skills from dreamina-skills ${REQUESTED_REF:-current-lock}"
           git push --force-with-lease origin chore/skills-sync
           echo "changed=true" >> "$GITHUB_OUTPUT"
       - name: Open the sync PR if none exists
@@ -50,7 +72,7 @@ jobs:
             exit 0
           fi
           gh pr create \
-            --title "chore: sync vendored skills" \
-            --body "Automated refresh of the vendored skill snapshot from skills.lock.json sources. All gates must be green before merge." \
+            --title "chore: sync vendored Dreamina skills ${REQUESTED_REF:-current-lock}" \
+            --body "Automated refresh of the checksummed skill snapshot from skills.lock.json. Requested release: ${REQUESTED_REF:-current lock}; expected commit: ${REQUESTED_SHA:-already pinned}. Externally managed skills come from full-stack-skills/dreamina-skills; plugin-local exceptions must be declared in plugin-local-skills.json." \
             --head chore/skills-sync --base main \
             --label skills-sync

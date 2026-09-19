@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "dest": "skills/",
+  "skills": [
+    "dreamina-auto-seedance",
+    "dreamina-design-harness",
+    "dreamina-seedance-resume"
+  ]
+}

@@ -91,8 +91,10 @@ const today = new Date().toISOString().slice(0, 10).replaceAll("-", "");
 const repoDir = path.join(workspace, plugin.localDirectory);
 
 const edits = [{ file: catalogPath, description: `${pluginId}: ${oldVersion} -> ${newVersion}` }];
+const plainManifestRels = [".zcode-plugin/plugin.json", "kimi.plugin.json", ".agents/plugins/marketplace.json"];
+if (fs.existsSync(path.join(repoDir, "plugin.json"))) plainManifestRels.push("plugin.json");
 
-for (const rel of [".zcode-plugin/plugin.json", "kimi.plugin.json", ".agents/plugins/marketplace.json"]) {
+for (const rel of plainManifestRels) {
   edits.push({ file: path.join(repoDir, rel), description: `${rel}: ${oldVersion} -> ${newVersion}` });
 }
 // codex manifest 允许 <version>+codex.<date> 后缀（sync 校验认可的形状）
@@ -118,12 +120,14 @@ fs.writeFileSync(catalogPath, catalogText);
 
 // 2) 各仓 manifest
 const bumpPlain = (text) => text.replace(`"version": "${oldVersion}"`, `"version": "${newVersion}"`);
-const bumpCodex = (text) => text.replace(/"version": "\d+\.\d+\.\d+\+codex\.\d+"/, `"version": "${newVersion}+codex.${today}"`);
+const bumpCodex = (text) => text.replace(/"version": "\d+\.\d+\.\d+(?:\+codex\.\d+)?"/, `"version": "${newVersion}+codex.${today}"`);
 
-fs.writeFileSync(edits[1].file, bumpPlain(fs.readFileSync(edits[1].file, "utf8")));
-fs.writeFileSync(edits[2].file, bumpPlain(fs.readFileSync(edits[2].file, "utf8")));
-fs.writeFileSync(edits[3].file, bumpPlain(fs.readFileSync(edits[3].file, "utf8")));
-fs.writeFileSync(edits[4].file, bumpCodex(fs.readFileSync(edits[4].file, "utf8")));
+for (const rel of plainManifestRels) {
+  const manifest = path.join(repoDir, rel);
+  fs.writeFileSync(manifest, bumpPlain(fs.readFileSync(manifest, "utf8")));
+}
+const codexManifest = path.join(repoDir, ".codex-plugin/plugin.json");
+fs.writeFileSync(codexManifest, bumpCodex(fs.readFileSync(codexManifest, "utf8")));
 
 // 3) 重新生成三平台清单 + 全量校验
 execFileSync(process.execPath, [path.join(root, "scripts/sync-marketplaces.mjs"), "--write"], { stdio: "inherit" });
