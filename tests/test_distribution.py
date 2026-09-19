@@ -33,9 +33,13 @@ class DistributionTests(unittest.TestCase):
         manifest = load_json(".codex-plugin/plugin.json")
         self.assertEqual(manifest["name"], PLUGIN_ID)
         self.assertEqual(manifest["version"].split("+", 1)[0], "0.4.2")
+        lock = load_json("skills.lock.json")
+        dreamina_source = next(
+            source for source in lock["sources"] if source["package"] == "dreamina-skills"
+        )
         self.assertEqual(
             (ROOT / "skills" / ".upstream-commit").read_text(encoding="utf-8").strip(),
-            "e8ae5880fb36f71c4e60ef854060ab9cadd9edc4",
+            dreamina_source["sha"],
         )
         self.assertEqual(manifest["repository"], REPOSITORY)
         self.assertEqual(manifest["skills"], "./skills/")

@@ -4,8 +4,8 @@
     {
       "package": "dreamina-skills",
       "repo": "https://github.com/full-aigc-skills/dreamina-skills.git",
-      "ref": "v1.6.0",
-      "sha": "0358da3717b45d939d941016a6532df60b773206",
+      "ref": "v1.6.1",
+      "sha": "b263ade8e3e3516baf8f67ddf586e242137c96e3",
       "skills": [
         "dreamina-cli",
         "dreamina-cli-image2image",
@@ -27,23 +27,23 @@
       ],
       "dest": "skills/",
       "sha256": {
-        "dreamina-cli": "5247f293cf34be47578eca344be913ac4a1ab0d4ad5829b287ba6505db37ae1d",
-        "dreamina-cli-image2image": "31625ff66a58df63691a08e81fb24a03b9040dc2bfcabf4093f599be17c3beaf",
-        "dreamina-cli-image2video": "c55155e8841fede4edbaae622c955238765b3cd2ba743db7a231880684db045d",
-        "dreamina-cli-text2image": "f68102be668132983e058573bd35b34f746367d562123d91070484e7167ef48a",
-        "dreamina-cli-text2video": "46af3402c6cea1a6a6313ebe0b095d4d8c741f5cb0146f4c89f1f13d36fcae4c",
-        "dreamina-design-use": "490d1cb2aad81de2689d5af64bc541cd74d90443638edf04fdc1c294b48eb61f",
-        "dreamina-opencli-image2image": "a9607a9b38a3a86742396217f72442ae7e7dcb3595a54b17f7b9ccd14af24af3",
-        "dreamina-opencli-image2video": "ce983d2cf476e440a55a2fa684d698d5e104642e64bdbfadf8968eb96d0d3532",
-        "dreamina-opencli-text2image": "b67bb3b50f303c82e24ce32e5ce513d89caee1dbd573dc9f7440639b69b1f51f",
-        "dreamina-opencli-text2video": "c5833021186a19ea49d4cecf7142bf0633ab16f81e77362390b2829f205fefa7",
-        "dreamina-prompt-image2image": "ba456c5a74278757e68bede00c83fdbb0e9edd682e57507a3acf1911e91c924e",
-        "dreamina-prompt-image2video": "26ae8d2fea9f2a1223d8b034e01bc807984753782f4948f187d31f616a08d5b6",
-        "dreamina-prompt-text2image": "b1e64f22222725ac6a7b803bcbaae286d8e54c788ce7d72c3c92720a615ae80f",
-        "dreamina-prompt-text2video": "bd0d9995cfcf94d139b7e1adf351d61aa853177767688c2e81615b23c0a9f3de",
-        "dreamina-shot-annotator": "d112445936462fd66e19d463c9803387600525815e3b1e6180cfc7ba9526dfdf",
-        "dreamina-video-evaluator": "05cc8cc77ae675daa9c58821a52eecc7f65a09ee2d173e83d8440e9430852ac8",
-        "dreamina-video-production": "a5f2e6aff3301440c76420432b23450be332db71da2a7368b06d05f239b651a9"
+        "dreamina-cli": "ac149db9b4a46a2532980c9d74b1395309f4baca9c645bb150faff2c1182876c",
+        "dreamina-cli-image2image": "cacc3d5f0440c38d2da58b0c05a67e8bf94423330a4f808bad421c9796bde09b",
+        "dreamina-cli-image2video": "3637f4da14704d6c402081916403ffba5b9dd2a7816ac045651aa8ed5abda122",
+        "dreamina-cli-text2image": "cc801d82cc9e6bbd8a147a79901f8f8a680a4f73afcb8ec916256576f5d26cb1",
+        "dreamina-cli-text2video": "e7c070409f508b01ebef8ecda56a522b135b3ed250bd428c7adbe1fac30530b4",
+        "dreamina-design-use": "70520b6f396298b41433a03eba441701174d2bd39f9691e77dffaca3d09f18f2",
+        "dreamina-opencli-image2image": "bb2f76bb3dede1977eee142deb9e9b680f0205610e7b4480a5fb9cf89b32c8d0",
+        "dreamina-opencli-image2video": "81d029a25d40e44feb303bd532ff3072a6a48330f60a4415eec22d88525e94d5",
+        "dreamina-opencli-text2image": "565307687f040c6117830624f8f72a8f8fc9ca3e6010598499f3c759af527e13",
+        "dreamina-opencli-text2video": "82cbf1d32e853468c76456a66c187958547088f1b823cc43d19303f499e80fae",
+        "dreamina-prompt-image2image": "94bb9f4b84572dd22587fe810665548617c18e2d4610b85655820671f23e27f3",
+        "dreamina-prompt-image2video": "ce0c4f09a116c84ff115acbf33630ca87d39fd729d9e90df6102a7b2cb866ba5",
+        "dreamina-prompt-text2image": "9a1c720802e3fb3fc0e2f37d09d9d85bfcf0ea254872b3725beea0633903f953",
+        "dreamina-prompt-text2video": "e78a28f41e38b3d926a03215c213fec1d5f76edead5c24dd6d615b013712d8f2",
+        "dreamina-shot-annotator": "637ee4556da74a38e9cd51efa1d73a66afa8508ebe7b5864b4fa2eecd200f9de",
+        "dreamina-video-evaluator": "fe594088af8189e5366c7920be3c05d1ae206bec81fc6048270b2ea5f0ed0eb8",
+        "dreamina-video-production": "5bb97db3de8dc1109c622b3ca14aa5661aa87bf75cc83a07bfab74e0a39bdfb7"
       }
     }
   ]
