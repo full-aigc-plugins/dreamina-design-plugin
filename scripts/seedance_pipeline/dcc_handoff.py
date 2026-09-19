@@ -1,6 +1,6 @@
-"""DCC preview handoff for codex-dreamina-3d.
+"""DCC preview handoff for dreamina-3d.
 
-Talks to a codex-blender / codex-maya companion adapter via argv and JSON
+Talks to a blender-design / maya-design companion adapter via argv and JSON
 contracts only. The companion's internal Python modules are NEVER imported;
 the orchestrator treats the adapter as an opaque executable that consumes a
 request file and emits a receipt file. The receipt is preserved verbatim and

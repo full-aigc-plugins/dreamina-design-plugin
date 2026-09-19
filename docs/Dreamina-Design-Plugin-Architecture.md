@@ -1,4 +1,4 @@
-# Codex Dreamina Design Plugin Architecture
+# Dreamina Design Plugin Architecture
 
 > **Document control**
 >

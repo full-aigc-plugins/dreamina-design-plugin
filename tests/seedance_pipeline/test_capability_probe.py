@@ -77,7 +77,7 @@ class DiscoverCompanionsTests(unittest.TestCase):
     def test_blender_only(self) -> None:
         with __import__("tempfile").TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            companion = _make_companion(tmp_path, "codex-blender", executable_name="blender_adapter")
+            companion = _make_companion(tmp_path, "blender-design", executable_name="blender_adapter")
             found = discover_companions((tmp_path,))
             self.assertEqual(len(found), 1)
             self.assertEqual(found[0].plugin_id, companion.plugin_id)
@@ -85,46 +85,46 @@ class DiscoverCompanionsTests(unittest.TestCase):
     def test_maya_only(self) -> None:
         with __import__("tempfile").TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            _make_companion(tmp_path, "codex-maya", executable_name="maya_adapter")
+            _make_companion(tmp_path, "maya-design", executable_name="maya_adapter")
             found = discover_companions((tmp_path,))
             self.assertEqual(len(found), 1)
-            self.assertEqual(found[0].plugin_id, "codex-maya")
+            self.assertEqual(found[0].plugin_id, "maya-design")
 
     def test_both_companions_present_returns_both(self) -> None:
         with __import__("tempfile").TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            _make_companion(tmp_path, "codex-blender", executable_name="blender_adapter")
-            _make_companion(tmp_path, "codex-maya", executable_name="maya_adapter")
+            _make_companion(tmp_path, "blender-design", executable_name="blender_adapter")
+            _make_companion(tmp_path, "maya-design", executable_name="maya_adapter")
             found = discover_companions((tmp_path,))
             ids = sorted(c.plugin_id for c in found)
-            self.assertEqual(ids, ["codex-blender", "codex-maya"])
+            self.assertEqual(ids, ["blender-design", "maya-design"])
 
     def test_duplicate_plugin_id_dedupes_to_first(self) -> None:
         with __import__("tempfile").TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            _make_companion(tmp_path, "codex-blender", executable_name="blender_adapter")
-            _make_companion(tmp_path, "codex-blender", version="0.1.1", executable_name="blender_adapter")
+            _make_companion(tmp_path, "blender-design", executable_name="blender_adapter")
+            _make_companion(tmp_path, "blender-design", version="0.1.1", executable_name="blender_adapter")
             found = discover_companions((tmp_path,))
             self.assertEqual(len(found), 1)
 
     def test_stale_installation_with_missing_executable_is_skipped(self) -> None:
         with __import__("tempfile").TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            _make_companion(tmp_path, "codex-blender")  # no executable -> stale
+            _make_companion(tmp_path, "blender-design")  # no executable -> stale
             found = discover_companions((tmp_path,))
             self.assertEqual(found, [])
 
     def test_unrelated_user_directories_are_not_crawled(self) -> None:
         with __import__("tempfile").TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            _make_companion(tmp_path / "Documents" / "Projects" / "MyScene", "codex-blender", executable_name="blender_adapter")
+            _make_companion(tmp_path / "Documents" / "Projects" / "MyScene", "blender-design", executable_name="blender_adapter")
             found = discover_companions((tmp_path,))
             self.assertEqual(found, [])
 
     def test_incompatible_contract_version_is_excluded(self) -> None:
         with __import__("tempfile").TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            _make_companion(tmp_path, "codex-blender", contract_versions=("99.0.0",), executable_name="blender_adapter")
+            _make_companion(tmp_path, "blender-design", contract_versions=("99.0.0",), executable_name="blender_adapter")
             found = discover_companions((tmp_path,))
             self.assertEqual(found, [])
 
@@ -138,38 +138,38 @@ class SelectCompanionTests(unittest.TestCase):
     def test_single_companion_is_auto_selected(self) -> None:
         with __import__("tempfile").TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            companion = _make_companion(tmp_path, "codex-blender", executable_name="blender_adapter")
+            companion = _make_companion(tmp_path, "blender-design", executable_name="blender_adapter")
             selected = select_companion([companion], requested=None)
-            self.assertEqual(selected.plugin_id, "codex-blender")
+            self.assertEqual(selected.plugin_id, "blender-design")
 
     def test_two_companions_without_request_raises_ambiguous(self) -> None:
         with __import__("tempfile").TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            blender = _make_companion(tmp_path, "codex-blender", executable_name="blender_adapter")
-            maya = _make_companion(tmp_path, "codex-maya", executable_name="maya_adapter")
+            blender = _make_companion(tmp_path, "blender-design", executable_name="blender_adapter")
+            maya = _make_companion(tmp_path, "maya-design", executable_name="maya_adapter")
             with self.assertRaises(AmbiguousCompanionError):
                 select_companion([blender, maya], requested=None)
 
     def test_two_companions_with_explicit_blender_request_selects_blender(self) -> None:
         with __import__("tempfile").TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            blender = _make_companion(tmp_path, "codex-blender", executable_name="blender_adapter")
-            maya = _make_companion(tmp_path, "codex-maya", executable_name="maya_adapter")
+            blender = _make_companion(tmp_path, "blender-design", executable_name="blender_adapter")
+            maya = _make_companion(tmp_path, "maya-design", executable_name="maya_adapter")
             selected = select_companion([blender, maya], requested="blender")
-            self.assertEqual(selected.plugin_id, "codex-blender")
+            self.assertEqual(selected.plugin_id, "blender-design")
 
     def test_two_companions_with_explicit_maya_request_selects_maya(self) -> None:
         with __import__("tempfile").TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            blender = _make_companion(tmp_path, "codex-blender", executable_name="blender_adapter")
-            maya = _make_companion(tmp_path, "codex-maya", executable_name="maya_adapter")
+            blender = _make_companion(tmp_path, "blender-design", executable_name="blender_adapter")
+            maya = _make_companion(tmp_path, "maya-design", executable_name="maya_adapter")
             selected = select_companion([blender, maya], requested="maya")
-            self.assertEqual(selected.plugin_id, "codex-maya")
+            self.assertEqual(selected.plugin_id, "maya-design")
 
     def test_unknown_request_raises_value_error(self) -> None:
         with __import__("tempfile").TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            blender = _make_companion(tmp_path, "codex-blender", executable_name="blender_adapter")
+            blender = _make_companion(tmp_path, "blender-design", executable_name="blender_adapter")
             with self.assertRaises(ValueError):
                 select_companion([blender], requested="houdini")
 
@@ -177,8 +177,8 @@ class SelectCompanionTests(unittest.TestCase):
 class InstallGuidanceTests(unittest.TestCase):
     def test_guidance_names_both_companions(self) -> None:
         msg = install_guidance()
-        self.assertIn("codex-blender", msg)
-        self.assertIn("codex-maya", msg)
+        self.assertIn("blender-design", msg)
+        self.assertIn("maya-design", msg)
 
 
 if __name__ == "__main__":

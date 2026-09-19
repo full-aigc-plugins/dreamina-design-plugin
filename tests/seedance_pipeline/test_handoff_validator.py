@@ -1,7 +1,7 @@
 """Tests for the Dreamina 3D handoff validator.
 
 The validator MUST reject any preview receipt that:
-  - is not produced by codex-blender or codex-maya,
+  - is not produced by blender-design or maya-design,
   - is not on schema version 1.0.0,
   - has a producer version outside the supported range,
   - has restoration.status != 'confirmed',
@@ -190,14 +190,14 @@ class HandoffValidatorTests(unittest.TestCase):
                 t.join(timeout=1.0)
 
     def test_compatible_producer_accepts_supported_versions(self) -> None:
-        self.assertTrue(compatible_producer("codex-blender", "0.1.0", {"codex-blender": [("0.1.0", "0.1.99")]}))
+        self.assertTrue(compatible_producer("blender-design", "0.1.0", {"blender-design": [("0.1.0", "0.1.99")]}))
 
     def test_compatible_producer_rejects_too_old_version(self) -> None:
-        self.assertFalse(compatible_producer("codex-blender", "0.0.1", {"codex-blender": [("0.1.0", "0.1.99")]}))
+        self.assertFalse(compatible_producer("blender-design", "0.0.1", {"blender-design": [("0.1.0", "0.1.99")]}))
 
     def test_supported_constants_are_pinned(self) -> None:
         self.assertEqual(SUPPORTED_SCHEMA_VERSION, "1.0.0")
-        self.assertEqual(SUPPORTED_PRODUCERS, ("codex-blender", "codex-maya"))
+        self.assertEqual(SUPPORTED_PRODUCERS, ("blender-design", "maya-design"))
 
 
 if __name__ == "__main__":

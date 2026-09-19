@@ -66,7 +66,7 @@ def main() -> int:
 
     receipt = {
         "schema_version": "1.0.0",
-        "producer_plugin": "codex-blender",
+        "producer_plugin": "blender-design",
         "producer_version": "0.1.0",
         "artifact_id": request.get("artifact_id", "blender_fake"),
         "path": str(output_path),

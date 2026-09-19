@@ -1,4 +1,4 @@
-# Codex Dreamina Design 插件
+# Dreamina Design 插件
 
 ![Codex × Dreamina Design — 可控地创作图片与视频](assets/dreamina-design-hero.png)
 
@@ -343,9 +343,9 @@ partme-dreamina-design/
 
 ## 深入文档
 
-- [Architecture](docs/Codex-Dreamina-Design-Plugin-Architecture.md) · [架构文档](docs/Codex-Dreamina-Design-Plugin-Architecture.zh_CN.md)
-- [Technical solution](docs/Codex-Dreamina-Design-Plugin-Technical-Solution.md) · [技术方案](docs/Codex-Dreamina-Design-Plugin-Technical-Solution.zh_CN.md)
-- [设计规格](docs/superpowers/specs/2026-09-11-partme-dreamina-design-design.md)
+- [Architecture](docs/Dreamina-Design-Plugin-Architecture.md) · [架构文档](docs/Dreamina-Design-Plugin-Architecture.zh_CN.md)
+- [Technical solution](docs/Dreamina-Design-Plugin-Technical-Solution.md) · [技术方案](docs/Dreamina-Design-Plugin-Technical-Solution.zh_CN.md)
+- [设计规格](docs/superpowers/specs/2026-09-11-dreamina-design-plugin-design.md)
 - [生产就绪加固计划](docs/superpowers/plans/2026-09-12-production-readiness-hardening.md)
 
 ## 贡献与支持

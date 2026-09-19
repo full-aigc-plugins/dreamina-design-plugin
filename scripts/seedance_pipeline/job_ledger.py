@@ -1,7 +1,7 @@
-"""End-to-end job ledger for codex-dreamina-3d.
+"""End-to-end job ledger for dreamina-3d.
 
 The ledger enforces the state machine defined in
-docs/Codex-Dreamina-3D-Plugin-Architecture.md and the spec:
+docs/Dreamina-3D-Plugin-Architecture.md and the spec:
 
   Draft -> DccSelected -> PreviewSpecified -> PreviewValidated ->
   CapabilityResolved -> Quoted -> Approved -> Submitted -> Querying ->

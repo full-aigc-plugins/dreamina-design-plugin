@@ -75,7 +75,7 @@ def _write_minimal_repo(tmp: Path) -> Path:
     (tmp / ".codex-plugin" / "plugin.json").write_text(
         json.dumps(
             {
-                "name": "codex-dreamina-design",
+                "name": "dreamina-design",
                 "version": "0.1.0",
                 "repository": "https://github.com/partme-ai/partme-dreamina-design",
                 "skills": "./skills/",
@@ -101,7 +101,7 @@ def _write_minimal_repo(tmp: Path) -> Path:
             {
                 "plugins": [
                     {
-                        "name": "codex-dreamina-design",
+                        "name": "dreamina-design",
                         "source": {
                             "source": "url",
                             "url": "https://github.com/partme-ai/partme-dreamina-design.git",

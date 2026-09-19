@@ -1,4 +1,4 @@
-# Codex Dreamina Design Plugin
+# Dreamina Design Plugin
 
 ![Codex × Dreamina Design — Create images and videos with control](assets/dreamina-design-hero.png)
 
@@ -346,9 +346,9 @@ partme-dreamina-design/
 
 ## Deep links
 
-- [Architecture](docs/Codex-Dreamina-Design-Plugin-Architecture.md) · [架构文档](docs/Codex-Dreamina-Design-Plugin-Architecture.zh_CN.md)
-- [Technical solution](docs/Codex-Dreamina-Design-Plugin-Technical-Solution.md) · [技术方案](docs/Codex-Dreamina-Design-Plugin-Technical-Solution.zh_CN.md)
-- [Design spec](docs/superpowers/specs/2026-09-11-partme-dreamina-design-design.md)
+- [Architecture](docs/Dreamina-Design-Plugin-Architecture.md) · [架构文档](docs/Dreamina-Design-Plugin-Architecture.zh_CN.md)
+- [Technical solution](docs/Dreamina-Design-Plugin-Technical-Solution.md) · [技术方案](docs/Dreamina-Design-Plugin-Technical-Solution.zh_CN.md)
+- [Design spec](docs/superpowers/specs/2026-09-11-dreamina-design-plugin-design.md)
 - [Production-readiness hardening plan](docs/superpowers/plans/2026-09-12-production-readiness-hardening.md)
 
 ## Contributing and support

@@ -33,7 +33,7 @@ def _preview(path: Path) -> dict:
     payload = path.read_bytes()
     return {
         "schema_version": "1.0.0",
-        "producer_plugin": "codex-blender",
+        "producer_plugin": "blender-design",
         "producer_version": "0.2.0",
         "artifact_id": "blender_preview_001",
         "path": str(path),

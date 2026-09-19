@@ -1,4 +1,4 @@
-# Codex Dreamina Design Plugin Technical Solution
+# Dreamina Design Plugin Technical Solution
 
 > **Document control**
 >

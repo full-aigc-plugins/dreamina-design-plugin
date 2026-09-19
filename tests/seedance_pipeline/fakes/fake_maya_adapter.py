@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fake Maya adapter — mirrors the fake Blender adapter but tags receipts as
-codex-maya and defaults preview_mode to 'local_video'.
+maya-design and defaults preview_mode to 'local_video'.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ def main() -> int:
 
     receipt = {
         "schema_version": "1.0.0",
-        "producer_plugin": "codex-maya",
+        "producer_plugin": "maya-design",
         "producer_version": "0.1.0",
         "artifact_id": request.get("artifact_id", "maya_fake"),
         "path": str(output_path),

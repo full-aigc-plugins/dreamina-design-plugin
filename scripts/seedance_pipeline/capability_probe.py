@@ -1,6 +1,6 @@
-"""Companion capability probe for codex-dreamina-3d.
+"""Companion capability probe for dreamina-3d.
 
-Discovers compatible codex-blender / codex-maya installations through stable
+Discovers compatible blender-design / maya-design installations through stable
 plugin manifests or an explicit adapter executable on the search roots. Never
 crawls unrelated user directories and never installs anything.
 
@@ -17,12 +17,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
-SUPPORTED_PLUGINS: tuple[str, ...] = ("codex-blender", "codex-maya")
+SUPPORTED_PLUGINS: tuple[str, ...] = ("blender-design", "maya-design")
 SUPPORTED_CONTRACT_VERSIONS: tuple[str, ...] = ("1.0.0",)
 
 DEFAULT_ADAPTER_BINARIES = {
-    "codex-blender": ("bin/blender_adapter",),
-    "codex-maya": ("bin/maya_adapter",),
+    "blender-design": ("bin/blender_adapter",),
+    "maya-design": ("bin/maya_adapter",),
 }
 
 
@@ -123,8 +123,8 @@ def install_guidance() -> str:
     """Return the exact installation guidance shown when no companion is found."""
     return (
         "No compatible companion plugin is installed. Install one of:\n"
-        "  - codex-blender  (https://github.com/partme-ai/codex-blender-plugin)\n"
-        "  - codex-maya     (https://github.com/partme-ai/codex-maya-plugin)\n"
+        "  - blender-design  (https://github.com/partme-ai/blender-design-plugin)\n"
+        "  - maya-design     (https://github.com/partme-ai/maya-design-plugin)\n"
         "Then re-run the workflow. The orchestrator will not install or modify "
         "either companion automatically."
     )

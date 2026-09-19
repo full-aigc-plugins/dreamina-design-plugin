@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "producer_plugin": "codex-maya",
+  "producer_plugin": "maya-design",
   "producer_version": "0.1.0",
   "artifact_id": "maya_playblast_xyz789",
   "path": "/tmp/fixtures/maya_playblast.mp4",

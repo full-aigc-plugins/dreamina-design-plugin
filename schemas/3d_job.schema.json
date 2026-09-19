@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/partme-ai/codex-dreamina-3d-plugin/schemas/3d_job.schema.json",
+  "$id": "https://github.com/partme-ai/dreamina-3d-plugin/schemas/3d_job.schema.json",
   "title": "Dreamina3DJob",
-  "description": "End-to-end job ledger entry for codex-dreamina-3d. References receipts by immutable ID and SHA-256; never embeds credentials or scene data.",
+  "description": "End-to-end job ledger entry for dreamina-3d. References receipts by immutable ID and SHA-256; never embeds credentials or scene data.",
   "type": "object",
   "required": [
     "schema_version",

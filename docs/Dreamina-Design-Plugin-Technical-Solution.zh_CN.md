@@ -1,4 +1,4 @@
-# Codex Dreamina Design 插件技术方案
+# Dreamina Design 插件技术方案
 
 > **文档信息**
 >

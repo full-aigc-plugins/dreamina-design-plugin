@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class McpConfigurationTests(unittest.TestCase):
-    def test_paid_tools_require_codex_product_prompt(self) -> None:
+    def test_paid_tools_require_dreamina_product_prompt(self) -> None:
         config = json.loads((ROOT / ".mcp.json").read_text(encoding="utf-8"))
         server = config["mcpServers"]["dreamina_design"]
         self.assertEqual(server["default_tools_approval_mode"], "prompt")

@@ -1,4 +1,4 @@
-"""Dreamina Design handoff for codex-dreamina-3d.
+"""Dreamina Design handoff for dreamina-3d.
 
 Talks to dreamina-design via argv + JSON only. The orchestrator never
 imports the design plugin's modules. All operations go through the public

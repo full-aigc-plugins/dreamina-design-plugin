@@ -86,7 +86,7 @@ class RequestPreviewExportTests(unittest.TestCase):
         spec = PreviewSpec(scene="/tmp/scene.blend", camera_name="Camera.001", frame_start=1, frame_end=96, output_label="preview")
         with tempfile.TemporaryDirectory() as tmp:
             receipt, revalidated = request_preview_export(executable=exe, spec=spec, output_dir=tmp, artifact_id="blender_test")
-            self.assertEqual(receipt["producer_plugin"], "codex-blender")
+            self.assertEqual(receipt["producer_plugin"], "blender-design")
             self.assertEqual(receipt["restoration"]["status"], "confirmed")
             # The handoff must have independently re-hashed the file.
             self.assertEqual(receipt["sha256"], revalidated)
@@ -96,7 +96,7 @@ class RequestPreviewExportTests(unittest.TestCase):
         spec = PreviewSpec(scene="/tmp/scene.ma", camera_name="perspShape", frame_start=1, frame_end=90, output_label="playblast")
         with tempfile.TemporaryDirectory() as tmp:
             receipt, revalidated = request_preview_export(executable=exe, spec=spec, output_dir=tmp, artifact_id="maya_test")
-            self.assertEqual(receipt["producer_plugin"], "codex-maya")
+            self.assertEqual(receipt["producer_plugin"], "maya-design")
             self.assertEqual(receipt["sha256"], revalidated)
 
     def test_adapter_error_is_classified(self) -> None:
@@ -145,7 +145,7 @@ class RequestPreviewExportTests(unittest.TestCase):
 class NoInternalImportsTests(unittest.TestCase):
     def test_dcc_handoff_does_not_import_companion_modules(self) -> None:
         source = (ROOT / "scripts" / "seedance_pipeline" / "dcc_handoff.py").read_text()
-        for forbidden in ("codex_blender", "codex_maya", "from blender", "import maya"):
+        for forbidden in ("blender_design", "maya_design", "from blender", "import maya"):
             self.assertNotIn(forbidden, source, f"dcc_handoff.py references companion internals: {forbidden!r}")
 
 

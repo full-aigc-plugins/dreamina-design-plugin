@@ -1,4 +1,4 @@
-# Codex Dreamina Design 插件架构
+# Dreamina Design 插件架构
 
 > **文档信息**
 >

@@ -68,7 +68,7 @@ def _drive_to(ledger: JobLedger, target: JobState) -> None:
     preview = {
         "artifact_id": "blender_preview_abc123",
         "sha256": "0" * 64,
-        "producer_plugin": "codex-blender",
+        "producer_plugin": "blender-design",
         "producer_version": "0.1.0",
     }
 
@@ -77,7 +77,7 @@ def _drive_to(ledger: JobLedger, target: JobState) -> None:
         job = ledger.read()
 
     sequence = [
-        (JobState.DCC_SELECTED, {"selected_companion": {"plugin_id": "codex-blender", "version": "0.1.0", "contract_version": "1.0.0"}}),
+        (JobState.DCC_SELECTED, {"selected_companion": {"plugin_id": "blender-design", "version": "0.1.0", "contract_version": "1.0.0"}}),
         (JobState.PREVIEW_SPECIFIED, {"preview": preview}),
         (JobState.PREVIEW_VALIDATED, {"preview_hash_validated": True}),
         (JobState.CAPABILITY_RESOLVED, {"resolved_capability": {"model": "seedance-2.5"}}),
@@ -140,7 +140,7 @@ class TransitionTests(unittest.TestCase):
             ledger_file = Path(tmp) / "job.json"
             ledger = JobLedger(ledger_file)
             ledger.write(new_job("job-1"))
-            ledger.transition(JobState.DCC_SELECTED, selected_companion={"plugin_id": "codex-blender", "version": "0.1.0", "contract_version": "1.0.0"})
+            ledger.transition(JobState.DCC_SELECTED, selected_companion={"plugin_id": "blender-design", "version": "0.1.0", "contract_version": "1.0.0"})
             with self.assertRaises(InvalidTransitionError):
                 ledger.transition(JobState.SUBMITTED)
 
@@ -159,7 +159,7 @@ class TransitionTests(unittest.TestCase):
             ledger = JobLedger(ledger_file)
             ledger.write(new_job("job-1"))
             r0 = ledger.read()["revision"]
-            ledger.transition(JobState.DCC_SELECTED, selected_companion={"plugin_id": "codex-blender", "version": "0.1.0", "contract_version": "1.0.0"})
+            ledger.transition(JobState.DCC_SELECTED, selected_companion={"plugin_id": "blender-design", "version": "0.1.0", "contract_version": "1.0.0"})
             r1 = ledger.read()["revision"]
             self.assertGreater(r1, r0)
 
@@ -267,7 +267,7 @@ class AtomicityTests(unittest.TestCase):
             ledger_file = Path(tmp) / "job.json"
             first = JobLedger(ledger_file)
             first.write(new_job("job-1"))
-            first.transition(JobState.DCC_SELECTED, selected_companion={"plugin_id": "codex-blender", "version": "0.1.0", "contract_version": "1.0.0"})
+            first.transition(JobState.DCC_SELECTED, selected_companion={"plugin_id": "blender-design", "version": "0.1.0", "contract_version": "1.0.0"})
             second = JobLedger(ledger_file)
             job = second.read()
             self.assertEqual(job["state"], JobState.DCC_SELECTED)

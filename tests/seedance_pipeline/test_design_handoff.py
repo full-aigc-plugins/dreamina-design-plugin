@@ -50,7 +50,7 @@ def _make_executable(state_dir: Path) -> str:
 
 VALID_RECEIPT = {
     "schema_version": "1.0.0",
-    "producer_plugin": "codex-blender",
+    "producer_plugin": "blender-design",
     "producer_version": "0.1.0",
     "artifact_id": "blender_preview_abc123",
     "path": "/tmp/blender_preview.mp4",
@@ -92,7 +92,7 @@ class NormalizedRequestTests(unittest.TestCase):
             self.assertIn("x", sent)
             self.assertNotIn("scene", sent)
             raw = (ROOT / "scripts" / "seedance_pipeline" / "design_handoff.py").read_text()
-            for forbidden in ("scene_path", ".blend", ".ma", "codex_blender", "codex_maya"):
+            for forbidden in ("scene_path", ".blend", ".ma", "blender_design", "maya_design"):
                 self.assertNotIn(forbidden, raw)
 
 
