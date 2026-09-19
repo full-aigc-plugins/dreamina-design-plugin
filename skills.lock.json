@@ -4,8 +4,8 @@
     {
       "package": "dreamina-skills",
       "repo": "https://github.com/full-aigc-skills/dreamina-skills.git",
-      "ref": "v1.6.1",
-      "sha": "b263ade8e3e3516baf8f67ddf586e242137c96e3",
+      "ref": "v1.6.2",
+      "sha": "f739b86fff342c1f75a179865356580dfb90b4c7",
       "skills": [
         "dreamina-cli",
         "dreamina-cli-image2image",
@@ -32,7 +32,7 @@
         "dreamina-cli-image2video": "3637f4da14704d6c402081916403ffba5b9dd2a7816ac045651aa8ed5abda122",
         "dreamina-cli-text2image": "cc801d82cc9e6bbd8a147a79901f8f8a680a4f73afcb8ec916256576f5d26cb1",
         "dreamina-cli-text2video": "e7c070409f508b01ebef8ecda56a522b135b3ed250bd428c7adbe1fac30530b4",
-        "dreamina-design-use": "70520b6f396298b41433a03eba441701174d2bd39f9691e77dffaca3d09f18f2",
+        "dreamina-design-use": "a0409ce27faa696abd174be0e9ca2df8f4645f68ee671452a748b775b0ab8905",
         "dreamina-opencli-image2image": "bb2f76bb3dede1977eee142deb9e9b680f0205610e7b4480a5fb9cf89b32c8d0",
         "dreamina-opencli-image2video": "81d029a25d40e44feb303bd532ff3072a6a48330f60a4415eec22d88525e94d5",
         "dreamina-opencli-text2image": "565307687f040c6117830624f8f72a8f8fc9ca3e6010598499f3c759af527e13",
