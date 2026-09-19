@@ -9,7 +9,7 @@
       "source": {
         "source": "url",
         "url": "https://github.com/partme-ai/partme-dreamina-design.git",
-        "ref": "main"
+        "ref": "v0.4.2"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -18,11 +18,11 @@
       "category": "Creativity",
       "version": "0.4.2",
       "description": "Create and edit Dreamina images and videos with approval-aware, resumable operations and verified downloads.",
-      "icon": "https://raw.githubusercontent.com/partme-ai/partme-dreamina-design/main/assets/logo-approved.png",
+      "icon": "https://cdn.jsdelivr.net/gh/full-aigc-plugins/dreamina-design-plugin@v0.4.2/assets/logo-approved.png",
       "interface": {
         "displayName": "Dreamina Design",
         "shortDescription": "Create images and videos with Dreamina",
-        "logo": "https://raw.githubusercontent.com/partme-ai/partme-dreamina-design/main/assets/logo-approved.png"
+        "logo": "https://cdn.jsdelivr.net/gh/full-aigc-plugins/dreamina-design-plugin@v0.4.2/assets/logo-approved.png"
       }
     }
   ]
