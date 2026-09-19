@@ -112,6 +112,17 @@ class SkillVendorTest(unittest.TestCase):
         self.assertEqual(vendor("check", consumer, "--offline").returncode, 0)
         self.assertEqual(vendor("check", consumer).returncode, 0)
 
+    def test_update_refreshes_existing_package_upstream_marker(self) -> None:
+        upstream = make_upstream(self.base, {"demo-one": "first demo skill gate"})
+        consumer = make_consumer(self.base, upstream, ["demo-one"])
+        marker = consumer / "skills" / ".upstream-commit"
+        marker.write_text("0" * 40 + "\n", encoding="utf-8")
+
+        result = vendor("update", consumer)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        lock = json.loads((consumer / "skills.lock.json").read_text(encoding="utf-8"))
+        self.assertEqual(marker.read_text(encoding="utf-8").strip(), lock["sources"][0]["sha"])
+
     def test_update_preserves_unmanaged_plugin_skill(self) -> None:
         upstream = make_upstream(self.base, {"demo-one": "managed external skill"})
         consumer = make_consumer(self.base, upstream, ["demo-one"])

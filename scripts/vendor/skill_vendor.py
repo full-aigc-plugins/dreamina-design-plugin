@@ -199,6 +199,20 @@ def validate_no_cross_source_collisions(lock: dict) -> None:
             owners[key] = source.get("package", "?")
 
 
+def existing_package_marker(root: Path, lock: dict) -> Path | None:
+    """Return the legacy single-source marker when this repository declares it."""
+    marker = root / "skills" / ".upstream-commit"
+    if not marker.exists():
+        return None
+    if not marker.is_file():
+        raise RuntimeError("skills/.upstream-commit must be a regular file")
+    if len(lock["sources"]) != 1:
+        raise RuntimeError(
+            "skills/.upstream-commit is ambiguous when skills.lock.json has multiple sources"
+        )
+    return marker
+
+
 def source_checkout(source: dict, overrides: dict[str, str], workdir: Path) -> tuple[Path, str]:
     """Return ``(checkout, resolved_sha)`` for one source."""
     package = source["package"]
@@ -239,6 +253,7 @@ def cmd_update(
     lock = load_lock(lock_path)
     validate_no_cross_source_collisions(lock)
     validate_plugin_local_inventory(root, lock)
+    package_marker = existing_package_marker(root, lock)
     validate_assignment_packages(lock, source_refs, "--source-ref")
     validate_assignment_packages(lock, expected_shas, "--expected-sha")
     for package, ref in source_refs.items():
@@ -292,6 +307,8 @@ def cmd_update(
         return 1
     validate_plugin_local_inventory(root, lock)
     lock_path.write_text(json.dumps(lock, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if package_marker is not None:
+        package_marker.write_text(lock["sources"][0]["sha"] + "\n", encoding="utf-8")
     print(f"lockfile updated: {lock_path}")
     return 0
 
