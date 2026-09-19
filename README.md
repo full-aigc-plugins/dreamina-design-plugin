@@ -1,25 +1,25 @@
 # Dreamina Design Plugin
 
-![Codex × Dreamina Design — Create images and videos with control](assets/dreamina-design-hero.png)
+![Dreamina Design — Create images and videos with control](assets/dreamina-design-hero.png)
 
 <img src="assets/logo.png" alt="Dreamina Design logo" width="128">
 
-> Create Dreamina images and videos from Codex, with runtime CLI discovery, explicit approval for every paid call, and submissions you can resume by identifier.
+> Create Dreamina images and videos from your supported coding agent, with runtime CLI discovery, explicit approval for every paid call, and submissions you can resume by identifier.
 
-[![Version](https://img.shields.io/badge/version-0.4.3-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.4.3)
+[![Version](https://img.shields.io/badge/version-0.4.4-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.4.4)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [Install](#installation) · [Quick start](#quick-start) · [MCP tools](#mcp-tools) · [Troubleshooting](#troubleshooting)
 
 ## Positioning
 
-`dreamina-design` exposes the official Dreamina CLI to Codex through a local stdio MCP server with 21 typed tools. Every paid call passes a server-side confirmation, every submission gets a stable `submit_id`, and every task is queried before it is ever resubmitted.
+`dreamina-design` exposes the official Dreamina CLI to supported coding-agent hosts through a local stdio MCP server with 21 typed tools. Every paid call passes a server-side confirmation, every submission gets a stable `submit_id`, and every task is queried before it is ever resubmitted.
 
 The plugin is a strict wrapper: the CLI owns authentication and the remote API, model parameters come from the live CLI schema, and no tool accepts arbitrary shell input.
 
 ### Who it is for
 
-- Designers and marketers who want image and video generation inside Codex without losing control of spend.
+- Designers and marketers who want image and video generation inside their coding agent without losing control of spend.
 - Engineers who need a typed, auditable MCP surface over a vendor CLI.
 - Reviewers who need an approval record and a resumable submission identity for every paid action.
 
@@ -56,7 +56,7 @@ Downloaded image or video artifact + operation receipt
 |---|---|
 | Plugin ID | `dreamina-design` |
 | Host | Codex CLI or ChatGPT desktop app |
-| Current version | `0.4.3` |
+| Current version | `0.4.4` |
 | Plugin manifest | `.codex-plugin/plugin.json` |
 | MCP configuration | `.mcp.json` — local stdio server |
 | Primary language | Python 3.13 |
@@ -121,7 +121,7 @@ flowchart LR
 | `scripts/trusted_cli.py` | Trust enrollment and protected storage of the CLI identity | CLI installation |
 | `scripts/native_approval.py` | The fail-closed confirmation dialog | Business rules |
 | `scripts/image_service.py`, `scripts/video_service.py`, `scripts/task_service.py` | Request construction, submission, and query | Catalog values |
-| `skills/` (17) | Routing and per-capability instructions for Codex | Runtime enforcement |
+| `skills/` (17) | Routing and per-capability instructions for supported hosts | Runtime enforcement |
 
 ## Compatibility
 
@@ -148,7 +148,7 @@ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ### From the plugin marketplace
 
 ```bash
-codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.4.3
+codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.4.4
 codex plugin add dreamina-design@partme-ai-dreamina-design
 ```
 

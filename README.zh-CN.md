@@ -1,25 +1,25 @@
 # Dreamina Design 插件
 
-![Codex × Dreamina Design — 可控地创作图片与视频](assets/dreamina-design-hero.png)
+![Dreamina Design——可控地创作图片与视频](assets/dreamina-design-hero.png)
 
 <img src="assets/logo.png" alt="Dreamina Design Logo" width="128">
 
-> 在 Codex 中创作 Dreamina 图片与视频：运行时发现 CLI 能力、每次付费调用都要明确批准、提交结果可凭标识续查。
+> 在受支持的编码智能体中创作 Dreamina 图片与视频：运行时发现 CLI 能力、每次付费调用都要明确批准、提交结果可凭标识续查。
 
-[![版本](https://img.shields.io/badge/version-0.4.3-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.4.3)
+[![版本](https://img.shields.io/badge/version-0.4.4-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.4.4)
 [![许可证](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [安装](#安装) · [快速开始](#快速开始) · [MCP 工具](#mcp-工具) · [故障排查](#故障排查)
 
 ## 项目定位
 
-`dreamina-design` 通过一个本地 stdio MCP 服务器，把官方 Dreamina CLI 以 21 个带类型的工具暴露给 Codex。每次付费调用都要通过服务端确认，每次提交都会拿到稳定的 `submit_id`，每个任务在重新提交之前都必须先查询。
+`dreamina-design` 通过一个本地 stdio MCP 服务器，把官方 Dreamina CLI 以 21 个带类型的工具暴露给受支持宿主。每次付费调用都要通过服务端确认，每次提交都会拿到稳定的 `submit_id`，每个任务在重新提交之前都必须先查询。
 
 插件是严格包装：CLI 负责认证与远端 API，模型参数来自实时 CLI schema，任何工具都不接受任意 shell 输入。
 
 ### 适合谁
 
-- 希望在 Codex 里出图出片、同时又不想失去花费控制权的设计师与市场人员。
+- 希望在编码智能体里出图出片、同时又不想失去花费控制权的设计师与市场人员。
 - 需要在厂商 CLI 之上获得带类型、可审计 MCP 面的工程师。
 - 需要为每次付费动作拿到批准记录与可续查提交标识的审阅者。
 
@@ -56,7 +56,7 @@
 |---|---|
 | 插件 ID | `dreamina-design` |
 | 宿主 | Codex CLI 或 ChatGPT 桌面应用 |
-| 当前版本 | `0.4.3` |
+| 当前版本 | `0.4.4` |
 | 插件清单 | `.codex-plugin/plugin.json` |
 | MCP 配置 | `.mcp.json`——本地 stdio 服务器 |
 | 主要语言 | Python 3.13 |
@@ -148,7 +148,7 @@ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ### 从插件市场安装
 
 ```bash
-codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.4.3
+codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.4.4
 codex plugin add dreamina-design@partme-ai-dreamina-design
 ```
 

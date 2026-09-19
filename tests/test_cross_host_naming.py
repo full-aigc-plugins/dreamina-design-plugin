@@ -5,7 +5,15 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BANNED_PUBLIC_NAMES = ("codex" + "-dreamina-design", "codex" + " Dreamina Design", "codex" + "-Dreamina-Design", "codex" + "-dreamina-3d", "codex" + "-blender", "codex" + "-maya",)
+BANNED_PUBLIC_NAMES = (
+    "codex" + "-dreamina-design",
+    "codex" + " Dreamina Design",
+    "codex" + "-Dreamina-Design",
+    "Codex" + " × Dreamina Design",
+    "codex" + "-dreamina-3d",
+    "codex" + "-blender",
+    "codex" + "-maya",
+)
 TEXT_SUFFIXES = {".md", ".json", ".py", ".mjs", ".js", ".toml", ".yaml", ".yml", ".svg"}
 EXCLUDED_PARTS = {".git", ".mimosa", ".worktrees", ".superpowers", "artifacts", "openspec", "superpowers", "verification", "__pycache__"}
 
