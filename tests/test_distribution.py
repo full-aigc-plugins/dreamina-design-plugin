@@ -62,6 +62,14 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(entries[0]["source"], {"source": "url", "url": REPOSITORY + ".git", "ref": "main"})
         self.assertEqual(entries[0]["policy"], {"installation": "AVAILABLE", "authentication": "ON_USE"})
 
+    def test_mcp_python_launcher_is_path_portable(self) -> None:
+        mcp = load_json(".mcp.json")["mcpServers"]["dreamina_design"]
+        zcode = load_json(".zcode-plugin/plugin.json")["mcpServers"]["dreamina_design"]
+        self.assertEqual(mcp["command"], "python3")
+        self.assertEqual(zcode["command"], "python3")
+        self.assertFalse(mcp["command"].startswith("/"))
+        self.assertFalse(zcode["command"].startswith("/"))
+
     def test_structure_legal_and_brand_assets(self) -> None:
         for directory in ("assets", "skills", "schemas", "scripts", "tests"):
             self.assertTrue((ROOT / directory).is_dir(), directory)

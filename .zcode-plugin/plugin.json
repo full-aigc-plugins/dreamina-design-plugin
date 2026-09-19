@@ -29,7 +29,7 @@
   "commands": "commands",
   "mcpServers": {
     "dreamina_design": {
-      "command": "/usr/bin/python3",
+      "command": "python3",
       "args": [
         "-m",
         "scripts.dreamina_mcp_server"
