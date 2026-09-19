@@ -5,7 +5,7 @@
   "author": {
     "name": "Full Stack Skills / PartMe.AI"
   },
-  "homepage": "https://github.com/partme-ai/partme-dreamina-design",
+  "homepage": "https://github.com/full-aigc-plugins/dreamina-design-plugin",
   "license": "Apache-2.0",
   "keywords": [
     "dreamina",
@@ -17,7 +17,7 @@
     "shortDescription": "Create images and videos with Dreamina",
     "longDescription": "Operate Dreamina (即梦) from your coding agent: text2image, image2image, text2video, image2video, Seedance pipeline orchestration with submit-once recovery, and prompt guidance for every mode.",
     "developerName": "Full Stack Skills / PartMe.AI",
-    "websiteURL": "https://github.com/partme-ai/partme-dreamina-design"
+    "websiteURL": "https://github.com/full-aigc-plugins/dreamina-design-plugin"
   },
   "skills": "./skills/",
   "commands": "./commands/",

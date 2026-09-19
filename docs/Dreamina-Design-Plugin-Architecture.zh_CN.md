@@ -193,7 +193,7 @@ python3 scripts/unlock_runtime_gates.py status
 
 | 方面 | 立场 |
 |---|---|
-| 分发 | 指向本仓库、固定到 `main` 的 Codex marketplace 条目 |
+| 分发 | 指向本仓库、固定到不可变 `v0.4.3` 的跨宿主 marketplace 条目 |
 | Python | 3.13 |
 | CLI | 从官方安装器安装，并通过原生信任登记 |
 | Skill 拓扑 | `dreamina-skills` 仍是可复用事实源；本插件按 `skills/.upstream-commit` 打包逐字节校验的 Skill 树 |

@@ -6,7 +6,7 @@
 
 > Create Dreamina images and videos from Codex, with runtime CLI discovery, explicit approval for every paid call, and submissions you can resume by identifier.
 
-[![Version](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/partme-ai/partme-dreamina-design)
+[![Version](https://img.shields.io/badge/version-0.4.3-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.4.3)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [Install](#installation) · [Quick start](#quick-start) · [MCP tools](#mcp-tools) · [Troubleshooting](#troubleshooting)
@@ -56,7 +56,7 @@ Downloaded image or video artifact + operation receipt
 |---|---|
 | Plugin ID | `dreamina-design` |
 | Host | Codex CLI or ChatGPT desktop app |
-| Current version | `0.4.0` |
+| Current version | `0.4.3` |
 | Plugin manifest | `.codex-plugin/plugin.json` |
 | MCP configuration | `.mcp.json` — local stdio server |
 | Primary language | Python 3.13 |
@@ -148,7 +148,7 @@ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ### From the plugin marketplace
 
 ```bash
-codex plugin marketplace add partme-ai/partme-dreamina-design --ref main
+codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.4.3
 codex plugin add dreamina-design@partme-ai-dreamina-design
 ```
 
@@ -353,7 +353,7 @@ partme-dreamina-design/
 
 ## Contributing and support
 
-Open functional issues at <https://github.com/partme-ai/partme-dreamina-design/issues>. Before proposing a change, state the CLI version you verified against, whether it alters the approval envelope or the receipt format, and include the affected gate output.
+Open functional issues at <https://github.com/full-aigc-plugins/dreamina-design-plugin/issues>. Before proposing a change, state the CLI version you verified against, whether it alters the approval envelope or the receipt format, and include the affected gate output.
 
 ## License
 

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/partme-ai/partme-dreamina-design/schemas/video_batch_quote.schema.json",
+  "$id": "https://github.com/full-aigc-plugins/dreamina-design-plugin/schemas/video_batch_quote.schema.json",
   "title": "Immutable Dreamina Video Batch Quote",
   "type": "object",
   "additionalProperties": false,

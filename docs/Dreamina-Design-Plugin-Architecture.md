@@ -193,7 +193,7 @@ python3 scripts/unlock_runtime_gates.py status
 
 | Aspect | Position |
 |---|---|
-| Distribution | Codex marketplace entry pointing at this repository, pinned to `main` |
+| Distribution | Cross-host marketplace entry pointing at this repository, pinned to immutable `v0.4.3` |
 | Python | 3.13 |
 | CLI | Installed from the official installer and enrolled through native trust |
 | Skill topology | `dreamina-skills` remains the reusable fact source; this plugin packages byte-verified Skill trees pinned by `skills/.upstream-commit` |

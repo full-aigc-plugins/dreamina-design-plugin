@@ -6,7 +6,7 @@
 
 > 在 Codex 中创作 Dreamina 图片与视频：运行时发现 CLI 能力、每次付费调用都要明确批准、提交结果可凭标识续查。
 
-[![版本](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/partme-ai/partme-dreamina-design)
+[![版本](https://img.shields.io/badge/version-0.4.3-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.4.3)
 [![许可证](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [安装](#安装) · [快速开始](#快速开始) · [MCP 工具](#mcp-工具) · [故障排查](#故障排查)
@@ -56,7 +56,7 @@
 |---|---|
 | 插件 ID | `dreamina-design` |
 | 宿主 | Codex CLI 或 ChatGPT 桌面应用 |
-| 当前版本 | `0.4.0` |
+| 当前版本 | `0.4.3` |
 | 插件清单 | `.codex-plugin/plugin.json` |
 | MCP 配置 | `.mcp.json`——本地 stdio 服务器 |
 | 主要语言 | Python 3.13 |
@@ -148,7 +148,7 @@ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ### 从插件市场安装
 
 ```bash
-codex plugin marketplace add partme-ai/partme-dreamina-design --ref main
+codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.4.3
 codex plugin add dreamina-design@partme-ai-dreamina-design
 ```
 
@@ -350,7 +350,7 @@ partme-dreamina-design/
 
 ## 贡献与支持
 
-功能问题请提交到 <https://github.com/partme-ai/partme-dreamina-design/issues>。提交变更前，请说明你验证所用的 CLI 版本、是否改动批准信封或回执格式，并附上受影响的门禁输出。
+功能问题请提交到 <https://github.com/full-aigc-plugins/dreamina-design-plugin/issues>。提交变更前，请说明你验证所用的 CLI 版本、是否改动批准信封或回执格式，并附上受影响的门禁输出。
 
 ## 许可证
 

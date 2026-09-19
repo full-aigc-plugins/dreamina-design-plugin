@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/partme-ai/partme-dreamina-design/schemas/operation_receipt.schema.json",
+  "$id": "https://github.com/full-aigc-plugins/dreamina-design-plugin/schemas/operation_receipt.schema.json",
   "title": "Dreamina Operation Receipt",
   "type": "object",
   "additionalProperties": false,

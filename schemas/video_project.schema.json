@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/partme-ai/partme-dreamina-design/schemas/video_project.schema.json",
+  "$id": "https://github.com/full-aigc-plugins/dreamina-design-plugin/schemas/video_project.schema.json",
   "title": "Dreamina Video Project",
   "type": "object",
   "additionalProperties": false,

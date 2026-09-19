@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/partme-ai/partme-dreamina-design/schemas/capability_snapshot.schema.json",
+  "$id": "https://github.com/full-aigc-plugins/dreamina-design-plugin/schemas/capability_snapshot.schema.json",
   "title": "Dreamina Capability Snapshot",
   "type": "object",
   "additionalProperties": false,

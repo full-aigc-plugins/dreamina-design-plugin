@@ -273,7 +273,7 @@ class DistributionV7Verifier:
         marketplace = json.loads(marketplace_path.read_text(encoding="utf-8"))
         repository = manifest.get("repository", "")
         report.repository_url = repository
-        expected_source = {"source": "url", "url": repository + ".git", "ref": "main"}
+        expected_source = {"source": "url", "url": repository + ".git", "ref": f"v{manifest['version'].split('+', 1)[0]}"}
         for entry in marketplace.get("plugins", []):
             if entry.get("name") == manifest.get("name"):
                 report.marketplace_url_matches = entry.get("source") == expected_source

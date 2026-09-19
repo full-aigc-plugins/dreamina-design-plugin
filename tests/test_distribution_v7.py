@@ -77,7 +77,7 @@ def _write_minimal_repo(tmp: Path) -> Path:
             {
                 "name": "dreamina-design",
                 "version": "0.1.0",
-                "repository": "https://github.com/partme-ai/partme-dreamina-design",
+                "repository": "https://github.com/full-aigc-plugins/dreamina-design-plugin",
                 "skills": "./skills/",
                 "interface": {
                     "displayName": "Dreamina Design",
@@ -104,7 +104,7 @@ def _write_minimal_repo(tmp: Path) -> Path:
                         "name": "dreamina-design",
                         "source": {
                             "source": "url",
-                            "url": "https://github.com/partme-ai/partme-dreamina-design.git",
+                            "url": "https://github.com/full-aigc-plugins/dreamina-design-plugin.git",
                             "ref": "main",
                         },
                         "policy": {"installation": "AVAILABLE", "authentication": "ON_USE"},
@@ -293,7 +293,7 @@ class LinkAuditTests(unittest.TestCase):
         verifier = DistributionV7Verifier(root=self.root)
         report = verifier.run()
         self.assertTrue(report.marketplace_url_matches)
-        self.assertEqual(report.repository_url, "https://github.com/partme-ai/partme-dreamina-design")
+        self.assertEqual(report.repository_url, "https://github.com/full-aigc-plugins/dreamina-design-plugin")
 
 
 class PluginValidatorIntegrationTests(unittest.TestCase):

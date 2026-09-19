@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/partme-ai/partme-dreamina-design/schemas/audio_plan.schema.json",
+  "$id": "https://github.com/full-aigc-plugins/dreamina-design-plugin/schemas/audio_plan.schema.json",
   "title": "Dreamina Versioned Audio Plan",
   "type": "object",
   "additionalProperties": false,
