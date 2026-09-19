@@ -1,7 +1,7 @@
 # immutable-skill-supply-chain Specification
 
 ## Purpose
-确保插件安装的外部技能来自不可变且可验证的发布，并允许少量明确声明的插件专属技能安全共存。
+确保插件安装的外部技能只来自不可变且可验证的正式发布，并通过 release tag、peeled commit SHA、内容摘要和本地技能清单建立可审计的供应链；同时允许少量明确声明的插件专属技能安全共存，而不被外部同步覆盖。
 ## Requirements
 ### Requirement: External skills are immutable and verifiable
 插件 MUST 以 release tag、peeled commit SHA 和内容摘要锁定每个受管技能，检查命令 MUST 在 ref 移动、内容篡改、技能缺失或摘要不一致时失败。
@@ -42,4 +42,3 @@
 #### Scenario: Release candidate is consistent
 - **WHEN** 发布候选通过分发检查
 - **THEN** 三端 manifest 版本一致，受管技能检查通过，插件 tag 与 GitHub Release 可对应到同一 commit
-
