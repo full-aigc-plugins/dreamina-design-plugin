@@ -105,7 +105,7 @@ def _write_minimal_repo(tmp: Path) -> Path:
                         "source": {
                             "source": "url",
                             "url": "https://github.com/full-aigc-plugins/dreamina-design-plugin.git",
-                            "ref": "main",
+                            "ref": "v0.1.0",
                         },
                         "policy": {"installation": "AVAILABLE", "authentication": "ON_USE"},
                         "category": "Creativity",
