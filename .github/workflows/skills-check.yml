@@ -14,12 +14,18 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - name: Verify vendored skills match the lockfile digests
         run: python3 scripts/vendor/skill_vendor.py check --offline
       - name: Verify lockfile pins still match upstream refs and content
         run: python3 scripts/vendor/skill_vendor.py check
+      - name: Prepare private test temp root
+        run: |
+          mkdir -p "$RUNNER_TEMP/dreamina-tests"
+          chmod 700 "$RUNNER_TEMP/dreamina-tests"
       - name: Exercise vendor and manifest behavior
+        env:
+          TMPDIR: ${{ runner.temp }}/dreamina-tests
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Reject direct edits to externally managed skills
         if: github.event_name == 'pull_request'
