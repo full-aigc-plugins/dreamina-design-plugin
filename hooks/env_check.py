@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+from contextlib import suppress
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,18 +31,14 @@ def main() -> int:
     if vendor.is_dir():
         lines.append("vendored CLI: 就绪")
 
-    try:
+    with suppress(ValueError, OSError):
         sys.stdin.read()
-    except Exception:
-        pass
 
     print("即梦设计插件环境：" + "；".join(lines))
     return 0
 
 
 if __name__ == "__main__":
-    try:
+    with suppress(ValueError, OSError):
         json.load(sys.stdin)
-    except Exception:
-        pass
     sys.exit(main())

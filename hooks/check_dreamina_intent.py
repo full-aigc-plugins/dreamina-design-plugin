@@ -18,7 +18,8 @@ INTENT_RE = re.compile(
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
-    except Exception:
+    except (ValueError, OSError):
+        # JSONDecodeError ⊂ ValueError；stdin 流异常属 OSError。行为与原兜底一致。
         payload = {}
 
     prompt = ""
