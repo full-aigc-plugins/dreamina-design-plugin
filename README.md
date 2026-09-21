@@ -6,14 +6,14 @@
 
 > Create Dreamina images and videos from your supported coding agent, with runtime CLI discovery, explicit approval for every paid call, and submissions you can resume by identifier.
 
-[![Version](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.5.0)
+[![Version](https://img.shields.io/badge/version-0.6.0-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.6.0)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [Install](#installation) · [Quick start](#quick-start) · [MCP tools](#mcp-tools) · [Troubleshooting](#troubleshooting)
 
 ## Positioning
 
-`dreamina-design` exposes the official Dreamina CLI to supported coding-agent hosts through a local stdio MCP server with 21 typed tools. Every paid call passes a server-side confirmation, every submission gets a stable `submit_id`, and every task is queried before it is ever resubmitted.
+`dreamina-design` exposes the official Dreamina CLI to supported coding-agent hosts through a local stdio MCP server with 22 typed tools. Every paid call passes a server-side confirmation, every submission gets a stable `submit_id`, and every task is queried before it is ever resubmitted.
 
 The plugin is a strict wrapper: the CLI owns authentication and the remote API, model parameters come from the live CLI schema, and no tool accepts arbitrary shell input.
 
@@ -56,7 +56,7 @@ Downloaded image or video artifact + operation receipt
 |---|---|
 | Plugin ID | `dreamina-design` |
 | Host | Codex CLI or ChatGPT desktop app |
-| Current version | `0.5.0` |
+| Current version | `0.6.0` |
 | Plugin manifest | `.codex-plugin/plugin.json` |
 | MCP configuration | `.mcp.json` — local stdio server |
 | Primary language | Python 3.13 |
@@ -129,8 +129,8 @@ flowchart LR
 
 | Plugin version | Host | CLI | Python | Status |
 |---|---|---|---|---|
-| `0.5.0` | Any MCP client with stdio support | `dreamina` CLI installed from the official installer and enrolled | 3.13 | 21 tools registered; local production dispatch verified |
-| `0.5.0` | Codex / Claude Code / ZCode / Kimi through `JudgePort` | same | 3.13 | Visual contracts and allowance gates verified; real paid canary remains separately approved or `NOT_RUN` |
+| `0.6.0` | Any MCP client with stdio support | `dreamina` CLI installed from the official installer and enrolled | 3.13 | 22 tools registered; local production dispatch verified |
+| `0.6.0` | Codex / Claude Code / ZCode / Kimi through `JudgePort` | same | 3.13 | Visual contracts and allowance gates verified; real paid canary remains separately approved or `NOT_RUN` |
 
 The paid canary gate is recorded separately; it is either separately approved or marked `NOT_RUN`. Runtime gate lines are published and checked by:
 
@@ -150,7 +150,7 @@ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ### From the plugin marketplace
 
 ```bash
-codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.5.0
+codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.6.0
 codex plugin add dreamina-design@partme-ai-dreamina-design
 ```
 
@@ -256,6 +256,7 @@ Expected observation: the task is queried by `submit_id` and the artifact is ver
 | `dreamina_auth` | OAuth login, check, relogin, or logout |
 | `dreamina_submit_image` | Submit one approved paid image request |
 | `dreamina_submit_video` | Submit one approved paid video request |
+| `dreamina_visual_loop` | Drive a visual-quality loop: lock a target, run one approved paid round, record the host's independent judgement, retry once at most under an exact-fingerprint allowance |
 | `dreamina_session` | Create, list, search, rename, or delete a Session |
 | `dreamina_video_project` | Create, inspect, list, or resume a video project and enrol media tools |
 | `dreamina_analyze_reference_video` | Seed a source video and derive frames, sheets, and a recut |
@@ -351,7 +352,7 @@ partme-dreamina-design/
 ├── .mcp.json                   # local stdio MCP server declaration
 ├── .agents/plugins/marketplace.json
 ├── scripts/                    # MCP server, adapter, services, guards, validators
-├── skills/                     # 21 Skills, 13 pinned to the upstream snapshot
+├── skills/                     # 22 Skills, 17 pinned to the upstream snapshot
 ├── tests/                      # unit and contract tests
 └── docs/                       # architecture, technical solution, verification records
 ```

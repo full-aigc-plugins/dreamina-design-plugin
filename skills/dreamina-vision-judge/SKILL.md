@@ -10,6 +10,12 @@ license: Complete terms in LICENSE.txt
 结构化打分（/10）与可执行差距清单。本技能是**纯评估**，不修改生成参数、
 不重生成、不写回 saved draft、不消耗 dreamina-canvas 积分。
 
+## Target provenance（目标来源）
+
+评审输入的目标图可能来自**用户提供**，也可能由 `dreamina-visual-target` **生成**
+（含基线精修）。这不影响评审方法，但影响溯源：目标回执的 `source.kind` 会区分
+`user_supplied` / `generated`。本技能不生成、不修改目标。
+
 ## When to use this skill
 
 Use when the user:

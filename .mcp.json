@@ -72,6 +72,9 @@
         },
         "dreamina_video_project": {
           "approval_mode": "prompt"
+        },
+        "dreamina_visual_loop": {
+          "approval_mode": "prompt"
         }
       },
       "env_vars": [

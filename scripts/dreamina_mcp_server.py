@@ -24,6 +24,7 @@ from scripts.task_service import TaskService
 from scripts.trusted_cli import TrustedCliError, TrustedCliStore
 from scripts.video_project_mcp import project_tool_definitions
 from scripts.video_project_runtime import VideoProjectRuntime
+from scripts.visual_loop_runtime import VisualLoopRuntime, visual_loop_tool_definitions
 from scripts.video_service import VideoService, build_video_request_fingerprint
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -95,8 +96,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
         _tool("dreamina_session", "Create, list, search, rename, or delete a Dreamina Session.", {"action":{"type":"string","enum":["create","list","search","rename","delete"]},"name":{"type":"string","minLength":1,"maxLength":200},"session_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,128}$"},"query":{"type":"string","minLength":1,"maxLength":200}}, required=["action"], destructive=True),
         _tool("dreamina_diagnose", "Read bounded redacted Dreamina CLI logs from the fixed log directory.", {"command":{"type":"string","maxLength":4096},"error":{"type":"string","maxLength":16384},"submit_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,128}$"},"since_minutes":{"type":"integer","minimum":1,"maximum":1440,"default":60},"max_files":{"type":"integer","minimum":1,"maximum":10,"default":3}}, required=["command","error"], read_only=True),
     ]
-    # The ten additive video-project tools extend the eleven legacy tools.
-    return [*tools, *project_tool_definitions()]
+    # The ten video-project tools and the visual-loop tool extend the eleven
+    # legacy tools.
+    return [*tools, *project_tool_definitions(), *visual_loop_tool_definitions()]
 
 
 def _tool(name: str, description: str, properties: Mapping[str, Any], *, required: list[str] | None = None, read_only: bool = False, destructive: bool = False) -> dict[str, Any]:
@@ -108,7 +110,13 @@ def _tool(name: str, description: str, properties: Mapping[str, Any], *, require
 class DreaminaMcpTools:
     """Tool handlers; paid handlers are protected by Codex approval_mode=prompt."""
 
-    def __init__(self, *, state_root: Path | None = None, approval_provider: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        state_root: Path | None = None,
+        approval_provider: Any | None = None,
+        visual_loop_generation_factory: Any | None = None,
+    ) -> None:
         self.state_root = state_root or (Path.home() / ".local" / "share" / "dreamina-design")
         self.approval_provider = approval_provider or NativeApprovalProvider()
         self.auth_flow_store = AuthFlowStore()
@@ -117,6 +125,14 @@ class DreaminaMcpTools:
             approval_provider=self.approval_provider,
             adapter_factory=lambda: _adapter({}),
         ).registry()
+        # The visual loop keeps judging on the host and paid work on the
+        # handlers above; see openspec/changes/wire-visual-quality-loop.
+        self.visual_loops = VisualLoopRuntime(
+            state_root=self.state_root,
+            approval_provider=self.approval_provider,
+            generation_port_factory=visual_loop_generation_factory
+            or (lambda request: _ApprovedVisualLoopGeneration(self)),
+        ).registry()
 
     def call(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
         definitions={tool["name"]:tool for tool in _tool_definitions()}
@@ -124,6 +140,8 @@ class DreaminaMcpTools:
         _validate_schema(args,definitions[name]["inputSchema"],path="arguments")
         if self.project_tools.handles(name):
             return self.project_tools.call(name, args)
+        if self.visual_loops.handles(name):
+            return self.visual_loops.call(name, args)
         if name == "dreamina_capability_snapshot":
             with _adapter(args) as adapter:
                 snapshot = adapter.capability_snapshot()
@@ -203,6 +221,45 @@ class DreaminaMcpTools:
         guard = ApprovalGuard(root=self.state_root / "approvals")
         session_id = guard.create_session(label=f"mcp-{kind}-{uuid.uuid4().hex[:12]}")
         return session_id, guard
+
+
+class _ApprovedVisualLoopGeneration:
+    """One loop round of paid generation, on the existing approved handlers.
+
+    This has no submission or download code of its own: it calls the public
+    paid tools, so the user's approval prompt, the operation ledger and the
+    submit-once guarantee are the same ones a direct generation uses.  A loop
+    request therefore carries a ``submit`` object (dreamina_submit_image
+    arguments) and a ``download`` object (the approved download root plus poll
+    window for dreamina_query_task).
+    """
+
+    def __init__(self, tools: "DreaminaMcpTools") -> None:
+        self._tools = tools
+
+    def generate(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        submit_args = request.get("submit")
+        download_args = request.get("download")
+        if not isinstance(submit_args, Mapping) or not isinstance(download_args, Mapping):
+            raise ValueError(
+                "visual loop generation needs 'submit' and 'download' objects"
+            )
+        submitted = self._tools.call("dreamina_submit_image", submit_args)
+        submit_id = str(submitted["submit_id"])
+        queried = self._tools.call(
+            "dreamina_query_task", {"submit_id": submit_id, **download_args}
+        )
+        artifacts = queried.get("artifacts") or []
+        if not artifacts:
+            raise RuntimeError("no verified artifact was downloaded for this round")
+        first = dict(artifacts[0])
+        return {
+            "submit_id": submit_id,
+            "path": str(first["path"]),
+            "sha256": str(first["sha256"]),
+            "size_bytes": int(first["size_bytes"]),
+            "mime_type": str(first["mime_type"]),
+        }
 
 
 class _AdapterContext:

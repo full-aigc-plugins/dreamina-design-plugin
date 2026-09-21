@@ -6,7 +6,7 @@
 
 > 在受支持的编码智能体中创作 Dreamina 图片与视频：运行时发现 CLI 能力、每次付费调用都要明确批准、提交结果可凭标识续查。
 
-[![版本](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.5.0)
+[![版本](https://img.shields.io/badge/version-0.6.0-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.6.0)
 [![许可证](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [安装](#安装) · [快速开始](#快速开始) · [MCP 工具](#mcp-工具) · [故障排查](#故障排查)
@@ -56,7 +56,7 @@
 |---|---|
 | 插件 ID | `dreamina-design` |
 | 宿主 | Codex CLI 或 ChatGPT 桌面应用 |
-| 当前版本 | `0.5.0` |
+| 当前版本 | `0.6.0` |
 | 插件清单 | `.codex-plugin/plugin.json` |
 | MCP 配置 | `.mcp.json`——本地 stdio 服务器 |
 | 主要语言 | Python 3.13 |
@@ -129,8 +129,8 @@ flowchart LR
 
 | 插件版本 | 宿主 | CLI | Python | 状态 |
 |---|---|---|---|---|
-| `0.5.0` | 任意支持 stdio 的 MCP 客户端 | 已从官方安装器安装并完成信任注册的 `dreamina` CLI | 3.13 | 21 个工具已注册；本地生产分发已验证 |
-| `0.5.0` | Codex / Claude Code / ZCode / Kimi 通过 `JudgePort` | 同上 | 3.13 | 视觉契约与额度门禁已验证；真实付费金丝雀仍需单独审批或记为 `NOT_RUN` |
+| `0.6.0` | 任意支持 stdio 的 MCP 客户端 | 已从官方安装器安装并完成信任注册的 `dreamina` CLI | 3.13 | 22 个工具已注册；本地生产分发已验证 |
+| `0.6.0` | Codex / Claude Code / ZCode / Kimi 通过 `JudgePort` | 同上 | 3.13 | 视觉契约与额度门禁已验证；真实付费金丝雀仍需单独审批或记为 `NOT_RUN` |
 
 付费金丝雀门禁单独记录：要么单独批准，要么标记为 `NOT_RUN`。运行门禁条目可被以下命令检查：
 
@@ -150,7 +150,7 @@ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ### 从插件市场安装
 
 ```bash
-codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.5.0
+codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.6.0
 codex plugin add dreamina-design@partme-ai-dreamina-design
 ```
 
@@ -253,6 +253,7 @@ codex plugin add dreamina-design@partme-ai-dreamina-design
 | `dreamina_auth` | OAuth 登录、检查、重新登录或登出 |
 | `dreamina_submit_image` | 提交一次已批准的付费图片请求 |
 | `dreamina_submit_video` | 提交一次已批准的付费视频请求 |
+| `dreamina_visual_loop` | 驱动视觉质量闭环：锁定目标、执行一轮已批准的付费生成、记录宿主的独立评审结论，至多一次受精确指纹额度约束的重试 |
 | `dreamina_session` | 创建、列出、搜索、重命名或删除 Session |
 | `dreamina_video_project` | 创建、查看、列出或恢复视频工程，并注册媒体工具 |
 | `dreamina_analyze_reference_video` | 灌入源视频并派生帧、拼图与重剪 |

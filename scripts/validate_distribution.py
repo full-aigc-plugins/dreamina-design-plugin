@@ -72,7 +72,7 @@ def validate(root: Path) -> list[str]:
                 tools = mcp.get("tools", {})
                 if tools.get("dreamina_capability_snapshot", {}).get("approval_mode") != "approve":
                     errors.append("read-only capability tool must be explicitly approved")
-                for paid in ("dreamina_submit_image", "dreamina_submit_video"):
+                for paid in ("dreamina_submit_image", "dreamina_submit_video", "dreamina_visual_loop"):
                     if tools.get(paid, {}).get("approval_mode") != "prompt":
                         errors.append(f"paid MCP tool must require prompt approval: {paid}")
                 if mcp.get("args") != ["-m", "scripts.dreamina_mcp_server"]:

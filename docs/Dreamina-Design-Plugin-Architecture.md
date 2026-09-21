@@ -4,7 +4,7 @@
 >
 > | Field | Value |
 > |---|---|
-> | Status | `0.5.0` wires all 10 reference-video project tools into production MCP dispatch; a real paid canary still requires separate approval or remains `NOT_RUN` |
+> | Status | `0.6.0` wires all 10 reference-video project tools into production MCP dispatch; a real paid canary still requires separate approval or remains `NOT_RUN` |
 > | Scope | How Codex drives the installed `dreamina` CLI through a typed MCP server with explicit approval |
 > | Audience | Plugin maintainers, security reviewers, and integrators |
 > | Out of scope | The Dreamina service, account entitlement, and media generation quality |
@@ -193,7 +193,7 @@ python3 scripts/unlock_runtime_gates.py status
 
 | Aspect | Position |
 |---|---|
-| Distribution | Cross-host marketplace entry pointing at this repository, pinned to immutable `v0.5.0` |
+| Distribution | Cross-host marketplace entry pointing at this repository, pinned to immutable `v0.6.0` |
 | Python | 3.13 |
 | CLI | Installed from the official installer and enrolled through native trust |
 | Skill topology | `dreamina-skills` remains the reusable fact source; this plugin packages byte-verified Skill trees pinned by `skills/.upstream-commit` |

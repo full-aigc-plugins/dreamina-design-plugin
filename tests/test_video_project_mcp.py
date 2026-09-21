@@ -40,12 +40,15 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(len(project_tool_definitions()), 10)
         self.assertEqual({t["name"] for t in project_tool_definitions()}, PROJECT_TOOLS)
 
-    def test_inventory_is_eleven_legacy_plus_ten_project_tools(self) -> None:
+    def test_inventory_is_legacy_plus_project_plus_visual_loop_tools(self) -> None:
         from scripts.dreamina_mcp_server import _tool_definitions
+        from scripts.visual_loop_runtime import VISUAL_LOOP_TOOL_NAMES
 
         names = {tool["name"] for tool in _tool_definitions()}
         self.assertTrue(LEGACY_TOOLS <= names)
-        self.assertEqual(LEGACY_TOOLS | PROJECT_TOOLS, names)
+        self.assertEqual(
+            LEGACY_TOOLS | PROJECT_TOOLS | set(VISUAL_LOOP_TOOL_NAMES), names
+        )
 
     def test_legacy_vendor_validator_still_passes(self) -> None:
         """The compatibility import and the eleven definitions must not move."""
