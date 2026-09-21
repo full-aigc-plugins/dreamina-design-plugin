@@ -5,7 +5,7 @@
     "en": "Dreamina Design",
     "zh-CN": "即梦设计"
   },
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Create and edit Dreamina images and videos with approval-aware, resumable operations and verified downloads.",
   "description_i18n": {
     "en": "Dreamina image and video design workflows with runtime CLI discovery and resumable operations.",
