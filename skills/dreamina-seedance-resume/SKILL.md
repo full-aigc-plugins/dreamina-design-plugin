@@ -51,6 +51,12 @@ submission without a new user instruction.
    - Only `Draft`, `DccSelected`, and `PreviewSpecified` may re-invoke the
      DCC adapter, and only if the on-disk artifact hash no longer matches.
 
+Resume from persisted evidence, not a reconstructed identifier:
+
+```json
+{"state":"Querying","design_submit_id":"<stored-submit-id>","next_action":"query_only"}
+```
+
 ## Never do
 
 - Never auto-resubmit a paid action.

@@ -1,6 +1,6 @@
 # 4 维 Rubric 详细定义
 
-本文件是 `dreamina-prompt-vision-judge` 的 4 维评分细则。每个 subagent 在
+本文件是 `dreamina-vision-judge` 的 4 维评分细则。每个 subagent 在
 评审前**必须**先读它；不读即视为违规。
 
 ## 4 维定义

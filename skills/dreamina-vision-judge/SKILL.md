@@ -1,10 +1,10 @@
 ---
-name: dreamina-prompt-vision-judge
+name: dreamina-vision-judge
 description: Compare a candidate image against a target image using a fresh-context vision subagent and a 4-dimension rubric (composition / lighting / materials / details, total /10). Use when the user asks for visual evaluation against a target image, wants to score image fidelity, or wants a structured gap list to drive the next iteration of an image-generation prompt; mentions "视觉评审", "视觉对比", "视觉打分", "对标", "目标图对比", "target.png 对比", "看看哪里不像", "和目标图差距", "vision judge", "vision evaluation", "image rubric", "compare candidate to target", "score image fidelity". Sits next to `dreamina-prompt-text2image` / `-image2image` / `-text2video` / `-image2video` — same prompt layer, different output. NEVER confuse with `dreamina-video-evaluator` (the latter judges measured video clip gates against design intent for the Dreamina video project; this skill judges two still images against each other).
 license: Complete terms in LICENSE.txt
 ---
 
-# dreamina-prompt-vision-judge — 即梦图像视觉评审
+# dreamina-vision-judge — 即梦图像视觉评审
 
 把候选图与目标图交给 **fresh-context vision subagent**，按 4 维 rubric 输出
 结构化打分（/10）与可执行差距清单。本技能是**纯评估**，不修改生成参数、

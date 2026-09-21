@@ -32,7 +32,7 @@ class DistributionTests(unittest.TestCase):
     def test_manifest_and_marketplace(self) -> None:
         manifest = load_json(".codex-plugin/plugin.json")
         self.assertEqual(manifest["name"], PLUGIN_ID)
-        self.assertEqual(manifest["version"].split("+", 1)[0], "0.4.4")
+        self.assertEqual(manifest["version"].split("+", 1)[0], "0.5.0")
         lock = load_json("skills.lock.json")
         dreamina_source = next(
             source for source in lock["sources"] if source["package"] == "dreamina-skills"
@@ -59,7 +59,7 @@ class DistributionTests(unittest.TestCase):
         marketplace = load_json(".agents/plugins/marketplace.json")
         entries = [entry for entry in marketplace["plugins"] if entry["name"] == PLUGIN_ID]
         self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0]["source"], {"source": "url", "url": REPOSITORY + ".git", "ref": "v0.4.4"})
+        self.assertEqual(entries[0]["source"], {"source": "url", "url": REPOSITORY + ".git", "ref": "v0.5.0"})
         self.assertEqual(entries[0]["policy"], {"installation": "AVAILABLE", "authentication": "ON_USE"})
 
     def test_mcp_python_launcher_is_path_portable(self) -> None:

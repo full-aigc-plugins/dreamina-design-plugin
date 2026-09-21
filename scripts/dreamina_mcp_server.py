@@ -6,15 +6,15 @@ import json
 import re
 import sys
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
-from scripts.approval_guard import ApprovalGuard
 from scripts.account_service import AccountService
+from scripts.approval_guard import ApprovalGuard
 from scripts.auth_service import AuthFlowStore, AuthService
 from scripts.diagnostic_service import DiagnosticService
 from scripts.dreamina_adapter import DreaminaAdapter, DreaminaAdapterError
-from scripts.video_project_mcp import project_tool_definitions
 from scripts.environment_service import EnvironmentService
 from scripts.image_service import ImageService, build_request_fingerprint
 from scripts.native_approval import NativeApprovalProvider
@@ -22,10 +22,18 @@ from scripts.reference_policy import ReferencePolicy
 from scripts.session_service import SessionService
 from scripts.task_service import TaskService
 from scripts.trusted_cli import TrustedCliError, TrustedCliStore
+from scripts.video_project_mcp import project_tool_definitions
+from scripts.video_project_runtime import VideoProjectRuntime
 from scripts.video_service import VideoService, build_video_request_fingerprint
 
-
 PROTOCOL_VERSION = "2025-06-18"
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _server_version() -> str:
+    """Return the released plugin version without host-specific build metadata."""
+    manifest = json.loads((PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    return str(manifest["version"]).split("+", 1)[0]
 
 
 def _tool_definitions() -> list[dict[str, Any]]:
@@ -104,11 +112,18 @@ class DreaminaMcpTools:
         self.state_root = state_root or (Path.home() / ".local" / "share" / "dreamina-design")
         self.approval_provider = approval_provider or NativeApprovalProvider()
         self.auth_flow_store = AuthFlowStore()
+        self.project_tools = VideoProjectRuntime(
+            state_root=self.state_root,
+            approval_provider=self.approval_provider,
+            adapter_factory=lambda: _adapter({}),
+        ).registry()
 
     def call(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
         definitions={tool["name"]:tool for tool in _tool_definitions()}
         if name not in definitions: raise ValueError(f"unknown tool: {name}")
         _validate_schema(args,definitions[name]["inputSchema"],path="arguments")
+        if self.project_tools.handles(name):
+            return self.project_tools.call(name, args)
         if name == "dreamina_capability_snapshot":
             with _adapter(args) as adapter:
                 snapshot = adapter.capability_snapshot()
@@ -273,7 +288,7 @@ def _handle(message: Mapping[str, Any], tools: DreaminaMcpTools) -> dict | None:
     method = message.get("method")
     request_id = message.get("id")
     if method == "initialize":
-        return _response(request_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "dreamina-design", "version": "0.4.0"}})
+        return _response(request_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "dreamina-design", "version": _server_version()}})
     if method == "notifications/initialized":
         return None
     if method == "tools/list":

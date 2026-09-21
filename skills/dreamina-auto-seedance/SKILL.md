@@ -47,6 +47,12 @@ into a final Seedance video automatically rather than opened in Jimeng Web.
 7. Download into the approved root, verify media metadata, bytes and SHA-256,
    then and only then transition to `Completed`.
 
+The durable handoff must retain the real submit identifier:
+
+```json
+{"state":"Submitted","design_submit_id":"<provider-submit-id>","retry_allowed":false}
+```
+
 ## Privacy
 
 Keep account identity, credentials, approval material and local absolute paths

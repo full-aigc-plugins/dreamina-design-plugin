@@ -1,6 +1,6 @@
 # Failure Recovery — subagent 输出不可解析时
 
-本示例演示 `dreamina-prompt-vision-judge` 在 subagent 返回值违反 schema 时
+本示例演示 `dreamina-vision-judge` 在 subagent 返回值违反 schema 时
 的恢复路径。
 
 ## 场景 A：subagent 返回 prose + JSON 混杂

@@ -11,10 +11,10 @@
  *
  * 做的事：
  *   1. catalog.json 该插件 version bump
- *   2. 插件仓 4 个 manifest 同步（.zcode-plugin / kimi.plugin.json /
- *      .agents/plugins/marketplace.json 精确改；.codex-plugin 带当日 +codex.日期 后缀）
- *   3. 重跑 sync-marketplaces.mjs --write 重新生成三平台清单并校验
- *   4. 打印两仓待提交提示
+ *   2. 插件仓 manifest 与 README 版本同步（.codex-plugin 带上海时区当日后缀）
+ *   3. 新版本的真实宿主验收状态重置为 pending
+ *   4. 重跑 sync-marketplaces.mjs --write 重新生成三平台清单并校验
+ *   5. 打印两仓待提交提示
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -87,21 +87,65 @@ if (!plugin) {
 
 const oldVersion = plugin.version;
 const newVersion = bump(oldVersion);
-const today = new Date().toISOString().slice(0, 10).replaceAll("-", "");
+const today = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Shanghai",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+}).format(new Date()).replaceAll("-", "");
 const repoDir = path.join(workspace, plugin.localDirectory);
+const codexManifestPath = path.join(repoDir, ".codex-plugin/plugin.json");
+const oldCodexVersion = JSON.parse(fs.readFileSync(codexManifestPath, "utf8")).version;
+const newCodexVersion = `${newVersion}+codex.${today}`;
+const hostAcceptancePath = path.join(repoDir, "runtime/host-acceptance.json");
+const readmePaths = ["README.md", "README.zh-CN.md"]
+  .map((name) => path.join(repoDir, name))
+  .filter((file) => fs.existsSync(file));
+
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const bumpReadme = (text) => text
+  .replaceAll(oldCodexVersion, newCodexVersion)
+  .replace(
+    new RegExp(
+      "((?:Current package version:\\s*|当前包版本：)`?)"
+        + escapeRegex(oldVersion)
+        + "(`?)",
+      "g",
+    ),
+    `$1${newCodexVersion}$2`,
+  );
 
 const edits = [{ file: catalogPath, description: `${pluginId}: ${oldVersion} -> ${newVersion}` }];
-const plainManifestRels = [".zcode-plugin/plugin.json", "kimi.plugin.json", ".agents/plugins/marketplace.json"];
+const plainManifestRels = [".zcode-plugin/plugin.json", "kimi.plugin.json"];
 if (fs.existsSync(path.join(repoDir, "plugin.json"))) plainManifestRels.push("plugin.json");
 
 for (const rel of plainManifestRels) {
   edits.push({ file: path.join(repoDir, rel), description: `${rel}: ${oldVersion} -> ${newVersion}` });
 }
+edits.push({
+  file: path.join(repoDir, ".agents/plugins/marketplace.json"),
+  description: `.agents/plugins/marketplace.json: ${oldVersion} -> ${newVersion} + release URLs`,
+});
 // codex manifest 允许 <version>+codex.<date> 后缀（sync 校验认可的形状）
 edits.push({
-  file: path.join(repoDir, ".codex-plugin/plugin.json"),
-  description: `.codex-plugin/plugin.json: -> ${newVersion}+codex.${today}`,
+  file: codexManifestPath,
+  description: `.codex-plugin/plugin.json: -> ${newCodexVersion}`,
 });
+for (const readmePath of readmePaths) {
+  if (bumpReadme(fs.readFileSync(readmePath, "utf8"))
+      !== fs.readFileSync(readmePath, "utf8")) {
+    edits.push({
+      file: readmePath,
+      description: `${path.basename(readmePath)}: ${oldCodexVersion} -> ${newCodexVersion}`,
+    });
+  }
+}
+if (fs.existsSync(hostAcceptancePath)) {
+  edits.push({
+    file: hostAcceptancePath,
+    description: `runtime/host-acceptance.json: reset pending for ${newVersion}`,
+  });
+}
 
 console.log(`发版计划: ${pluginId} ${oldVersion} -> ${newVersion}${dryRun ? "（dry-run，不写文件）" : ""}`);
 for (const e of edits) console.log(`  - ${path.relative(workspace, e.file)}  ${e.description}`);
@@ -126,16 +170,43 @@ for (const rel of plainManifestRels) {
   const manifest = path.join(repoDir, rel);
   fs.writeFileSync(manifest, bumpPlain(fs.readFileSync(manifest, "utf8")));
 }
-const codexManifest = path.join(repoDir, ".codex-plugin/plugin.json");
-fs.writeFileSync(codexManifest, bumpCodex(fs.readFileSync(codexManifest, "utf8")));
+const repositoryMarketplace = path.join(repoDir, ".agents/plugins/marketplace.json");
+const marketplace = JSON.parse(fs.readFileSync(repositoryMarketplace, "utf8"));
+if (!Array.isArray(marketplace.plugins) || marketplace.plugins.length !== 1) {
+  throw new Error(`${pluginId}: repository marketplace must contain exactly one plugin`);
+}
+const marketplacePlugin = marketplace.plugins[0];
+const releaseRef = `v${newVersion}`;
+const logoUrl = `https://cdn.jsdelivr.net/gh/${plugin.repository}@${releaseRef}/${plugin.logo}`;
+marketplacePlugin.version = newVersion;
+marketplacePlugin.source.ref = releaseRef;
+marketplacePlugin.icon = logoUrl;
+marketplacePlugin.interface.logo = logoUrl;
+fs.writeFileSync(repositoryMarketplace, `${JSON.stringify(marketplace, null, 2)}\n`);
+fs.writeFileSync(codexManifestPath, bumpCodex(fs.readFileSync(codexManifestPath, "utf8")));
+for (const readmePath of readmePaths) {
+  const text = fs.readFileSync(readmePath, "utf8");
+  fs.writeFileSync(readmePath, bumpReadme(text));
+}
+
+// 新插件版本不能继承旧版本的真实宿主通过证据。
+if (fs.existsSync(hostAcceptancePath)) {
+  const acceptance = JSON.parse(fs.readFileSync(hostAcceptancePath, "utf8"));
+  acceptance.status = "pending";
+  acceptance.pluginVersion = newVersion;
+  acceptance.hosts = [];
+  fs.writeFileSync(hostAcceptancePath, `${JSON.stringify(acceptance, null, 2)}\n`);
+}
 
 // 3) 重新生成三平台清单 + 全量校验
-execFileSync(process.execPath, [path.join(root, "scripts/sync-marketplaces.mjs"), "--write"], { stdio: "inherit" });
-execFileSync(process.execPath, [path.join(root, "scripts/sync-marketplaces.mjs")], { stdio: "inherit" });
+const pluginFilter = `--plugin=${pluginId}`;
+execFileSync(process.execPath, [path.join(root, "scripts/sync-marketplaces.mjs"), "--write", pluginFilter], { stdio: "inherit" });
+execFileSync(process.execPath, [path.join(root, "scripts/sync-marketplaces.mjs"), pluginFilter], { stdio: "inherit" });
 
 // 4) 提交提示
 console.log(`
-✅ ${pluginId} ${newVersion} 发版完成。剩余步骤：
+✅ ${pluginId} ${newVersion} 发版候选已生成（尚未提交、推送、打 tag 或发布）。后续步骤：
   cd ${root} && git add -A && git commit -m "release: ${pluginId} ${newVersion}" && git push
   cd ${repoDir} && git add -A && git commit -m "release: v${newVersion}" && git push
-  ZCode 插件市场刷新后即可看到「可更新」`);
+  确认插件仓发布门禁与 Immutable Releases 设置后，再创建并推送 v${newVersion} tag。
+  只有 tag workflow、不可变 Release、制品校验和真实市场安装验证均通过后，才能宣称发布完成。`);

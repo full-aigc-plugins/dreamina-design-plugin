@@ -4,28 +4,35 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import re
 import stat
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
-from scripts.operation_ledger import OperationLedger
 from scripts.json_contracts import canonical_fingerprint, validate_contract
-from scripts.video_evaluation_service import REPAIR_BY_GATE
-from scripts.video_evaluation_service import MEASURED_GATE_ORDER, SEMANTIC_GATE_ORDER
-from scripts.video_evaluation_service import VideoEvaluationService
 from scripts.media_adapter import MediaAdapter
-from scripts.trusted_media_tools import TrustedMediaToolStore
+from scripts.operation_ledger import OperationLedger
 from scripts.task_service import TaskService
-from scripts.video_service import BatchAllowanceCommitError, PostInvokePersistenceError, VideoService
+from scripts.trusted_media_tools import TrustedMediaToolStore
+from scripts.video_evaluation_service import (
+    MEASURED_GATE_ORDER,
+    REPAIR_BY_GATE,
+    SEMANTIC_GATE_ORDER,
+    VideoEvaluationService,
+)
+from scripts.video_service import (
+    BatchAllowanceCommitError,
+    PostInvokePersistenceError,
+    VideoService,
+)
 
 
 class VideoBatchExecutor:
     """Submit deterministically and resume only through known provider task ids."""
+
     _locks_guard = threading.Lock()
-    _thread_locks: dict[str, threading.RLock] = {}
+    _thread_locks: ClassVar[dict[str, threading.RLock]] = {}
 
     @staticmethod
     def _open_private_child(parent_fd: int, name: str, *, create: bool) -> int:
@@ -141,6 +148,12 @@ class VideoBatchExecutor:
         return state or {"project_id": project_id, "batch_version": batch_version,
                          "allowance_id": self._allowance_id, "state": "ready", "tasks": []}
 
+    def load_state(self, project_id: str, batch_version: str) -> dict[str, Any]:
+        """Return the durable batch state after validating its allowance binding."""
+        with self._transaction():
+            self._quote(project_id, batch_version)
+            return self._load(project_id, batch_version)
+
     def _save(self, state: dict[str, Any]) -> None:
         self._ledger.save_batch(project_id=state["project_id"], batch_version=state["batch_version"], payload=state)
 
@@ -225,7 +238,7 @@ class VideoBatchExecutor:
                     planned["request"], adapter=self._adapter, allowance=self._allowance,
                     allowance_id=self._allowance_id, shot_id=planned["shot_id"],
                     attempt=planned["attempt_number"])
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - persist every post-reservation failure
                 error_code = (
                     "POST_INVOKE_PERSISTENCE_ERROR" if isinstance(exc, PostInvokePersistenceError)
                     else "BATCH_ALLOWANCE_COMMIT_ERROR" if isinstance(exc, BatchAllowanceCommitError)

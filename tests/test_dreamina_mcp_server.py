@@ -5,15 +5,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 from scripts.dreamina_adapter import DreaminaAdapterError, DreaminaResult
 from scripts.dreamina_mcp_server import DreaminaMcpTools, _handle, _tool_definitions
 from scripts.native_approval import ApprovalDeniedError
 from scripts.trusted_cli import TrustedCliError
 from tests.video_project_fixtures import run_mcp_initialize
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -71,7 +70,43 @@ class McpConfigurationTests(unittest.TestCase):
 class McpStdioTests(unittest.TestCase):
     def test_initialize_preserves_released_server_version(self) -> None:
         response = run_mcp_initialize()
-        self.assertEqual(response["result"]["serverInfo"]["version"], "0.4.0")
+        manifest = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        expected = manifest["version"].split("+", 1)[0]
+        self.assertEqual(response["result"]["serverInfo"]["version"], expected)
+
+    def test_production_runtime_dispatches_project_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            response = _handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 7,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "dreamina_video_project",
+                        "arguments": {"action": "runtime_status"},
+                    },
+                },
+                DreaminaMcpTools(state_root=Path(tmp)),
+            )
+        self.assertFalse(response["result"]["isError"], response)
+        payload = response["result"]["structuredContent"]
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["project_tool_count"], 10)
+
+    def test_production_runtime_creates_and_reads_a_durable_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = DreaminaMcpTools(state_root=Path(tmp))
+            created = tools.call(
+                "dreamina_video_project",
+                {"action": "create", "title": "Production chain", "audio_policy": "silent"},
+            )
+            loaded = tools.call(
+                "dreamina_video_project",
+                {"action": "get", "project_id": created["project_id"]},
+            )
+            listed = tools.call("dreamina_video_project", {"action": "list"})
+        self.assertEqual(loaded["project_id"], created["project_id"])
+        self.assertEqual(listed["projects"][0]["project_id"], created["project_id"])
 
     def test_query_adapter_failure_is_marked_retryable(self) -> None:
         class BrokenTools:

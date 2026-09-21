@@ -11,15 +11,24 @@ import os
 import re
 import secrets
 import stat
-import tempfile
 import threading
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any
 
-from scripts.json_contracts import ContractValidationError, canonical_fingerprint, parse_rfc3339, validate_contract
-from scripts.video_generation_planner import PlanningError, quote_total, validate_batch_quote
+from scripts.json_contracts import (
+    ContractValidationError,
+    canonical_fingerprint,
+    parse_rfc3339,
+    validate_contract,
+)
+from scripts.video_generation_planner import (
+    PlanningError,
+    quote_total,
+    validate_batch_quote,
+)
 
 
 class BatchScopeError(ValueError):
@@ -552,6 +561,18 @@ class VideoBatchAllowance:
             key = self._seal_key_store.load(allow_create=False)
             return copy.deepcopy(self._load_allowance(allowance_id, key=key))
 
+    def find_by_quote_fingerprint(self, quote_fingerprint: str) -> str | None:
+        """Resolve the opaque allowance id bound to one immutable quote."""
+        if not isinstance(quote_fingerprint, str) or re.fullmatch(r"[a-f0-9]{64}", quote_fingerprint) is None:
+            raise BatchScopeError("quote fingerprint is invalid")
+        with self._exclusive_lock():
+            key = self._seal_key_store.load(allow_create=False)
+            for name in self._allowance_names():
+                allowance = self._load_name(name, key=key)
+                if allowance.get("quote_fingerprint") == quote_fingerprint:
+                    return str(allowance["allowance_id"])
+        return None
+
     def _transition_reservation(self, reservation_id: str, state: str, **details: str) -> dict[str, Any]:
         with self._exclusive_lock():
             key = self._seal_key_store.load(allow_create=False)
@@ -1006,7 +1027,13 @@ class VideoBatchAllowance:
 
 
 __all__ = [
-    "AllowanceAlreadyActivatedError", "AllowanceCommitIndeterminateError", "AllowanceNotFoundError", "BatchScopeError", "FileSealKeyStore",
-    "BudgetExceededError", "ReservationConsumedError", "VideoBatchAllowance",
+    "AllowanceAlreadyActivatedError",
+    "AllowanceCommitIndeterminateError",
+    "AllowanceNotFoundError",
+    "BatchScopeError",
+    "BudgetExceededError",
+    "FileSealKeyStore",
+    "ReservationConsumedError",
     "SealKeyUnavailableError",
+    "VideoBatchAllowance",
 ]

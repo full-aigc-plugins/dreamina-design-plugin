@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
 
 SUPPORTED_PLUGINS: tuple[str, ...] = ("blender-design", "maya-design")
 SUPPORTED_CONTRACT_VERSIONS: tuple[str, ...] = ("1.0.0",)
@@ -146,11 +146,12 @@ def select_companion(candidates: Sequence[Companion], requested: str | None) -> 
     # only one companion happens to be installed.
     requested_id: str | None = None
     if requested is not None:
-        requested_id = f"codex-{requested.strip().lower()}"
+        requested_name = requested.strip().lower()
+        requested_id = requested_name if requested_name.endswith("-design") else f"{requested_name}-design"
         if requested_id not in SUPPORTED_PLUGINS:
             raise ValueError(
                 f"requested companion {requested!r} is not one of "
-                f"{[p.removeprefix('codex-') for p in SUPPORTED_PLUGINS]}"
+                f"{[p.removesuffix('-design') for p in SUPPORTED_PLUGINS]}"
             )
     if len(candidates) == 1:
         if requested_id is None or candidates[0].plugin_id == requested_id:
@@ -175,13 +176,13 @@ def select_companion(candidates: Sequence[Companion], requested: str | None) -> 
 
 
 __all__ = [
-    "SUPPORTED_PLUGINS",
     "SUPPORTED_CONTRACT_VERSIONS",
-    "Companion",
-    "MissingCompanionError",
+    "SUPPORTED_PLUGINS",
     "AmbiguousCompanionError",
+    "Companion",
     "IncompatibleContractError",
+    "MissingCompanionError",
     "discover_companions",
-    "select_companion",
     "install_guidance",
+    "select_companion",
 ]

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "visual_round_receipt.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "round_id", "loop_id", "round", "target_id", "target_sha256", "request_fingerprint", "submit_id", "artifact", "judge", "score", "blocking_gaps", "next_action", "created_at", "receipt_fingerprint"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "round_id": {"type": "string", "pattern": "^vr_[a-f0-9]{24}$"},
+    "loop_id": {"type": "string", "pattern": "^vl_[a-f0-9]{24}$"},
+    "round": {"type": "integer", "minimum": 1, "maximum": 100},
+    "target_id": {"type": "string", "pattern": "^vt_[a-f0-9]{24}$"},
+    "target_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "request_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "submit_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "artifact": {"type": "object", "additionalProperties": false, "required": ["path", "sha256", "size_bytes", "mime_type"], "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "size_bytes": {"type": "integer", "minimum": 1}, "mime_type": {"type": "string", "minLength": 1, "maxLength": 128}}},
+    "judge": {"type": "object", "additionalProperties": false, "required": ["provider", "model", "evaluated_at", "rubric_version", "gates"], "properties": {"provider": {"type": "string", "minLength": 1, "maxLength": 100}, "model": {"type": "string", "minLength": 1, "maxLength": 200}, "evaluated_at": {"type": "string", "minLength": 20}, "rubric_version": {"type": "string", "minLength": 1, "maxLength": 100}, "gates": {"type": "object"}}},
+    "score": {"type": "number", "minimum": 0, "maximum": 10},
+    "blocking_gaps": {"type": "array", "maxItems": 100, "items": {"type": "string", "minLength": 1, "maxLength": 500}},
+    "next_action": {"enum": ["complete", "request_retry_approval", "replan", "manual_review"]},
+    "created_at": {"type": "string", "minLength": 20},
+    "receipt_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

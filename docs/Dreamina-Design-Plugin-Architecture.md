@@ -4,7 +4,7 @@
 >
 > | Field | Value |
 > |---|---|
-> | Status | Feature set implemented as `0.4.0`; the reference-video project tools are recorded `NOT_RUN` at runtime |
+> | Status | `0.5.0` wires all 10 reference-video project tools into production MCP dispatch; a real paid canary still requires separate approval or remains `NOT_RUN` |
 > | Scope | How Codex drives the installed `dreamina` CLI through a typed MCP server with explicit approval |
 > | Audience | Plugin maintainers, security reviewers, and integrators |
 > | Out of scope | The Dreamina service, account entitlement, and media generation quality |
@@ -116,7 +116,7 @@ flowchart LR
 | `scripts/native_approval.py` | The fail-closed native confirmation | Business rules |
 | `scripts/video_project_store.py` | Versioned project state with compare-and-swap transitions | Generation |
 | `scripts/reference_policy.py` | Containment, type, and size policy for local inputs | Upload |
-| `skills/` (17) | Routing and per-capability instructions | Runtime enforcement |
+| `skills/` (21) | Routing and per-capability instructions | Runtime enforcement |
 
 Dependency direction is one-way: tools call services, services call the guard and the adapter, and only the adapter reaches the CLI.
 
@@ -193,7 +193,7 @@ python3 scripts/unlock_runtime_gates.py status
 
 | Aspect | Position |
 |---|---|
-| Distribution | Cross-host marketplace entry pointing at this repository, pinned to immutable `v0.4.4` |
+| Distribution | Cross-host marketplace entry pointing at this repository, pinned to immutable `v0.5.0` |
 | Python | 3.13 |
 | CLI | Installed from the official installer and enrolled through native trust |
 | Skill topology | `dreamina-skills` remains the reusable fact source; this plugin packages byte-verified Skill trees pinned by `skills/.upstream-commit` |

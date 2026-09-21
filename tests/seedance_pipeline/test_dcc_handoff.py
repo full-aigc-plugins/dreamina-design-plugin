@@ -14,7 +14,6 @@ The DCC handoff must:
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -23,8 +22,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "seedance_pipeline"))
 
-from dcc_handoff import (  # noqa: E402
+from dcc_handoff import (
     AdapterError,
+    CompanionDccPreviewPort,
     InspectionResult,
     PreviewSpec,
     StaleOutputError,
@@ -81,6 +81,19 @@ class InspectSceneTests(unittest.TestCase):
 
 
 class RequestPreviewExportTests(unittest.TestCase):
+    def test_companion_port_returns_visual_loop_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = CompanionDccPreviewPort(
+                executable=_make_blender_executable(), output_dir=tmp
+            ).capture({
+                "scene": "/tmp/scene.blend", "camera_name": "Camera.001",
+                "frame_start": 1, "frame_end": 96, "output_label": "preview",
+                "artifact_id": "visual_loop_preview",
+            })
+        self.assertEqual(artifact["mime_type"], "video/mp4")
+        self.assertEqual(len(artifact["sha256"]), 64)
+        self.assertGreater(artifact["size_bytes"], 0)
+
     def test_blender_export_returns_validated_receipt(self) -> None:
         exe = _make_blender_executable()
         spec = PreviewSpec(scene="/tmp/scene.blend", camera_name="Camera.001", frame_start=1, frame_end=96, output_label="preview")

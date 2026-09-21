@@ -4,7 +4,7 @@
 >
 > | 字段 | 值 |
 > |---|---|
-> | 状态 | 功能集已实现为 `0.4.0`；参考视频工程工具的运行门禁记为 `NOT_RUN` |
+> | 状态 | `0.5.0` 已接通 10 个参考视频工程工具的生产 MCP 分发；真实付费金丝雀仍需单独审批或记为 `NOT_RUN` |
 > | 范围 | Codex 如何通过带类型的 MCP 服务器与显式批准驱动已安装的 `dreamina` CLI |
 > | 读者 | 插件维护者、安全审阅者与集成者 |
 > | 不在范围 | Dreamina 服务、账号权益与媒体生成质量 |
@@ -116,7 +116,7 @@ flowchart LR
 | `scripts/native_approval.py` | 失败即关闭的原生确认 | 业务规则 |
 | `scripts/video_project_store.py` | 带 compare-and-swap 迁移的版本化工程状态 | 生成 |
 | `scripts/reference_policy.py` | 本地输入的边界、类型与大小策略 | 上传 |
-| `skills/`（17 个） | 路由与逐能力指令 | 运行时强制 |
+| `skills/`（21 个） | 路由与逐能力指令 | 运行时强制 |
 
 依赖方向是单向的：工具调用服务，服务调用守卫与适配器，只有适配器触达 CLI。
 
@@ -193,7 +193,7 @@ python3 scripts/unlock_runtime_gates.py status
 
 | 方面 | 立场 |
 |---|---|
-| 分发 | 指向本仓库、固定到不可变 `v0.4.4` 的跨宿主 marketplace 条目 |
+| 分发 | 指向本仓库、固定到不可变 `v0.5.0` 的跨宿主 marketplace 条目 |
 | Python | 3.13 |
 | CLI | 从官方安装器安装，并通过原生信任登记 |
 | Skill 拓扑 | `dreamina-skills` 仍是可复用事实源；本插件按 `skills/.upstream-commit` 打包逐字节校验的 Skill 树 |

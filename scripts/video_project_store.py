@@ -9,13 +9,13 @@ import re
 import secrets
 import stat
 import tempfile
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any
 
 from scripts.json_contracts import canonical_fingerprint, validate_contract
-
 
 PROJECT_ID = re.compile(r"^vp_[a-f0-9]{24}$")
 ALLOWED_TRANSITIONS = {
@@ -185,6 +185,48 @@ class VideoProjectStore:
                 )
             if schema_name is not None:
                 validate_contract(document, schema_name)
+            target = family_root / f"{version}.json"
+            indeterminate = VersionCommitIndeterminateError(
+                project_id=project_id,
+                family=family,
+                version=version,
+                path=target,
+                payload_fingerprint=canonical_fingerprint(document),
+            )
+            self._atomic_write(target, document, indeterminate_error=indeterminate)
+            return document
+
+    def write_named_version(
+        self,
+        project_id: str,
+        family: str,
+        payload: Mapping[str, Any],
+        *,
+        version_field: str,
+        schema_name: str,
+    ) -> dict[str, Any]:
+        """Persist a versioned document whose closed schema names its version field."""
+        if FAMILY.fullmatch(family) is None or re.fullmatch(
+            r"[a-z][a-z0-9_]{0,63}", version_field
+        ) is None:
+            raise ValueError("invalid version family or field")
+        with self._exclusive_lock(project_id):
+            self.get(project_id)
+            family_root = self.project_root(project_id) / family
+            family_root.mkdir(mode=0o700, exist_ok=True)
+            os.chmod(family_root, 0o700)
+            numbers = [
+                int(match.group(1))
+                for path in family_root.glob("v*.json")
+                if (match := re.fullmatch(r"v([0-9]{3,})", path.stem)) is not None
+            ]
+            version = f"v{max(numbers, default=0) + 1:03d}"
+            document = dict(payload)
+            claimed = document.get(version_field)
+            if claimed is not None and claimed != version:
+                raise ValueError(f"{version_field} does not match the next durable version")
+            document[version_field] = version
+            validate_contract(document, schema_name)
             target = family_root / f"{version}.json"
             indeterminate = VersionCommitIndeterminateError(
                 project_id=project_id,

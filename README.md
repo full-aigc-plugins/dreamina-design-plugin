@@ -6,7 +6,7 @@
 
 > Create Dreamina images and videos from your supported coding agent, with runtime CLI discovery, explicit approval for every paid call, and submissions you can resume by identifier.
 
-[![Version](https://img.shields.io/badge/version-0.4.4-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.4.4)
+[![Version](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.5.0)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [Install](#installation) · [Quick start](#quick-start) · [MCP tools](#mcp-tools) · [Troubleshooting](#troubleshooting)
@@ -56,7 +56,7 @@ Downloaded image or video artifact + operation receipt
 |---|---|
 | Plugin ID | `dreamina-design` |
 | Host | Codex CLI or ChatGPT desktop app |
-| Current version | `0.4.4` |
+| Current version | `0.5.0` |
 | Plugin manifest | `.codex-plugin/plugin.json` |
 | MCP configuration | `.mcp.json` — local stdio server |
 | Primary language | Python 3.13 |
@@ -73,6 +73,8 @@ Downloaded image or video artifact + operation receipt
 | Authentication | OAuth request | Login, check, relogin, or logout | Requires approval | Stable |
 | Image generation | An approved request | One submitted image task | Consumes credits | Stable |
 | Video generation | An approved request | One submitted video task | Consumes credits; some modes require web-side prerequisites | Stable |
+| Visual quality loop | Locked visual target plus one approved generation request | Content-bound round receipt and independent Judge result | The first round never auto-retries; default retry limit is one and requires an exact allowance | Local contract verified |
+| Reference-video project | Source video, redesign and a closed batch quote | Durable analysis, generation, evaluation, composition and export receipts | Paid execution remains approval-bound | Production MCP chain registered |
 | Task handling | A `submit_id` | Status and optional verified download | Query-only; never resubmits | Stable |
 | Session management | Session request | Create, list, search, rename, delete | Requires approval for writes | Stable |
 | Diagnostics | A log request | Bounded, redacted CLI log excerpt | Read-only | Stable |
@@ -121,14 +123,14 @@ flowchart LR
 | `scripts/trusted_cli.py` | Trust enrollment and protected storage of the CLI identity | CLI installation |
 | `scripts/native_approval.py` | The fail-closed confirmation dialog | Business rules |
 | `scripts/image_service.py`, `scripts/video_service.py`, `scripts/task_service.py` | Request construction, submission, and query | Catalog values |
-| `skills/` (17) | Routing and per-capability instructions for supported hosts | Runtime enforcement |
+| `skills/` (21) | Routing and per-capability instructions for supported hosts | Runtime enforcement |
 
 ## Compatibility
 
 | Plugin version | Host | CLI | Python | Status |
 |---|---|---|---|---|
-| `0.4.0` | Codex CLI or ChatGPT desktop app | `dreamina` CLI installed from the official installer and enrolled | 3.13 | Stable tools verified |
-| `0.4.0` | Codex CLI or ChatGPT desktop app | same | 3.13 | The 10 reference-video project tools are `NOT_RUN` at runtime |
+| `0.5.0` | Any MCP client with stdio support | `dreamina` CLI installed from the official installer and enrolled | 3.13 | 21 tools registered; local production dispatch verified |
+| `0.5.0` | Codex / Claude Code / ZCode / Kimi through `JudgePort` | same | 3.13 | Visual contracts and allowance gates verified; real paid canary remains separately approved or `NOT_RUN` |
 
 The paid canary gate is recorded separately; it is either separately approved or marked `NOT_RUN`. Runtime gate lines are published and checked by:
 
@@ -148,7 +150,7 @@ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ### From the plugin marketplace
 
 ```bash
-codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.4.4
+codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.5.0
 codex plugin add dreamina-design@partme-ai-dreamina-design
 ```
 
@@ -265,6 +267,15 @@ Expected observation: the task is queried by `submit_id` and the artifact is ver
 | `dreamina_compose_video` | Build a closed timeline and render a temporary final MP4 |
 | `dreamina_export_video_project` | Verify the rendered MP4 and export it to an approved destination |
 
+### Visual quality-loop contracts
+
+- `VisualTargetReceipt` locks the target bytes, dimensions, source and approved roots before generation.
+- `VisualRoundReceipt` binds the paid request fingerprint, returned artifact, independent Judge evidence, score, blocking gaps and next action.
+- `JudgePort` is host-neutral: Codex, Claude Code, ZCode, Kimi or another MCP host supplies the evaluator adapter; business code does not import a Codex sub-agent API.
+- A failed first round stops at `awaiting_approval`. It does not submit again. The default loop allows one retry only after an allowance matching both the exact retry fingerprint and its credit ceiling is activated.
+- `ReplanPort` may propose a repair without spending credits. The proposal must be persisted, approved by exact fingerprint and credit ceiling, and only explicit `max_attempts=3` loops can use a third round.
+- Video batch evaluation uses verified keyframe anchors and `VideoEvaluationService`. `CompanionDccPreviewPort` connects the existing Blender/Maya argv+JSON handoff to the same Judge and receipt chain and fails closed when no companion is configured.
+
 ### Error envelope
 
 Failures return a structured envelope: `error_type`, `message`, `retryable`, `requires_user_action`, and `next_action`. `next_action` is one of `request_user_action`, `query_same_submit_id`, or `correct_request`.
@@ -273,6 +284,7 @@ Failures return a structured envelope: `error_type`, `message`, `retryable`, `re
 
 - Unknown results are queried by `submit_id`; submissions are never blindly retried.
 - An ambiguous submission consumes its reservation and enters manual review rather than retrying.
+- Visual first-round evaluation cannot create a second paid request; a retry requires an active exact-fingerprint allowance and cannot exceed its approved credit ceiling.
 - Approval receipts are single-use, expire after five minutes, and are bound to the session and request.
 - Task status strings are normalized, so `querying`, `queued`, `pending`, `processing`, `running`, and `generating` all report as `querying`.
 - Terminal operation states are `succeeded`, `failed`, and `cancelled`.
@@ -339,7 +351,7 @@ partme-dreamina-design/
 ├── .mcp.json                   # local stdio MCP server declaration
 ├── .agents/plugins/marketplace.json
 ├── scripts/                    # MCP server, adapter, services, guards, validators
-├── skills/                     # 17 Skills, 13 pinned to the upstream snapshot
+├── skills/                     # 21 Skills, 13 pinned to the upstream snapshot
 ├── tests/                      # unit and contract tests
 └── docs/                       # architecture, technical solution, verification records
 ```

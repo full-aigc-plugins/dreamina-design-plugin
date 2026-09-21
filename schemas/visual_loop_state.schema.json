@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "visual_loop_state.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "loop_id", "media_kind", "state", "max_attempts", "target", "rounds", "retry_allowance", "proposed_retry", "created_at", "updated_at"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "loop_id": {"type": "string", "pattern": "^vl_[a-f0-9]{24}$"},
+    "media_kind": {"enum": ["image", "video", "dcc_preview"]},
+    "state": {"enum": ["draft", "target_locked", "submitting", "awaiting_approval", "retry_ready", "completed", "replan_required", "manual_review", "stopped"]},
+    "max_attempts": {"type": "integer", "minimum": 1, "maximum": 3},
+    "target": {"anyOf": [{"type": "null"}, {"$ref": "visual_target_receipt.schema.json"}]},
+    "rounds": {"type": "array", "maxItems": 3, "items": {"$ref": "visual_round_receipt.schema.json"}},
+    "retry_allowance": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/retry_allowance"}]},
+    "proposed_retry": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/retry_proposal"}]},
+    "pending_request_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "pending_credit_ceiling": {"type": "integer", "minimum": 0},
+    "last_error": {"type": "string", "maxLength": 500},
+    "stop_reason": {"type": "string", "maxLength": 500},
+    "remote_cancelled": {"type": "boolean"},
+    "created_at": {"type": "string", "minLength": 20},
+    "updated_at": {"type": "string", "minLength": 20}
+  },
+  "$defs": {
+    "retry_allowance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowance_id", "request_fingerprint", "credit_ceiling", "approver", "state", "activated_at"],
+      "properties": {
+        "allowance_id": {"type": "string", "pattern": "^va_[a-f0-9]{32}$"},
+        "request_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "credit_ceiling": {"type": "integer", "minimum": 1},
+        "approver": {"type": "string", "minLength": 1},
+        "state": {"enum": ["active", "consumed"]},
+        "activated_at": {"type": "string", "minLength": 20},
+        "consumed_at": {"type": "string", "minLength": 20}
+      }
+    },
+    "retry_proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request", "request_fingerprint", "credit_ceiling", "created_at"],
+      "properties": {
+        "request": {"type": "object"},
+        "request_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "credit_ceiling": {"type": "integer", "minimum": 1},
+        "created_at": {"type": "string", "minLength": 20}
+      }
+    }
+  }
+}

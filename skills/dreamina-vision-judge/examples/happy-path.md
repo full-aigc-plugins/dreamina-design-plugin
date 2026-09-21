@@ -1,6 +1,6 @@
 # Happy Path — 一次端到端视觉评审
 
-本示例演示 `dreamina-prompt-vision-judge` 的完整执行链路。
+本示例演示 `dreamina-vision-judge` 的完整执行链路。
 
 ## 场景
 
@@ -21,7 +21,7 @@
 ## 调用
 
 ```text
-用 dreamina-prompt-vision-judge 评审：
+用 dreamina-vision-judge 评审：
 target.png = .dreamina-canvas-target/target.png
 candidate.png = .dreamina-canvas-target/latest.png
 aspect = 4:5 / 4:5 (一致)

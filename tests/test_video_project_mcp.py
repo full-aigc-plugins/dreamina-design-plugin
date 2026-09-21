@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scripts.video_project_mcp import (  # noqa: E402
+from scripts.video_project_mcp import (
     PROJECT_TOOL_NAMES,
     ProjectToolError,
     VideoProjectMcpTools,
@@ -117,7 +117,9 @@ class DispatchTests(unittest.TestCase):
         tools.register("dreamina_quote_video_batch", lambda args: seen.append(dict(args)) or {"ok": True})
         result = tools.call(
             "dreamina_quote_video_batch",
-            {"project_id": "vp_" + "a" * 24, "design_version": "v001", "cost_basis": {"credit": 1}},
+            {"project_id": "vp_" + "a" * 24, "design_version": "v001", "cost_basis": {"credit": 1},
+             "generation": {"S01": {"mode": "text2video"}}, "output_destination": "/approved/final.mp4",
+             "output_profile": {"container": "mp4", "codec": "h264"}},
         )
         self.assertEqual(result, {"ok": True})
         self.assertEqual(seen[0]["design_version"], "v001")
@@ -128,7 +130,9 @@ class DispatchTests(unittest.TestCase):
             tools.call(
                 "dreamina_quote_video_batch",
                 {"project_id": "vp_" + "a" * 24, "design_version": "v001",
-                 "cost_basis": {"credit_ceiling": 1}},
+                 "cost_basis": {"credit_ceiling": 1}, "generation": {"S01": {"mode": "text2video"}},
+                 "output_destination": "/approved/final.mp4",
+                 "output_profile": {"container": "mp4", "codec": "h264"}},
             )
         self.assertIn("no registered handler", str(raised.exception))
 
@@ -202,6 +206,13 @@ class ActionRuleTests(unittest.TestCase):
                 {"action": "sheets", "project_id": "vp_" + "a" * 24, "analysis_version": "v001"},
             )
         self.assertIn("columns", str(raised.exception))
+
+    def test_analyze_recut_accepts_numeric_boundaries(self) -> None:
+        validate_action(
+            "dreamina_analyze_reference_video",
+            {"action": "recut", "project_id": "vp_" + "a" * 24,
+             "analysis_version": "v001", "splits": [1.25], "merges": [2.5]},
+        )
 
     def test_execute_reconcile_forbids_new_submissions(self) -> None:
         with self.assertRaises(ProjectToolError) as raised:

@@ -1,11 +1,11 @@
 # Boundary Refusal — 输入缺图 / aspect 不匹配
 
-本示例演示 `dreamina-prompt-vision-judge` 何时应该**拒收**而不是强行评审。
+本示例演示 `dreamina-vision-judge` 何时应该**拒收**而不是强行评审。
 
 ## 场景 A：缺图
 
 ```text
-用 dreamina-prompt-vision-judge 评审：
+用 dreamina-vision-judge 评审：
 target.png = .dreamina-canvas-target/target.png
 candidate.png = /tmp/missing.png   # 文件不存在
 ```
@@ -32,7 +32,7 @@ candidate.png = /tmp/missing.png   # 文件不存在
 ## 场景 B：aspect 不匹配
 
 ```text
-用 dreamina-prompt-vision-judge 评审：
+用 dreamina-vision-judge 评审：
 target.png = .dreamina-canvas-target/target.png   # 16:9
 candidate.png = .dreamina-canvas-target/latest.png # 1:1
 ```
@@ -61,7 +61,7 @@ candidate.png = .dreamina-canvas-target/latest.png # 1:1
 ## 场景 C：两图之一是视频帧
 
 ```text
-用 dreamina-prompt-vision-judge 评审视频：
+用 dreamina-vision-judge 评审视频：
 target.mp4 = .dreamina-canvas-target/target.mp4
 candidate.png = .dreamina-canvas-target/latest.png
 ```

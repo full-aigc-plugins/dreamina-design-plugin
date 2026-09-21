@@ -6,7 +6,7 @@
 
 > 在受支持的编码智能体中创作 Dreamina 图片与视频：运行时发现 CLI 能力、每次付费调用都要明确批准、提交结果可凭标识续查。
 
-[![版本](https://img.shields.io/badge/version-0.4.4-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.4.4)
+[![版本](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.5.0)
 [![许可证](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [安装](#安装) · [快速开始](#快速开始) · [MCP 工具](#mcp-工具) · [故障排查](#故障排查)
@@ -56,7 +56,7 @@
 |---|---|
 | 插件 ID | `dreamina-design` |
 | 宿主 | Codex CLI 或 ChatGPT 桌面应用 |
-| 当前版本 | `0.4.4` |
+| 当前版本 | `0.5.0` |
 | 插件清单 | `.codex-plugin/plugin.json` |
 | MCP 配置 | `.mcp.json`——本地 stdio 服务器 |
 | 主要语言 | Python 3.13 |
@@ -73,6 +73,8 @@
 | 认证 | OAuth 请求 | 登录、检查、重新登录或登出 | 需要批准 | 稳定 |
 | 图片生成 | 已批准的请求 | 一次已提交的图片任务 | 消耗额度 | 稳定 |
 | 视频生成 | 已批准的请求 | 一次已提交的视频任务 | 消耗额度；部分模式需要网页端前置 | 稳定 |
+| 视觉质量循环 | 已锁定视觉目标 + 一次获批生成请求 | 内容绑定的轮次回执与独立 Judge 结果 | 首轮绝不自动重试；默认只允许一次且必须命中精确额度 | 本地契约已验证 |
+| 参考视频工程 | 源视频、重设计与闭合批次报价 | 持久化分析、生成、评价、合成与导出回执 | 付费执行继续受审批约束 | 生产 MCP 调用链已注册 |
 | 任务处理 | 一个 `submit_id` | 状态与可选的校验下载 | 只查询，绝不重新提交 | 稳定 |
 | 会话管理 | 会话请求 | 创建、列出、搜索、重命名、删除 | 写操作需要批准 | 稳定 |
 | 诊断 | 日志请求 | 有界且脱敏的 CLI 日志片段 | 只读 | 稳定 |
@@ -121,14 +123,14 @@ flowchart LR
 | `scripts/trusted_cli.py` | 信任注册与 CLI 身份的保护性存储 | CLI 安装 |
 | `scripts/native_approval.py` | 失败即关闭的原生确认弹窗 | 业务规则 |
 | `scripts/image_service.py`、`scripts/video_service.py`、`scripts/task_service.py` | 请求构造、提交与查询 | 目录值 |
-| `skills/`（17 个） | 供 Codex 使用的路由与逐能力指令 | 运行时强制 |
+| `skills/`（21 个） | 供支持宿主使用的路由与逐能力指令 | 运行时强制 |
 
 ## 兼容性
 
 | 插件版本 | 宿主 | CLI | Python | 状态 |
 |---|---|---|---|---|
-| `0.4.0` | Codex CLI 或 ChatGPT 桌面应用 | 已从官方安装器安装并完成信任注册的 `dreamina` CLI | 3.13 | 稳定工具已验证 |
-| `0.4.0` | Codex CLI 或 ChatGPT 桌面应用 | 同上 | 3.13 | 10 个参考视频工程工具的运行状态为 `NOT_RUN` |
+| `0.5.0` | 任意支持 stdio 的 MCP 客户端 | 已从官方安装器安装并完成信任注册的 `dreamina` CLI | 3.13 | 21 个工具已注册；本地生产分发已验证 |
+| `0.5.0` | Codex / Claude Code / ZCode / Kimi 通过 `JudgePort` | 同上 | 3.13 | 视觉契约与额度门禁已验证；真实付费金丝雀仍需单独审批或记为 `NOT_RUN` |
 
 付费金丝雀门禁单独记录：要么单独批准，要么标记为 `NOT_RUN`。运行门禁条目可被以下命令检查：
 
@@ -148,7 +150,7 @@ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ### 从插件市场安装
 
 ```bash
-codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.4.4
+codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.5.0
 codex plugin add dreamina-design@partme-ai-dreamina-design
 ```
 
@@ -262,6 +264,15 @@ codex plugin add dreamina-design@partme-ai-dreamina-design
 | `dreamina_compose_video` | 构建封闭时间线并渲染临时终版 MP4 |
 | `dreamina_export_video_project` | 校验渲染出的 MP4 并导出到已批准的目标位置 |
 
+### 视觉质量循环契约
+
+- `VisualTargetReceipt` 在生成前锁定目标文件字节、尺寸、来源和授权目录。
+- `VisualRoundReceipt` 绑定付费请求指纹、返回产物、独立 Judge 证据、评分、阻塞差距和下一步动作。
+- `JudgePort` 与宿主无关：Codex、Claude Code、ZCode、Kimi 或其他 MCP 宿主提供评价适配器，业务层不导入 Codex 子代理 API。
+- 首轮不通过时停在 `awaiting_approval`，不会再次提交。默认只允许一次重试，而且必须激活同时匹配精确请求指纹和信用额度上限的 allowance。
+- `ReplanPort` 可以在不消耗额度的前提下提出修复请求；提案必须持久化并按精确指纹和信用额度审批，只有显式 `max_attempts=3` 的循环才能进入第三轮。
+- 视频批次评价使用已验证的关键帧锚点和 `VideoEvaluationService`。`CompanionDccPreviewPort` 将现有 Blender/Maya argv+JSON handoff 接入同一 Judge 与回执链，缺少 companion 时失败关闭。
+
 ### 错误信封
 
 失败时返回结构化信封：`error_type`、`message`、`retryable`、`requires_user_action` 与 `next_action`。`next_action` 取值之一：`request_user_action`、`query_same_submit_id` 或 `correct_request`。
@@ -270,6 +281,7 @@ codex plugin add dreamina-design@partme-ai-dreamina-design
 
 - 结果不确定时按 `submit_id` 查询；提交绝不盲目重试。
 - 提交结果含糊时会消耗预留名额并进入人工复核，而不是重试。
+- 视觉首轮评价不会创建第二个付费请求；重试必须持有精确请求指纹 allowance，且不得超过获批信用额度上限。
 - 批准回执一次性使用、五分钟过期，并绑定到会话与请求。
 - 任务状态字符串会被归一：`querying`、`queued`、`pending`、`processing`、`running`、`generating` 一律报告为 `querying`。
 - 操作的终态为 `succeeded`、`failed`、`cancelled`。
@@ -336,7 +348,7 @@ partme-dreamina-design/
 ├── .mcp.json                   # 本地 stdio MCP 服务器声明
 ├── .agents/plugins/marketplace.json
 ├── scripts/                    # MCP 服务器、适配器、服务、守卫、校验器
-├── skills/                     # 17 个 Skill，其中 13 个固定到上游快照
+├── skills/                     # 21 个 Skill，其中 13 个固定到上游快照
 ├── tests/                      # 单元与契约测试
 └── docs/                       # 架构、技术方案、验证记录
 ```

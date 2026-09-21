@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,7 +45,7 @@ class InspectionResult:
     scene: str | None = None
 
     @classmethod
-    def from_dict(cls, payload: dict) -> "InspectionResult":
+    def from_dict(cls, payload: dict) -> InspectionResult:
         return cls(status=str(payload.get("status", "unknown")), scene=payload.get("scene"))
 
 
@@ -60,6 +61,39 @@ class UnsupportedMediaError(AdapterError):
 
 class StaleOutputError(AdapterError):
     pass
+
+
+class CompanionDccPreviewPort:
+    """Adapt one enrolled Blender/Maya executable to the visual-loop port."""
+
+    def __init__(self, *, executable: str, output_dir: str | Path) -> None:
+        self._executable = str(executable)
+        self._output_dir = Path(output_dir)
+
+    def capture(self, request: dict[str, Any]) -> dict[str, Any]:
+        required = {"scene", "camera_name", "frame_start", "frame_end", "output_label", "artifact_id"}
+        if set(request) != required:
+            raise AdapterError("DCC preview request fields must be complete and closed")
+        spec = PreviewSpec(
+            scene=str(request["scene"]),
+            camera_name=str(request["camera_name"]),
+            frame_start=int(request["frame_start"]),
+            frame_end=int(request["frame_end"]),
+            output_label=str(request["output_label"]),
+        )
+        receipt, digest = request_preview_export(
+            executable=self._executable,
+            spec=spec,
+            output_dir=self._output_dir,
+            artifact_id=str(request["artifact_id"]),
+        )
+        return {
+            "submit_id": str(request["artifact_id"]),
+            "path": receipt["path"],
+            "sha256": digest,
+            "size_bytes": int(receipt["bytes"]),
+            "mime_type": "video/mp4",
+        }
 
 
 def _sha256_of(path: Path) -> str:
@@ -125,7 +159,7 @@ def inspect_scene(*, executable: str, scene: str, timeout_seconds: float = 30.0)
 def tempfile_path_for(label: str) -> Path:
     import tempfile
     fd, name = tempfile.mkstemp(prefix=f"dcc_handoff_{label}_", suffix=".json")
-    Path(name).write_bytes(b"")
+    os.close(fd)
     return Path(name)
 
 
@@ -260,11 +294,12 @@ def _query_status(
 
 
 __all__ = [
-    "PreviewSpec",
-    "InspectionResult",
     "AdapterError",
-    "UnsupportedMediaError",
+    "CompanionDccPreviewPort",
+    "InspectionResult",
+    "PreviewSpec",
     "StaleOutputError",
+    "UnsupportedMediaError",
     "inspect_scene",
     "request_preview_export",
 ]

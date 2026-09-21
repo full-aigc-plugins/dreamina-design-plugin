@@ -17,14 +17,14 @@ from scripts.video_batch_allowance import (
     AllowanceCommitIndeterminateError,
     BatchScopeError,
     BudgetExceededError,
-    ReservationConsumedError,
     FileSealKeyStore,
     LocalQuoteResolver,
+    ReservationConsumedError,
     SealKeyUnavailableError,
     VideoBatchAllowance,
 )
-from scripts.video_service import build_video_request_fingerprint
 from scripts.video_generation_planner import validate_batch_quote
+from scripts.video_service import build_video_request_fingerprint
 
 
 class RecordingApprover:
@@ -203,6 +203,14 @@ class VideoBatchAllowanceTests(unittest.TestCase):
         self.assertEqual(displayed["output_profile"], self.quote["output_profile"])
         self.assertEqual(displayed["cost_basis"], self.quote["cost_basis"])
         self.assertEqual(displayed["items"][0]["attempts"], self.quote["items"][0]["attempts"])
+
+    def test_allowance_can_be_resolved_by_immutable_quote_fingerprint(self) -> None:
+        allowance_id = self.activate()
+        self.assertEqual(
+            self.allowances.find_by_quote_fingerprint(self.quote["quote_fingerprint"]),
+            allowance_id,
+        )
+        self.assertIsNone(self.allowances.find_by_quote_fingerprint("f" * 64))
         self.assertTrue(allowance_id.startswith("ba_"))
 
     def test_unlisted_request_fingerprint_or_retry_is_rejected(self) -> None:

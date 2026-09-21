@@ -8,7 +8,7 @@ description: Dreamina Design invocation spec for WorkBuddy - the image/video gen
 执行通道：本插件随附的生成 CLI（`scripts/trusted_cli.py` 为受信入口；`dreamina-cli` 技能含完整用法）。
 后端：**即梦（Dreamina），付费动作**，submit-once 门禁与真实 submit_id 验收是硬约束。
 
-## 1. 能力族（17 个技能已随插件分发）
+## 1. 能力族（21 个技能已随插件分发）
 
 | 族 | 技能 |
 |---|---|
@@ -33,6 +33,12 @@ description: Dreamina Design invocation spec for WorkBuddy - the image/video gen
 2. 走 `cli` 或 `opencli` 族执行生成（参数以技能文档为准）。
 3. 视频过 `dreamina-video-evaluator`；镜头类需求用 `shot-annotator`。
 4. 交付：产物路径、submit_id、验证凭据、消耗与剩余预算、未验证项。
+
+交付回执至少保留真实提交标识和验证状态，例如：
+
+```json
+{"submit_id":"<provider-submit-id>","artifact_verified":true,"paid_retry":false}
+```
 
 ## 4. 纪律
 
