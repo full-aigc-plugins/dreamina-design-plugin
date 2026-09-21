@@ -27,7 +27,7 @@
 - [x] 4.1 更新 harness 技能：能力族表补入独立评审技能与视觉闭环、长片续跑两族，工作流补入闭环步骤，付费门禁补入重试的指纹与额度约束。
 - [x] 4.2 修正 harness 技能表述：计数 21 本身正确（17 上游锁定 + 4 插件本地），但表中未点名 `dreamina-vision-judge`、`dreamina-auto-seedance`、`dreamina-seedance-resume`，已补入。
 - [x] 4.3 新增漂移守卫测试：断言 harness 声明的技能数与 `skills/` 实际目录数一致，且三个此前漏点名的技能已出现。
-- [ ] 4.4 **延后（不是遗漏）**：更新路由技能 `dreamina-design-use` 指向闭环。该技能是上游锁定技能（`skills.lock.json` 钉到 `dreamina-skills@v1.6.2` 并带逐技能 sha256），本地编辑会让 `skill_vendor check` 以非零状态失败并将在下次同步被覆盖。已在 design.md 记录：若需路由层指向，必须向上游提交，而不是在插件仓打补丁。发现路径现由 harness + `commands/dreamina-visual-loop.md` + 文档承担。
+- [x] 4.4 上游贡献完成：`full-aigc-skills/dreamina-skills` PR #2（feat/route-target-iteration-intent）为 `dreamina-design-use` 路由表新增「对标迭代」意图行（指向 `dreamina-prompt-image2image`）并注明对标闭环由下游插件承载。合并+发版后经 skills-sync 消费链回流各插件仓；在此之前，插件内发现路径由 harness + `commands/dreamina-visual-loop.md` + 文档承担。
 - [x] 4.5 新增命令层入口 `commands/dreamina-visual-loop.md`，按本仓既有命令的头部字段格式编写。
 - [x] 4.6 更新视觉循环文档，补入 MCP 工具面、两段式轮次、付费边界与发现路径。
 
