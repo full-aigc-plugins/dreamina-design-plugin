@@ -41,7 +41,8 @@ description: Dreamina Design invocation spec for WorkBuddy - the image/video gen
 4. 要迭代到与目标图一致时走 `dreamina_visual_loop`：用户没给目标图时先用 `dreamina-visual-target`
    取得目标（目标生成是**付费提交**，须授权；已有产物走基线精修，不另起方向），`lock_target` 锁定 →
    `run_first_round` 执行一轮付费生成 → 把返回的证据交 `dreamina-vision-judge` 评审 → `record_judgement`
-   记录结论。一轮由**两个调用**组成（生成、记录评审），因为评审必须由宿主的全新上下文子代理完成。
+   记录结论。一轮由**两个调用**组成（生成、记录评审），因为评审必须由宿主的全新上下文子代理完成
+   ——宿主侧的适配配方见 [references/judge-port-adapter.md](references/judge-port-adapter.md)。
 5. 交付：产物路径、submit_id、验证凭据、消耗与剩余预算、未验证项。
 
 交付回执至少保留真实提交标识和验证状态，例如：

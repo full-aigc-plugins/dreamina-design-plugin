@@ -490,6 +490,16 @@ class VisualLoopDiscoverabilityTests(unittest.TestCase):
         harness = self._read("skills", "dreamina-design-harness", "SKILL.md")
         self.assertIn("dreamina-vision-judge", harness)
 
+    def test_harness_reaches_the_host_judge_adapter_recipe(self) -> None:
+        # Judging is a HOST responsibility (a stdio server cannot spawn the
+        # fresh-context subagent); the recipe must stay discoverable.
+        harness = self._read("skills", "dreamina-design-harness", "SKILL.md")
+        self.assertIn("references/judge-port-adapter.md", harness)
+        recipe = self._read("skills", "dreamina-design-harness", "references", "judge-port-adapter.md")
+        for token in ("record_judgement", "fresh_context", "vision_judge/1"):
+            self.assertIn(token, recipe)
+        self.assertTrue((ROOT / "docs" / "judge-port-adapter-contract.md").is_file())
+
     def test_upstream_locked_skills_are_not_part_of_this_surface(self) -> None:
         # Guard the constraint above: if a future edit needs the router, the
         # routing text must be contributed upstream, not patched locally.
