@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts.json_contracts import canonical_fingerprint
 from scripts.shot_analysis_service import REQUIRED_GATES, ShotAnalysisService
 from scripts.video_project_store import (
     VersionCommitIndeterminateError,
@@ -227,6 +228,29 @@ class ShotAnalysisServiceTests(unittest.TestCase):
         self.assertEqual(result["annotation_version"], "v001")
         self.assertEqual(persisted["analysis_version"], "v001")
         self.assertEqual(persisted["machine_fingerprint"], self.analysis["machine_fingerprint"])
+
+    def test_annotation_rejects_an_orphan_comparison_receipt(self):
+        comparison = {
+            "schema_version": "1.1", "version": "v001", "project_id": self.project_id,
+            "source_sha256": self.analysis["source"]["source_sha256"],
+            "native_analysis_version": self.analysis["version"],
+            "native_analysis_fingerprint": self.analysis["machine_fingerprint"],
+            "reelbench_evidence_version": "v001", "reelbench_evidence_fingerprint": "a" * 64,
+            "tolerances": {"duration_seconds": .25, "boundary_seconds": .1, "motion_abs_delta": .5},
+            "domains": {name: {"verdict": "matched", "reasons": []} for name in (
+                "source_identity", "duration", "timeline_continuity", "shot_count", "boundaries", "motion",
+            )},
+            "mismatches": [],
+            "overall": "matched", "compared_at": "2026-09-15T00:00:00Z",
+        }
+        comparison["comparison_fingerprint"] = canonical_fingerprint(comparison)
+        comparison = self.store.write_version(
+            self.project_id, "reelbench_comparison", comparison,
+            schema_name="reelbench_comparison.schema.json",
+        )
+
+        with self.assertRaises(VersionReconciliationError):
+            self.validate(comparison_version=comparison["version"])
 
     def test_unknown_analysis_version_is_rejected_without_fallback(self):
         with self.assertRaises(KeyError): self.validate(version="v999")

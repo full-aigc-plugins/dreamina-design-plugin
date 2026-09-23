@@ -116,10 +116,12 @@ class DreaminaMcpTools:
         state_root: Path | None = None,
         approval_provider: Any | None = None,
         visual_loop_generation_factory: Any | None = None,
+        project_media_service: Any | None = None,
     ) -> None:
         self.state_root = state_root or (Path.home() / ".local" / "share" / "dreamina-design")
         self.approval_provider = approval_provider or NativeApprovalProvider()
         self.auth_flow_store = AuthFlowStore()
+        self._project_media_service = project_media_service
         self.project_tools = VideoProjectRuntime(
             state_root=self.state_root,
             approval_provider=self.approval_provider,
@@ -138,6 +140,11 @@ class DreaminaMcpTools:
         definitions={tool["name"]:tool for tool in _tool_definitions()}
         if name not in definitions: raise ValueError(f"unknown tool: {name}")
         _validate_schema(args,definitions[name]["inputSchema"],path="arguments")
+        # An injected media service (ReelBench line) answers compose/export
+        # first; without one the registry runtime above handles them unchanged.
+        if name in {'dreamina_compose_video', 'dreamina_export_video_project'} and self._project_media_service is not None:
+            method = self._project_media_service.compose_project if name == 'dreamina_compose_video' else self._project_media_service.export_project
+            return method(**dict(args))
         if self.project_tools.handles(name):
             return self.project_tools.call(name, args)
         if self.visual_loops.handles(name):

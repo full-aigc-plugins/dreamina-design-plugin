@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from scripts.json_contracts import canonical_fingerprint
+from scripts.json_contracts import canonical_fingerprint, validate_contract
 from scripts.media_adapter import MediaOutputError
 from scripts.video_project_store import VideoProjectStore
 
@@ -46,6 +46,22 @@ class ReferenceVideoService:
     def __init__(self, project_store: VideoProjectStore, media_adapter) -> None:
         self._store = project_store
         self._media = media_adapter
+
+    @classmethod
+    def validate_analysis_fingerprint(
+        cls, analysis: Mapping[str, Any], source_receipt: Mapping[str, Any]
+    ) -> None:
+        """Verify one immutable analysis against its exact stored source receipt."""
+        validate_contract(analysis, "shot_analysis.schema.json")
+        validate_contract(source_receipt, "source_receipt.schema.json")
+        if (
+            analysis["project_id"] != source_receipt["project_id"]
+            or analysis["source"] != dict(source_receipt)
+        ):
+            raise ValueError("analysis source receipt binding differs from the exact stored receipt")
+        expected = cls._machine_fingerprint(analysis)
+        if analysis["machine_fingerprint"] != expected:
+            raise ValueError("analysis machine fingerprint does not match immutable measured evidence")
 
     def seed(
         self,

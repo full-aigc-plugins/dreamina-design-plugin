@@ -8,7 +8,7 @@ description: Dreamina Design invocation spec for WorkBuddy - the image/video gen
 执行通道：本插件随附的生成 CLI（`scripts/trusted_cli.py` 为受信入口；`dreamina-cli` 技能含完整用法）。
 后端：**即梦（Dreamina），付费动作**，submit-once 门禁与真实 submit_id 验收是硬约束。
 
-## 1. 能力族（22 个技能已随插件分发）
+## 1. 能力族（24 个技能已随插件分发）
 
 | 族 | 技能 |
 |---|---|

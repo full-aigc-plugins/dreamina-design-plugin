@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/partme-ai/dreamina-design-plugin/schemas/reelbench_comparison.schema.json",
+  "title": "Immutable Native and ReelBench Comparison Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "version", "project_id", "source_sha256", "native_analysis_version", "native_analysis_fingerprint", "reelbench_evidence_version", "reelbench_evidence_fingerprint", "tolerances", "domains", "mismatches", "overall", "compared_at", "comparison_fingerprint"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.1"},
+    "version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "project_id": {"type": "string", "pattern": "^vp_[a-f0-9]{24}$"},
+    "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "native_analysis_version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "native_analysis_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "reelbench_evidence_version": {"type": "string", "pattern": "^v[0-9]{3,}$"},
+    "reelbench_evidence_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "tolerances": {"$ref": "#/$defs/tolerances"},
+    "domains": {"$ref": "#/$defs/domains"},
+    "mismatches": {
+      "type": "array",
+      "maxItems": 2048,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/mismatch"}
+    },
+    "overall": {"type": "string", "enum": ["matched", "manual_review"]},
+    "compared_at": {"$ref": "#/$defs/timestamp"},
+    "comparison_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  },
+  "$defs": {
+    "timestamp": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$"},
+    "tolerances": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["duration_seconds", "boundary_seconds", "motion_abs_delta"],
+      "properties": {
+        "duration_seconds": {"type": "number", "minimum": 0, "maximum": 60},
+        "boundary_seconds": {"type": "number", "minimum": 0, "maximum": 60},
+        "motion_abs_delta": {"type": "number", "minimum": 0, "maximum": 1000000}
+      }
+    },
+    "domain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verdict", "reasons"],
+      "properties": {
+        "verdict": {"type": "string", "enum": ["matched", "manual_review"]},
+        "reasons": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 512}}
+      }
+    },
+    "mismatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["domain", "shot_id", "code", "expected", "observed"],
+      "properties": {
+        "domain": {"type": "string", "enum": ["source_identity", "duration", "timeline_continuity", "shot_count", "boundaries", "motion"]},
+        "shot_id": {"type": ["string", "null"], "pattern": "^S[0-9]{2,4}$"},
+        "code": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+        "expected": {"type": "string", "minLength": 1, "maxLength": 512},
+        "observed": {"type": "string", "minLength": 1, "maxLength": 512}
+      }
+    },
+    "domains": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_identity", "duration", "timeline_continuity", "shot_count", "boundaries", "motion"],
+      "properties": {
+        "source_identity": {"$ref": "#/$defs/domain"},
+        "duration": {"$ref": "#/$defs/domain"},
+        "timeline_continuity": {"$ref": "#/$defs/domain"},
+        "shot_count": {"$ref": "#/$defs/domain"},
+        "boundaries": {"$ref": "#/$defs/domain"},
+        "motion": {"$ref": "#/$defs/domain"}
+      }
+    }
+  }
+}

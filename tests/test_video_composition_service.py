@@ -57,6 +57,12 @@ class VideoCompositionServiceTests(unittest.TestCase):
         for forbidden in ("filter_complex", "codec", "extra_args"):
             with self.subTest(forbidden=forbidden), self.assertRaises(CompositionPlanError): self.build(**{forbidden: "unsafe"})
 
+    def test_synchronized_review_receipt_is_rejected_by_real_composition_consumer(self):
+        review = self.clip("S01")
+        review["artifact_role"] = "synchronized_review"
+        with self.assertRaisesRegex(CompositionPlanError, "review evidence"):
+            self.build(clips=[review, self.clip("S02")])
+
     def test_dimensions_fps_transition_and_duration_are_closed(self):
         for change in ({"width": 1279}, {"height": 200}, {"fps": 60}, {"transitions": [{"kind":"wipe","duration_seconds":.2}]},
                        {"target_duration_seconds": 4}):

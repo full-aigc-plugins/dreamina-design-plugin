@@ -32,6 +32,11 @@ class Card: text_path:Path; duration_seconds:float; style:str
 class CompositionPlan:
     clips:tuple[Input,...]; transitions:tuple[Transition,...]; media_inputs:tuple[Input,...]; width:int; height:int; fps:int; target_duration_seconds:float; audio_plan:Mapping[str,Any]|None; subtitle_mode:str; output_path:Path; staging_dir:Path; layout_mode:str; title_card:Card|None; end_card:Card|None
 class VideoCompositionService:
+    def compose_project(self,*,store,project_id,batch_version,composition,subtitle_mode='none'):
+        """Project-only entry: resolve opaque accepted receipts before staging."""
+        from scripts.project_media_service import compose_project
+        return compose_project(self,store=store,project_id=project_id,batch_version=batch_version,composition=composition,subtitle_mode=subtitle_mode)
+
     def __init__(self,media_adapter:Any,audio_plan_service:Any,private_render_root:Path,*,timeout_seconds:int=900)->None:
         self._adapter=media_adapter; self._audio=audio_plan_service; self._root=Path(private_render_root); self._timeout=timeout_seconds; s=self._root.lstat()
         if not stat.S_ISDIR(s.st_mode) or self._root.is_symlink() or s.st_uid!=os.getuid() or stat.S_IMODE(s.st_mode)!=0o700: raise CompositionPlanError("render root must be owned mode 0700")
@@ -48,6 +53,8 @@ class VideoCompositionService:
         return Input(role,source,target,raw["sha256"],raw["size_bytes"],duration,options)
     def build_plan(self,*,required_shots:Sequence[str],clips:Sequence[Mapping[str,Any]],transitions:Sequence[Mapping[str,Any]],width:int,height:int,fps:int,target_duration_seconds:float,audio_plan:Mapping[str,Any]|None,subtitle:Mapping[str,Any]|None,subtitle_mode:str,output_path:Path,layout_mode:str="scale_pad",title_card:Mapping[str,Any]|None=None,end_card:Mapping[str,Any]|None=None,**forbidden:Any)->CompositionPlan:
         if forbidden or layout_mode not in LAYOUTS: raise CompositionPlanError("composition options are not closed")
+        if any(x.get("artifact_role") == "synchronized_review" for x in clips if isinstance(x, Mapping)):
+            raise CompositionPlanError("synchronized review evidence cannot be composed as a final clip")
         if not required_shots or list(required_shots)!=[x.get("shot_id") for x in clips] or len(set(required_shots))!=len(required_shots): raise CompositionPlanError("shots are not exact and ordered")
         if any(set(x)!={"shot_id","path","sha256","size_bytes","duration_seconds","accepted"} or x["accepted"] is not True for x in clips): raise CompositionPlanError("clip receipt invalid")
         durations=[_num(x["duration_seconds"],"clip duration") for x in clips]; parsed=[]

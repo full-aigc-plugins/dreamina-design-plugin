@@ -512,7 +512,7 @@ Run:
 ```bash
 node skills/dreamina-video-shots/scripts/selftest.mjs
 node skills/dreamina-video-sync/scripts/selftest.mjs
-python3 scripts/verify_reelbench_snapshot.py --upstream-root /Users/wandl/.agent-reach/repositories/eternityspring/reelbench-skills
+python3 scripts/verify_reelbench_snapshot.py --strict-pinned-source --upstream-root /Users/wandl/.agent-reach/repositories/eternityspring/reelbench-skills
 python3 -m unittest discover -s tests -v
 python3 scripts/validate_distribution_v7.py --plugin-root . --strict
 ```

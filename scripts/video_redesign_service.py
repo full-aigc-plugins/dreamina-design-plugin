@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timezone
-from typing import Any, Mapping, TypedDict
+from typing import TYPE_CHECKING, Any, Mapping, TypedDict
+
+if TYPE_CHECKING:
+    from scripts.reelbench_binding_service import CompositeBindingIndeterminateError
 
 from scripts.json_contracts import ContractValidationError, canonical_fingerprint, validate_contract
 from scripts.video_project_store import VideoProjectStore
@@ -88,6 +91,8 @@ class VideoRedesignService:
         rights_receipt_id: str | None,
         *,
         indeterminate_commit: VersionCommitIndeterminateError | None = None,
+        comparison_version: str | None = None,
+        binding_indeterminate_commit: CompositeBindingIndeterminateError | None = None,
     ) -> dict[str, Any]:
         project_id = candidate.get("project_id")
         if not isinstance(project_id, str):
@@ -116,20 +121,26 @@ class VideoRedesignService:
                 raise RedesignBindingError("rights receipt does not authorize this candidate") from exc
         elif rights_receipt_id is not None:
             raise RedesignBindingError("original redesign must not attach a replication receipt")
-        if indeterminate_commit is not None:
-            return self._reconcile_indeterminate(
-                candidate, rights_receipt_id, indeterminate_commit
-            )
         document = {
             **core, "rights_receipt_id": rights_receipt_id,
-            "design_fingerprint": fingerprint,
-            "committed_at": _now(),
+            "design_fingerprint": fingerprint, "committed_at": _now(),
         }
+        if comparison_version is not None:
+            from scripts.reelbench_binding_service import ReelBenchBindingService
+            if indeterminate_commit is not None:
+                raise ValueError("comparison recovery requires binding_indeterminate_commit")
+            design, _binding = ReelBenchBindingService(self._store).commit_subject(
+                project_id, subject_family="video_design", document=document,
+                comparison_version=comparison_version,
+                binding_indeterminate_commit=binding_indeterminate_commit,
+            )
+            return design
+        if binding_indeterminate_commit is not None:
+            raise ValueError("composite recovery requires comparison_version")
+        if indeterminate_commit is not None:
+            return self._reconcile_indeterminate(candidate, rights_receipt_id, indeterminate_commit)
         return self._store.write_version(
-            project_id,
-            "redesign",
-            document,
-            schema_name="video_redesign.schema.json",
+            project_id, "redesign", document, schema_name="video_redesign.schema.json",
             parent_version_field="parent_version",
         )
 
