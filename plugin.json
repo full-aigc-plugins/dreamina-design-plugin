@@ -1,0 +1,52 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "dreamina-design",
+  "version": "0.6.0",
+  "description": "Create and edit Dreamina images and videos with approval-aware, resumable operations and verified downloads.",
+  "author": {
+    "name": "Full Stack Skills / PartMe.AI",
+    "url": "https://github.com/partme-ai"
+  },
+  "homepage": "https://github.com/full-aigc-plugins/dreamina-design-plugin",
+  "repository": "https://github.com/full-aigc-plugins/dreamina-design-plugin",
+  "license": "Apache-2.0",
+  "keywords": [
+    "dreamina",
+    "design",
+    "image-generation",
+    "video-generation",
+    "codex"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Dreamina Design",
+        "shortDescription": "Create images and videos with Dreamina",
+        "longDescription": "Create and edit Dreamina images and videos through current CLI capabilities, explicit generation approval, stable submission identities, resumable queries, and verified downloads.",
+        "developerName": "Full Stack Skills / PartMe.AI",
+        "category": "Creativity",
+        "capabilities": [
+          "Interactive",
+          "Read",
+          "Write"
+        ],
+        "websiteURL": "https://github.com/full-aigc-plugins/dreamina-design-plugin",
+        "privacyPolicyURL": "https://github.com/full-aigc-plugins/dreamina-design-plugin/blob/main/PRIVACY.md",
+        "termsOfServiceURL": "https://github.com/full-aigc-plugins/dreamina-design-plugin/blob/main/TERMS.md",
+        "defaultPrompt": [
+          "Create a Dreamina image from this design brief",
+          "Turn these references into a Dreamina video",
+          "Resume my Dreamina task and download verified results"
+        ],
+        "brandColor": "#EC4899",
+        "composerIcon": "./assets/composer-icon.png",
+        "logo": "./assets/logo-approved.png",
+        "logoDark": "./assets/logo-approved.png",
+        "screenshots": []
+      }
+    },
+    "ai.nanoco.nanoclaw": {
+      "agentName": "Dreamina Design"
+    }
+  }
+}

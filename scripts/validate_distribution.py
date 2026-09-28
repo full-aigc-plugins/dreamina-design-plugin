@@ -27,6 +27,24 @@ REQUIRED_FILES = (
 REQUIRED_DIRECTORIES = ("assets", "skills", "schemas", "scripts", "tests")
 
 
+
+def validate_portable_surface(root):
+    """Check the portable Agent Plugins v1.0.0 surface.
+
+    Migrated 2026-09-28: root `plugin.json` and `mcp.json` are the portable
+    manifest surface, so this gate validates them with the shared spec validator
+    rather than forbidding them. See docs/portable-migration.md.
+    """
+    import importlib.util
+
+    target = root / "scripts" / "validate_portable_plugin.py"
+    if not target.is_file():
+        return ["missing scripts/validate_portable_plugin.py"]
+    spec = importlib.util.spec_from_file_location("validate_portable_plugin", target)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.validate(root).errors
+
 def load_json(target: Path) -> dict:
     return json.loads(target.read_text(encoding="utf-8"))
 
@@ -106,8 +124,7 @@ def validate(root: Path) -> list[str]:
     for filename in REQUIRED_FILES:
         if not (root / filename).is_file():
             errors.append(f"missing required file: {filename}")
-    if (root / "plugin.json").exists() or (root / "mcp.json").exists():
-        errors.append("portable manifests must remain inactive during compatibility-first scaffolding")
+    errors.extend(validate_portable_surface(root))
 
     expected_assets = {
         "assets/logo.png": (1024, 1024, 6),
