@@ -6,7 +6,7 @@
 
 > Create Dreamina images and videos from your supported coding agent, with runtime CLI discovery, explicit approval for every paid call, and submissions you can resume by identifier.
 
-[![Version](https://img.shields.io/badge/version-0.6.0-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.6.0)
+[![Version](https://img.shields.io/badge/version-0.6.1-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.6.1)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [Install](#installation) · [Quick start](#quick-start) · [MCP tools](#mcp-tools) · [Troubleshooting](#troubleshooting)
@@ -56,7 +56,7 @@ Downloaded image or video artifact + operation receipt
 |---|---|
 | Plugin ID | `dreamina-design` |
 | Host | Codex CLI or ChatGPT desktop app |
-| Current version | `0.6.0` |
+| Current version | `0.6.1` |
 | Plugin manifest | `.codex-plugin/plugin.json` |
 | MCP configuration | `.mcp.json` — local stdio server |
 | Primary language | Python 3.13 |
@@ -129,6 +129,7 @@ flowchart LR
 
 | Plugin version | Host | CLI | Python | Status |
 |---|---|---|---|---|
+| `0.6.1` | Any MCP client with stdio support | `dreamina` CLI installed from the official installer and trusted | 3.13 | Upstream re-vendor at `dreamina-skills` 4e776ac (v1.7.0): 17 vendored Skills refreshed, frozen classic CLI and Prompt/OpenCLI behaviour unchanged; declared `dreamina-video-shots` / `dreamina-video-sync` as plugin-local skills |
 | `0.6.0` | Any MCP client with stdio support | `dreamina` CLI installed from the official installer and enrolled | 3.13 | 22 tools registered; local production dispatch verified |
 | `0.6.0` | Codex / Claude Code / ZCode / Kimi through `JudgePort` | same | 3.13 | Visual contracts and allowance gates verified; real paid canary remains separately approved or `NOT_RUN` |
 
@@ -150,7 +151,7 @@ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ### From the plugin marketplace
 
 ```bash
-codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.6.0
+codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.6.1
 codex plugin add dreamina-design@partme-ai-dreamina-design
 ```
 

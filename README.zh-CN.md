@@ -6,7 +6,7 @@
 
 > 在受支持的编码智能体中创作 Dreamina 图片与视频：运行时发现 CLI 能力、每次付费调用都要明确批准、提交结果可凭标识续查。
 
-[![版本](https://img.shields.io/badge/version-0.6.0-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.6.0)
+[![版本](https://img.shields.io/badge/version-0.6.1-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.6.1)
 [![许可证](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [安装](#安装) · [快速开始](#快速开始) · [MCP 工具](#mcp-工具) · [故障排查](#故障排查)
@@ -56,7 +56,7 @@
 |---|---|
 | 插件 ID | `dreamina-design` |
 | 宿主 | Codex CLI 或 ChatGPT 桌面应用 |
-| 当前版本 | `0.6.0` |
+| 当前版本 | `0.6.1` |
 | 插件清单 | `.codex-plugin/plugin.json` |
 | MCP 配置 | `.mcp.json`——本地 stdio 服务器 |
 | 主要语言 | Python 3.13 |
@@ -129,6 +129,7 @@ flowchart LR
 
 | 插件版本 | 宿主 | CLI | Python | 状态 |
 |---|---|---|---|---|
+| `0.6.1` | 任意支持 stdio 的 MCP 客户端 | 已从官方安装器安装并完成信任注册的 `dreamina` CLI | 3.13 | 上游 `dreamina-skills` 4e776ac（v1.7.0）重新 vendor：17 个 vendored 技能刷新，冻结的旧 CLI 与 Prompt/OpenCLI 行为不变；补声明 `dreamina-video-shots` / `dreamina-video-sync` 为本地技能 |
 | `0.6.0` | 任意支持 stdio 的 MCP 客户端 | 已从官方安装器安装并完成信任注册的 `dreamina` CLI | 3.13 | 22 个工具已注册；本地生产分发已验证 |
 | `0.6.0` | Codex / Claude Code / ZCode / Kimi 通过 `JudgePort` | 同上 | 3.13 | 视觉契约与额度门禁已验证；真实付费金丝雀仍需单独审批或记为 `NOT_RUN` |
 
@@ -150,7 +151,7 @@ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ### 从插件市场安装
 
 ```bash
-codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.6.0
+codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.6.1
 codex plugin add dreamina-design@partme-ai-dreamina-design
 ```
 
