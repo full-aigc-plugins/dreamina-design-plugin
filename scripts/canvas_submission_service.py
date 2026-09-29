@@ -167,7 +167,6 @@ class CanvasSubmissionService:
         # The receipt scope stays inside the guard's allowlist; the richer
         # Canvas binding (media/mode/project_id/ceiling) lives in the
         # fingerprint, which the guard verifies against the same object.
-        scope: dict[str, Any] = dict()
         context = CanvasQuoteContext(
             preparation=preparation,
             request=request,
