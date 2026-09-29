@@ -16,6 +16,19 @@ It is a separate intent so it cannot change any existing image or video route.
 The router deliberately defers to ``scripts/verify_skill_snapshot`` to
 prove every packaged Skill is byte-identical to the verified upstream
 commit before any routing decision is allowed.
+
+Sunset boundary
+---------------
+The ``dreamina`` binary this plugin's adapter drives (see
+``scripts/dreamina_adapter.py``) stops being maintained after 2026-11.
+The routes below therefore keep pointing at the frozen classic Skills —
+that is the only path this plugin can still execute — but they are no
+longer the recommended default for new work. ``CANVAS_SUCCESSORS`` maps
+every intent to its successor in ``dreamina-canvas-plugin`` 0.4.0
+(``dreamina-canvas-cli*``), and ``canvas_successor`` returns that pair so
+callers and documentation can state the migration explicitly instead of
+routing silently into a dying path. Porting the adapter itself is tracked
+as separate work and is out of scope for this module.
 """
 
 from __future__ import annotations
@@ -65,6 +78,30 @@ ROUTING_TABLE = _RoutingTable(
     },
 )
 
+# Successor routing for new work, expressed as Skill names in the sibling
+# dreamina-canvas-plugin package (0.4.0). Values are names, not model
+# tokens, and the plugin installs them by name because user installs are
+# granular.
+CANVAS_SUCCESSORS: Mapping[str, str] = {
+    "image:text2image": "dreamina-canvas-cli-text2image",
+    "image:image2image": "dreamina-canvas-cli-image2image",
+    "video:text2video": "dreamina-canvas-cli-text2video",
+    # Canvas has no i2v mode: single-image guidance uses m2v, and ordered
+    # start/end frames use first_last_frame — both owned by ref2video.
+    "video:image2video": "dreamina-canvas-cli-ref2video",
+    "video:frames2video": "dreamina-canvas-cli-ref2video",
+    "video:multiframe2video": "dreamina-canvas-cli-ref2video",
+    "video:multimodal2video": "dreamina-canvas-cli-ref2video",
+    "audio:tts": "dreamina-canvas-cli-text2voice",
+    "audio:music": "dreamina-canvas-cli-text2audio",
+}
+
+CANVAS_PACKAGE = "dreamina-skills"
+CANVAS_INSTALL_HINT = (
+    "npx skills add full-aigc-skills/dreamina-skills --skill <skill-name>"
+)
+LEGACY_CLI_SUNSET = "2026-11"
+
 # Additive project intent. Kept out of the direct-mode tables so no existing
 # route can be shadowed by the project workflow.
 PROJECT_INTENT = "video_project"
@@ -90,6 +127,21 @@ class Router:
                 f"no packaged Skill for intent={intent} mode={mode}"
             )
         return target
+
+    def canvas_successor(self, *, intent: str, mode: str) -> tuple[str, str]:
+        """Return (successor Skill name, install hint) for new work.
+
+        The frozen route from :meth:`route` is still what this plugin can
+        execute; this method exists so callers can surface the migration
+        target without pretending the legacy path is the default.
+        """
+        key = f"{intent}:{mode}"
+        target = CANVAS_SUCCESSORS.get(key)
+        if target is None:
+            raise AmbiguousRoutingError(
+                f"no Canvas successor for intent={intent} mode={mode}"
+            )
+        return target, CANVAS_INSTALL_HINT
 
     def route_with_hardcoded_catalog(self, *, intent: str) -> str:  # noqa: ARG002
         raise HardCodedCatalogError(

@@ -28,7 +28,7 @@
       "dest": "skills/",
       "sha256": {
         "dreamina-cli": "6749a8d68d056809d1548d489d1f19fd8d04b791de40bbd0b92df4e88991774e",
-        "dreamina-cli-image2image": "8d2f79e9a4787a87a2cf537eb7f940abbc0ae22fc14c94fe3b108c4f5c77529f",
+        "dreamina-cli-image2image": "5b47c5cbfc8e294e2b64a5cd831ff0ce5d0f10ada53174c344a051e06833ebb0",
         "dreamina-cli-image2video": "74d704402051652c22293390c4b8bbc78a8d053577580c94cffdf1ae4c23f91e",
         "dreamina-cli-text2image": "c401e6a60e719af1acb084c78ad8bc967adaff79d479d485ed9f1d6d158de310",
         "dreamina-cli-text2video": "1279be7a2562c82cc321a57cdd0cd9e40a49d4988c3f2660d562b088b9b40e9b",

@@ -6,7 +6,7 @@
 
 > 在受支持的编码智能体中创作 Dreamina 图片与视频：运行时发现 CLI 能力、每次付费调用都要明确批准、提交结果可凭标识续查。
 
-[![版本](https://img.shields.io/badge/version-0.6.1-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.6.1)
+[![版本](https://img.shields.io/badge/version-0.6.2-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.6.2)
 [![许可证](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [安装](#安装) · [快速开始](#快速开始) · [MCP 工具](#mcp-工具) · [故障排查](#故障排查)
@@ -56,7 +56,7 @@
 |---|---|
 | 插件 ID | `dreamina-design` |
 | 宿主 | Codex CLI 或 ChatGPT 桌面应用 |
-| 当前版本 | `0.6.1` |
+| 当前版本 | `0.6.2` |
 | 插件清单 | `.codex-plugin/plugin.json` |
 | MCP 配置 | `.mcp.json`——本地 stdio 服务器 |
 | 主要语言 | Python 3.13 |
@@ -125,10 +125,32 @@ flowchart LR
 | `scripts/image_service.py`、`scripts/video_service.py`、`scripts/task_service.py` | 请求构造、提交与查询 | 目录值 |
 | `skills/`（21 个） | 供支持宿主使用的路由与逐能力指令 | 运行时强制 |
 
+## 旧版 CLI 停维护预告 —— 请规划 Canvas 迁移
+
+本插件适配器（`scripts/dreamina_adapter.py`）驱动的 `dreamina` 二进制将在
+**2026-11** 后停止维护。本插件继续基于其 vendor 的冻结经典技能工作，但新任务
+不再推荐该路径。继任能力已在 `dreamina-canvas-plugin` 0.4.0 以九个
+`dreamina-canvas-cli*` 入口提供；`scripts/router_skill.py` 通过
+`Router.canvas_successor()` 为每个意图给出继任技能名与安装提示（用户安装是
+粒度化的，故按名称交接）：
+
+| 意图 | 冻结路径（本插件仍可执行） | Canvas 继任 |
+|---|---|---|
+| 文生图 | `dreamina-cli-text2image` | `dreamina-canvas-cli-text2image` |
+| 图生图 | `dreamina-cli-image2image` | `dreamina-canvas-cli-image2image` |
+| 文生视频 | `dreamina-cli-text2video` | `dreamina-canvas-cli-text2video` |
+| 图生视频 / 首尾帧 / 多帧 / 多模态 | `dreamina-cli-*` | `dreamina-canvas-cli-ref2video`（Canvas 无 `i2v`） |
+| 语音 | — | `dreamina-canvas-cli-text2voice` |
+| 音乐 | — | `dreamina-canvas-cli-text2audio` |
+
+把适配器本身移植到 `dreamina-canvas` 是独立工作；在其落地前，冻结路径仍是本插件
+能端到端执行的唯一路径。
+
 ## 兼容性
 
 | 插件版本 | 宿主 | CLI | Python | 状态 |
 |---|---|---|---|---|
+| `0.6.2` | 任意支持 stdio 的 MCP 客户端 | 已从官方安装器安装并完成信任注册的 `dreamina` CLI | 3.13 | 显式声明旧 CLI 停维护边界：`router_skill.py` 将每条冻结路由映射到对应 `dreamina-canvas-cli*` 继任（技能名 + 安装提示）；适配器移植前冻结执行路径不变 |
 | `0.6.1` | 任意支持 stdio 的 MCP 客户端 | 已从官方安装器安装并完成信任注册的 `dreamina` CLI | 3.13 | 上游 `dreamina-skills` 4e776ac（v1.7.0）重新 vendor：17 个 vendored 技能刷新，冻结的旧 CLI 与 Prompt/OpenCLI 行为不变；补声明 `dreamina-video-shots` / `dreamina-video-sync` 为本地技能 |
 | `0.6.0` | 任意支持 stdio 的 MCP 客户端 | 已从官方安装器安装并完成信任注册的 `dreamina` CLI | 3.13 | 22 个工具已注册；本地生产分发已验证 |
 | `0.6.0` | Codex / Claude Code / ZCode / Kimi 通过 `JudgePort` | 同上 | 3.13 | 视觉契约与额度门禁已验证；真实付费金丝雀仍需单独审批或记为 `NOT_RUN` |
@@ -151,7 +173,7 @@ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ### 从插件市场安装
 
 ```bash
-codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.6.1
+codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.6.2
 codex plugin add dreamina-design@partme-ai-dreamina-design
 ```
 

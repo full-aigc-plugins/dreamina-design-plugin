@@ -39,10 +39,27 @@ def fail(message: str) -> None:
     print(f"ERROR: {message}")
 
 
+# Files that must never enter a digest or a vendored copy: host/tool metadata
+# (dot-prefixed, e.g. .DS_Store) and build caches. They are untracked upstream,
+# so a checkout that happens to contain them must still hash identically to a
+# clean one -- otherwise the lock silently depends on the operator's Finder.
+IGNORED_CONTENT_PARTS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache"}
+IGNORED_CONTENT_SUFFIXES = {".pyc", ".pyo"}
+
+
+def is_vendored_content(path: Path) -> bool:
+    """True when `path` is real package content rather than local noise."""
+    if any(part in IGNORED_CONTENT_PARTS for part in path.parts):
+        return False
+    if any(part.startswith(".") for part in path.parts):
+        return False
+    return path.suffix not in IGNORED_CONTENT_SUFFIXES
+
+
 def hash_skill_dir(skill_dir: Path) -> str:
-    """Return a deterministic digest over every file in one skill."""
+    """Return a deterministic digest over every content file in one skill."""
     digest = hashlib.sha256()
-    for path in sorted(p for p in skill_dir.rglob("*") if p.is_file()):
+    for path in sorted(p for p in skill_dir.rglob("*") if p.is_file() and is_vendored_content(p)):
         relative = path.relative_to(skill_dir).as_posix()
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
@@ -298,7 +315,13 @@ def cmd_update(
                 if target.exists():
                     shutil.rmtree(target)
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(source_skill, target)
+                # Copy content only: never let untracked host/build noise from a
+                # dirty source checkout into the vendored skill.
+                shutil.copytree(
+                    source_skill,
+                    target,
+                    ignore=shutil.ignore_patterns(*IGNORED_CONTENT_PARTS, ".*"),
+                )
                 digests[name] = hash_skill_dir(target)
             source["sha256"] = digests
             print(f"{source['package']}: vendored {len(digests)} skills at {sha[:12]}")

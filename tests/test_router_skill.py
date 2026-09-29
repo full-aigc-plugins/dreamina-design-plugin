@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.router_skill import (  # noqa: E402
+    LEGACY_CLI_SUNSET,
     AmbiguousRoutingError,
     HardCodedCatalogError,
     Router,
@@ -121,3 +122,60 @@ class RouterApprovalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RouterSunsetBoundaryTests(unittest.TestCase):
+    """The frozen legacy route stays, but the Canvas successor is declared."""
+
+    def test_frozen_route_is_unchanged(self) -> None:
+        router = Router()
+        self.assertEqual(
+            router.route(intent="image", mode="text2image"),
+            "dreamina-cli-text2image",
+        )
+        self.assertEqual(
+            router.route(intent="video", mode="frames2video"),
+            "dreamina-cli",
+        )
+
+    def test_every_frozen_route_declares_a_canvas_successor(self) -> None:
+        router = Router()
+        for intent, modes in (
+            ("image", ("text2image", "image2image")),
+            (
+                "video",
+                (
+                    "text2video",
+                    "image2video",
+                    "frames2video",
+                    "multiframe2video",
+                    "multimodal2video",
+                ),
+            ),
+        ):
+            for mode in modes:
+                with self.subTest(intent=intent, mode=mode):
+                    frozen = router.route(intent=intent, mode=mode)
+                    successor, hint = router.canvas_successor(
+                        intent=intent, mode=mode
+                    )
+                    self.assertTrue(successor.startswith("dreamina-canvas-cli"))
+                    self.assertNotEqual(successor, frozen)
+                    self.assertIn("npx skills add", hint)
+
+    def test_audio_intents_have_successors_even_though_router_has_no_audio_route(self) -> None:
+        router = Router()
+        for mode, expected in (
+            ("tts", "dreamina-canvas-cli-text2voice"),
+            ("music", "dreamina-canvas-cli-text2audio"),
+        ):
+            successor, _ = router.canvas_successor(intent="audio", mode=mode)
+            self.assertEqual(successor, expected)
+
+    def test_image2video_maps_to_ref2video_because_canvas_has_no_i2v(self) -> None:
+        router = Router()
+        successor, _ = router.canvas_successor(intent="video", mode="image2video")
+        self.assertEqual(successor, "dreamina-canvas-cli-ref2video")
+
+    def test_legacy_sunset_is_recorded(self) -> None:
+        self.assertEqual(LEGACY_CLI_SUNSET, "2026-11")
