@@ -14,6 +14,16 @@ from scripts.account_service import AccountService
 from scripts.approval_guard import ApprovalGuard
 from scripts.auth_service import AuthFlowStore, AuthService
 from scripts.diagnostic_service import DiagnosticService
+from scripts.canvas_execution import (
+    CanvasExecutionRequest,
+    CanvasExecutor,
+)
+from scripts.canvas_submission_service import (
+    CanvasSubmissionService,
+    build_canvas_approval_fingerprint,
+)
+from scripts.dreamina_canvas_adapter import DreaminaCanvasAdapter
+from scripts.trusted_canvas_cli import TrustedCanvasCliStore
 from scripts.dreamina_adapter import DreaminaAdapter, DreaminaAdapterError
 from scripts.environment_service import EnvironmentService
 from scripts.image_service import ImageService, build_request_fingerprint
@@ -63,6 +73,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "ratio": {"type": "string"},
                     "references": {"type": "array", "items": {"type": "object"}, "maxItems": 10},
                     "approved_roots": {"type": "array", "items": {"type": "string"}},
+                    "runtime": {"type": "string", "enum": ["canvas", "legacy"], "default": "canvas"},
+                    "project_id": {"type": "string", "minLength": 8, "maxLength": 64},
+                    "canvas_name": {"type": "string", "minLength": 1, "maxLength": 80},
+                    "credit_ceiling": {"type": "integer", "minimum": 1},
                 },
                 "required": ["mode", "resolution_type"],
                 "additionalProperties": False,
@@ -85,6 +99,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "transitions": {"type":"array","items":{"type":"object","properties":{"prompt":{"type":"string","minLength":1,"maxLength":1000},"duration_seconds":{"type":"integer","minimum":1,"maximum":8}},"required":["prompt","duration_seconds"],"additionalProperties":False},"maxItems":19},
                     "approved_roots": {"type": "array", "items": {"type": "string"}},
                     "web_prerequisite_acknowledged": {"type": "boolean"},
+                    "runtime": {"type": "string", "enum": ["canvas", "legacy"], "default": "canvas"},
+                    "project_id": {"type": "string", "minLength": 8, "maxLength": 64},
+                    "canvas_name": {"type": "string", "minLength": 1, "maxLength": 80},
+                    "credit_ceiling": {"type": "integer", "minimum": 1},
                 },
                 "required": ["mode", "prompt", "video_resolution"],
                 "additionalProperties": False,
@@ -190,6 +208,8 @@ class DreaminaMcpTools:
         raise ValueError(f"unknown tool: {name}")
 
     def _submit_image(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        if str(args.get("runtime", "canvas")) == "canvas":
+            return self._canvas_submit(args, media="image")
         with _adapter(args) as adapter:
             snapshot = adapter.capability_snapshot()
             policy = _reference_policy(args)
@@ -206,6 +226,8 @@ class DreaminaMcpTools:
             return service.submit(request, adapter=adapter, approval_guard=guard, session_id=session_id, approval_id=approval_id)
 
     def _submit_video(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        if str(args.get("runtime", "canvas")) == "canvas":
+            return self._canvas_submit(args, media="video")
         with _adapter(args) as adapter:
             snapshot = adapter.capability_snapshot()
             policy = _reference_policy(args)
@@ -223,6 +245,78 @@ class DreaminaMcpTools:
             approver = self.approval_provider.confirm(request)
             approval_id = guard.record_approval(session_id, request=request, receipt=_approved_receipt(build_video_request_fingerprint(request), scope, approver), fingerprint_builder=build_video_request_fingerprint)
             return service.submit(request, adapter=adapter, approval_guard=guard, session_id=session_id, approval_id=approval_id, web_prerequisite_cleared=bool(args.get("web_prerequisite_acknowledged")))
+
+    def _canvas_submit(self, args: Mapping[str, Any], *, media: str) -> dict[str, Any]:
+        """Canvas rail: live-quote-bound approval over the nine CLI entries."""
+        if media == "video" and args.get("web_prerequisite_acknowledged") is not True:
+            raise ValueError(
+                "first Dreamina video requires the web-console prerequisite "
+                "acknowledgement (web_prerequisite_acknowledged=true)"
+            )
+        payload = TrustedCanvasCliStore().load()
+        with DreaminaCanvasAdapter(
+            cli_command=payload["cli_path"],
+            trusted_binary_sha256=payload["cli_sha256"],
+        ) as canvas_adapter:
+
+            def _authorize_canvas(name: str) -> bool:
+                # canvas create is a remote write; it needs its own approval.
+                return bool(
+                    self.approval_provider.confirm(
+                        {"operation": "dreamina-canvas-create", "canvas_name": name}
+                    )
+                )
+
+            executor = CanvasExecutor(
+                canvas_adapter, authorize_canvas_creation=_authorize_canvas
+            )
+            service = CanvasSubmissionService(
+                executor, ledger_dir=self.state_root / "operations"
+            )
+            request = CanvasExecutionRequest(
+                media=media,
+                mode=str(args["mode"]),
+                prompt=str(args.get("prompt") or ""),
+                model=str(args["model"]) if args.get("model") else None,
+                ratio=args.get("ratio"),
+                resolution_type=(
+                    str(args["resolution_type"]) if args.get("resolution_type") else None
+                ),
+                count=int(args["count"]) if args.get("count") is not None else None,
+                duration=(
+                    int(args["duration_seconds"])
+                    if args.get("duration_seconds") is not None
+                    else None
+                ),
+                references=list(args.get("references", [])),
+                project_id=(
+                    str(args["project_id"]) if args.get("project_id") else None
+                ),
+                canvas_name=(
+                    str(args["canvas_name"]) if args.get("canvas_name") else None
+                ),
+                title=str(args["title"]) if args.get("title") else None,
+            )
+            session_id, guard = self._approval_context(media)
+            context = service.quote(request)
+            approver = self.approval_provider.confirm(context.approval_request)
+            approval_id = guard.record_approval(
+                session_id,
+                request=context.approval_request,
+                receipt=_approved_receipt(context.fingerprint, context.scope, approver),
+                fingerprint_builder=build_canvas_approval_fingerprint,
+            )
+            return service.submit(
+                context,
+                approval_guard=guard,
+                session_id=session_id,
+                approval_id=approval_id,
+                credit_ceiling=(
+                    int(args["credit_ceiling"])
+                    if args.get("credit_ceiling") is not None
+                    else None
+                ),
+            )
 
     def _approval_context(self, kind: str) -> tuple[str, ApprovalGuard]:
         guard = ApprovalGuard(root=self.state_root / "approvals")
@@ -278,6 +372,15 @@ class _AdapterContext:
 def _adapter(args: Mapping[str, Any]) -> _AdapterContext:
     trusted = TrustedCliStore().load()
     return _AdapterContext(DreaminaAdapter(cli_command=trusted["cli_path"], trusted_binary_sha256=trusted["cli_sha256"]))
+
+
+def _canvas_adapter() -> DreaminaCanvasAdapter:
+    """Pinned dreamina-canvas binary from its own trust store."""
+    payload = TrustedCanvasCliStore().load()
+    return DreaminaCanvasAdapter(
+        cli_command=payload["cli_path"],
+        trusted_binary_sha256=payload["cli_sha256"],
+    )
 
 
 def _reference_policy(args: Mapping[str, Any]) -> ReferencePolicy | None:

@@ -27,7 +27,7 @@ manifest is fatal, not a warning (§5.1, §5.3).
   - `skills` — discovered from the fixed `skills/` location; it MUST NOT be declared (§6.1)
 - `name` is `dreamina-design` — lowercase alphanumerics, `-` and `.` only, starting and
   ending alphanumeric, with no `--` or `..` (§5.5).
-- `version` is the **base** version `0.6.2`. The `+codex.<stamp>` build
+- `version` is the **base** version `0.7.0`. The `+codex.<stamp>` build
   metadata in `.codex-plugin/plugin.json` describes that compatibility channel's
   build, not the portable plugin, so it stays there.
 - `$schema` is the exact published constant

@@ -26,11 +26,45 @@ LEGACY_TOOLS = {
 }
 
 
+SUBMIT_TOOLS = {"dreamina_submit_image", "dreamina_submit_video"}
+
+
 class ReferenceVideoCompatibilityTests(unittest.TestCase):
-    def test_legacy_tool_contracts_are_unchanged(self) -> None:
+    def test_non_submit_legacy_tool_contracts_are_byte_identical(self) -> None:
+        """Tools untouched by the Canvas port must match the 0.3.0 fixture."""
         current = {tool["name"]: tool["inputSchema"] for tool in _tool_definitions()}
         self.assertLessEqual(LEGACY_TOOLS, current.keys())
-        self.assertEqual(LEGACY_TOOL_CONTRACTS, {name: current[name] for name in LEGACY_TOOLS})
+        untouched = LEGACY_TOOLS - SUBMIT_TOOLS
+        self.assertEqual(
+            {name: LEGACY_TOOL_CONTRACTS[name] for name in untouched},
+            {name: current[name] for name in untouched},
+        )
+
+    def test_submit_tool_contracts_grow_additively_only(self) -> None:
+        """The Canvas port adds optional fields; nothing legacy is removed.
+
+        Legacy callers keep sending the same arguments and keep hitting the
+        same required set; the additions are opt-in (runtime/project_id/
+        canvas_name/credit_ceiling), with runtime defaulting to the Canvas
+        rail as recorded in the 0.7.0 release notes.
+        """
+        current = {tool["name"]: tool["inputSchema"] for tool in _tool_definitions()}
+        for name in SUBMIT_TOOLS:
+            legacy = LEGACY_TOOL_CONTRACTS[name]
+            modern = current[name]
+            self.assertEqual(
+                legacy["required"], modern["required"],
+                f"{name}: required set must not change",
+            )
+            self.assertLessEqual(
+                set(legacy["properties"]), set(modern["properties"]),
+                f"{name}: legacy properties must survive",
+            )
+            for prop, spec in legacy["properties"].items():
+                self.assertEqual(
+                    spec, modern["properties"][prop],
+                    f"{name}.{prop}: legacy spec must be byte-identical",
+                )
 
 
 if __name__ == "__main__":

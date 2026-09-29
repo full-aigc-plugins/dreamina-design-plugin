@@ -200,7 +200,7 @@ class PaidToolHandlerTests(unittest.TestCase):
         ):
             result = DreaminaMcpTools(state_root=Path(tmp), approval_provider=self._Approve()).call(
                 "dreamina_submit_image",
-                {"mode": "text2image", "prompt": "x", "model": "5.0Pro", "resolution_type": "1.5k", "count": 1, "ratio": "1:1"},
+                {"runtime": "legacy", "mode": "text2image", "prompt": "x", "model": "5.0Pro", "resolution_type": "1.5k", "count": 1, "ratio": "1:1"},
             )
             self.assertEqual(result["submit_id"], "mcp-sub-1")
             receipt_files = [path for path in (Path(tmp) / "approvals").rglob("*.json") if path.parent.name == "approvals"]
@@ -232,7 +232,7 @@ class PaidToolHandlerTests(unittest.TestCase):
             with self.assertRaises(ApprovalDeniedError):
                 DreaminaMcpTools(state_root=Path(tmp), approval_provider=_Deny()).call(
                     "dreamina_submit_image",
-                    {"mode": "text2image", "prompt": "x", "model": "5.0Pro", "resolution_type": "1.5k", "count": 1, "ratio": "1:1"},
+                    {"runtime": "legacy", "mode": "text2image", "prompt": "x", "model": "5.0Pro", "resolution_type": "1.5k", "count": 1, "ratio": "1:1"},
                 )
         self.assertEqual(adapter.generation_calls, 0)
 

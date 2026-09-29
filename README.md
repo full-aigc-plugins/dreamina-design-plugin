@@ -6,7 +6,7 @@
 
 > Create Dreamina images and videos from your supported coding agent, with runtime CLI discovery, explicit approval for every paid call, and submissions you can resume by identifier.
 
-[![Version](https://img.shields.io/badge/version-0.6.2-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.6.2)
+[![Version](https://img.shields.io/badge/version-0.7.0-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.7.0)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [Install](#installation) · [Quick start](#quick-start) · [MCP tools](#mcp-tools) · [Troubleshooting](#troubleshooting)
@@ -56,7 +56,7 @@ Downloaded image or video artifact + operation receipt
 |---|---|
 | Plugin ID | `dreamina-design` |
 | Host | Codex CLI or ChatGPT desktop app |
-| Current version | `0.6.2` |
+| Current version | `0.7.0` |
 | Plugin manifest | `.codex-plugin/plugin.json` |
 | MCP configuration | `.mcp.json` — local stdio server |
 | Primary language | Python 3.13 |
@@ -127,13 +127,13 @@ flowchart LR
 
 ## Legacy CLI sunset — plan your Canvas migration
 
-The `dreamina` binary this plugin's adapter drives (`scripts/dreamina_adapter.py`)
-stops being maintained after **2026-11**. This plugin keeps working against the
-frozen classic Skills it vendors, but they are no longer the recommended path for
-new work. Successors ship in `dreamina-canvas-plugin` 0.4.0 as nine
-`dreamina-canvas-cli*` entries; `scripts/router_skill.py` maps every intent to its
-successor via `Router.canvas_successor()` (name + install hint, since user
-installs are granular):
+The `dreamina` binary stops being maintained after **2026-11**. As of 0.7.0
+this plugin runs a **dual rail**: the paid submit tools default to the Canvas
+runtime (`dreamina-canvas` CLI, quote-bound approval), and `runtime: "legacy"`
+keeps the frozen `dreamina` path for as long as it exists. `scripts/router_skill.py`
+still maps every frozen intent to its Canvas successor via
+`Router.canvas_successor()`; with the adapter ported, the successor table below
+is now executable through this plugin's own Canvas rail:
 
 | Intent | Frozen route (still executed) | Canvas successor |
 |---|---|---|
@@ -144,13 +144,27 @@ installs are granular):
 | speech | — | `dreamina-canvas-cli-text2voice` |
 | music | — | `dreamina-canvas-cli-text2audio` |
 
-Porting the adapter itself to `dreamina-canvas` is separate work; until it lands,
-frozen routes stay the only ones this plugin can execute end to end.
+### Canvas runtime (default)
+
+`dreamina_submit_image` / `dreamina_submit_video` accept:
+
+- `runtime` — `canvas` (default) or `legacy`.
+- `project_id` — reuse a canvas; omit it and pass `canvas_name` to create one
+  (canvas creation is a remote write and asks for its own approval).
+- `credit_ceiling` — optional; defaults to the ceiling quoted for the saved draft.
+
+The Canvas rail quotes the saved draft first, binds the approval fingerprint to
+that live amount, then runs `node confirm → node run → operation wait` with a
+stable `submitId`. Enrollment for the Canvas binary is separate:
+`~/.config/dreamina-design/trusted-canvas-cli.json` (same 0600 contract as the
+legacy trust store). See `docs/canvas-runtime.md`.
 
 ## Compatibility
 
 | Plugin version | Host | CLI | Python | Status |
 |---|---|---|---|---|
+| `0.7.0` | Any MCP client with stdio support | `dreamina-canvas` CLI enrolled and trusted | 3.13 | Dual-rail port: submit tools default to the Canvas runtime (quote-bound approval, projectId/canvas_name/credit_ceiling), `runtime: legacy` keeps the frozen path; router successor table is now executable |
+| `0.7.0` | 任意支持 stdio 的 MCP 客户端 | 已注册并信任的 `dreamina-canvas` CLI | 3.13 | 双轨移植：提交工具默认 Canvas 运行时（报价绑定审批，新增 projectId/canvas_name/credit_ceiling），`runtime: legacy` 保留冻结路径；路由继任表已可执行 |
 | `0.6.2` | Any MCP client with stdio support | `dreamina` CLI installed from the official installer and trusted | 3.13 | Declares the legacy-CLI sunset boundary: `router_skill.py` now maps every frozen route to its `dreamina-canvas-cli*` successor (name + install hint); frozen execution path unchanged until the adapter is ported |
 | `0.6.1` | Any MCP client with stdio support | `dreamina` CLI installed from the official installer and trusted | 3.13 | Upstream re-vendor at `dreamina-skills` 4e776ac (v1.7.0): 17 vendored Skills refreshed, frozen classic CLI and Prompt/OpenCLI behaviour unchanged; declared `dreamina-video-shots` / `dreamina-video-sync` as plugin-local skills |
 | `0.6.0` | Any MCP client with stdio support | `dreamina` CLI installed from the official installer and enrolled | 3.13 | 22 tools registered; local production dispatch verified |
@@ -174,7 +188,7 @@ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ### From the plugin marketplace
 
 ```bash
-codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.6.2
+codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.7.0
 codex plugin add dreamina-design@partme-ai-dreamina-design
 ```
 

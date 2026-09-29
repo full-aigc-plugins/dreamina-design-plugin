@@ -6,7 +6,7 @@
 
 > 在受支持的编码智能体中创作 Dreamina 图片与视频：运行时发现 CLI 能力、每次付费调用都要明确批准、提交结果可凭标识续查。
 
-[![版本](https://img.shields.io/badge/version-0.6.2-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.6.2)
+[![版本](https://img.shields.io/badge/version-0.7.0-blue)](https://github.com/full-aigc-plugins/dreamina-design-plugin/releases/tag/v0.7.0)
 [![许可证](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 [English](README.md) | [简体中文](README.zh-CN.md) · [安装](#安装) · [快速开始](#快速开始) · [MCP 工具](#mcp-工具) · [故障排查](#故障排查)
@@ -56,7 +56,7 @@
 |---|---|
 | 插件 ID | `dreamina-design` |
 | 宿主 | Codex CLI 或 ChatGPT 桌面应用 |
-| 当前版本 | `0.6.2` |
+| 当前版本 | `0.7.0` |
 | 插件清单 | `.codex-plugin/plugin.json` |
 | MCP 配置 | `.mcp.json`——本地 stdio 服务器 |
 | 主要语言 | Python 3.13 |
@@ -127,12 +127,11 @@ flowchart LR
 
 ## 旧版 CLI 停维护预告 —— 请规划 Canvas 迁移
 
-本插件适配器（`scripts/dreamina_adapter.py`）驱动的 `dreamina` 二进制将在
-**2026-11** 后停止维护。本插件继续基于其 vendor 的冻结经典技能工作，但新任务
-不再推荐该路径。继任能力已在 `dreamina-canvas-plugin` 0.4.0 以九个
-`dreamina-canvas-cli*` 入口提供；`scripts/router_skill.py` 通过
-`Router.canvas_successor()` 为每个意图给出继任技能名与安装提示（用户安装是
-粒度化的，故按名称交接）：
+`dreamina` 二进制将在 **2026-11** 后停止维护。自 0.7.0 起本插件采用**双轨**：
+付费提交工具默认走 Canvas 运行时（`dreamina-canvas` CLI，报价绑定审批），
+`runtime: "legacy"` 保留冻结的 `dreamina` 路径直至其退场。`scripts/router_skill.py`
+仍通过 `Router.canvas_successor()` 给出每条冻结意图的继任映射；适配器移植完成后，
+下表已是本插件自身 Canvas 轨可执行的路径：
 
 | 意图 | 冻结路径（本插件仍可执行） | Canvas 继任 |
 |---|---|---|
@@ -143,13 +142,26 @@ flowchart LR
 | 语音 | — | `dreamina-canvas-cli-text2voice` |
 | 音乐 | — | `dreamina-canvas-cli-text2audio` |
 
-把适配器本身移植到 `dreamina-canvas` 是独立工作；在其落地前，冻结路径仍是本插件
-能端到端执行的唯一路径。
+### Canvas 运行时（默认）
+
+`dreamina_submit_image` / `dreamina_submit_video` 新增：
+
+- `runtime` — `canvas`（默认）或 `legacy`。
+- `project_id` — 复用既有画布；不传时可传 `canvas_name` 新建（画布创建是远端写
+  操作，会单独请求一次批准）。
+- `credit_ceiling` — 可选；缺省取已保存草稿的实时报价上限。
+
+Canvas 轨先对草稿报价，把审批指纹绑定到该实时金额，再执行
+`node confirm → node run → operation wait`（submitId 稳定不变）。Canvas 二进制的
+信任注册独立存放：`~/.config/dreamina-design/trusted-canvas-cli.json`（与 legacy
+信任库同样的 0600 契约）。详见 `docs/canvas-runtime.md`。
 
 ## 兼容性
 
 | 插件版本 | 宿主 | CLI | Python | 状态 |
 |---|---|---|---|---|
+| `0.7.0` | Any MCP client with stdio support | `dreamina-canvas` CLI enrolled and trusted | 3.13 | Dual-rail port: submit tools default to the Canvas runtime (quote-bound approval, projectId/canvas_name/credit_ceiling), `runtime: legacy` keeps the frozen path; router successor table is now executable |
+| `0.7.0` | 任意支持 stdio 的 MCP 客户端 | 已注册并信任的 `dreamina-canvas` CLI | 3.13 | 双轨移植：提交工具默认 Canvas 运行时（报价绑定审批，新增 projectId/canvas_name/credit_ceiling），`runtime: legacy` 保留冻结路径；路由继任表已可执行 |
 | `0.6.2` | 任意支持 stdio 的 MCP 客户端 | 已从官方安装器安装并完成信任注册的 `dreamina` CLI | 3.13 | 显式声明旧 CLI 停维护边界：`router_skill.py` 将每条冻结路由映射到对应 `dreamina-canvas-cli*` 继任（技能名 + 安装提示）；适配器移植前冻结执行路径不变 |
 | `0.6.1` | 任意支持 stdio 的 MCP 客户端 | 已从官方安装器安装并完成信任注册的 `dreamina` CLI | 3.13 | 上游 `dreamina-skills` 4e776ac（v1.7.0）重新 vendor：17 个 vendored 技能刷新，冻结的旧 CLI 与 Prompt/OpenCLI 行为不变；补声明 `dreamina-video-shots` / `dreamina-video-sync` 为本地技能 |
 | `0.6.0` | 任意支持 stdio 的 MCP 客户端 | 已从官方安装器安装并完成信任注册的 `dreamina` CLI | 3.13 | 22 个工具已注册；本地生产分发已验证 |
@@ -173,7 +185,7 @@ python3 scripts/validate_distribution_v7.py --require-runtime-gates
 ### 从插件市场安装
 
 ```bash
-codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.6.2
+codex plugin marketplace add full-aigc-plugins/dreamina-design-plugin --ref v0.7.0
 codex plugin add dreamina-design@partme-ai-dreamina-design
 ```
 
