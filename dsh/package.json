@@ -1,0 +1,33 @@
+{
+  "name": "@partme-dsh/dreamina-design",
+  "version": "0.8.0",
+  "description": "Create and edit Dreamina images and videos with approval-aware, resumable operations and verified downloads.",
+  "type": "module",
+  "main": "lib/index.js",
+  "icon": "./icon.png",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "lib/index.js",
+    "icon.svg",
+    "icon.png",
+    "README.md"
+  ],
+  "license": "Apache-2.0",
+  "keywords": [
+    "dreamina",
+    "design",
+    "image-generation",
+    "video-generation",
+    "codex"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
