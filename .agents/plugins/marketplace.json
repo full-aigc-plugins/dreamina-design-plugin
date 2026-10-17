@@ -18,11 +18,11 @@
       "category": "Creativity",
       "version": "0.8.0",
       "description": "Create and edit Dreamina images and videos with approval-aware, resumable operations and verified downloads.",
-      "icon": "https://cdn.jsdelivr.net/gh/full-aigc-plugins/dreamina-design-plugin@v0.6.0/assets/logo-approved.png",
+      "icon": "https://cdn.jsdelivr.net/gh/full-aigc-plugins/dreamina-design-plugin@v0.8.0/assets/logo-approved.png",
       "interface": {
         "displayName": "Dreamina Design",
         "shortDescription": "Create images and videos with Dreamina",
-        "logo": "https://cdn.jsdelivr.net/gh/full-aigc-plugins/dreamina-design-plugin@v0.6.0/assets/logo-approved.png"
+        "logo": "https://cdn.jsdelivr.net/gh/full-aigc-plugins/dreamina-design-plugin@v0.8.0/assets/logo-approved.png"
       }
     }
   ]
