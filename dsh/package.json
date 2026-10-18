@@ -1,5 +1,5 @@
 {
-  "name": "@partme-dsh/dreamina-design",
+  "name": "dreamina-design",
   "version": "0.8.0",
   "description": "Create and edit Dreamina images and videos with approval-aware, resumable operations and verified downloads.",
   "type": "module",
@@ -31,5 +31,6 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
-  }
+  },
+  "private": true
 }
