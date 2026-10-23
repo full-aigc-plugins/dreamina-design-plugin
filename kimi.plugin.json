@@ -1,7 +1,7 @@
 {
   "name": "dreamina-design",
-  "version": "0.8.1",
-  "description": "Create and edit Dreamina images and videos with approval-aware, resumable operations and verified downloads.",
+  "version": "0.7.0",
+  "description": "Dreamina image and video generation with prompt libraries, shot annotation and visual evaluation. Paid runs require explicit approval and tasks are resumable.",
   "author": {
     "name": "Full Stack Skills / PartMe.AI"
   },
@@ -13,8 +13,8 @@
     "seedance"
   ],
   "interface": {
-    "displayName": "Dreamina Design",
-    "shortDescription": "Create images and videos with Dreamina",
+    "displayName": "Dreamina Image & Video · Dreamina Design",
+    "shortDescription": "Text-to-image, image-to-image and text-to-video with prompt and shot review",
     "longDescription": "Operate Dreamina (即梦) from your coding agent: text2image, image2image, text2video, image2video, Seedance pipeline orchestration with submit-once recovery, and prompt guidance for every mode.",
     "developerName": "Full Stack Skills / PartMe.AI",
     "websiteURL": "https://github.com/full-aigc-plugins/dreamina-design-plugin"

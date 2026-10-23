@@ -1,15 +1,13 @@
 {
   "name": "dreamina-design",
-  "displayName": "Dreamina Design",
+  "displayName": "Dreamina Image & Video · Dreamina Design",
   "displayName_i18n": {
-    "en": "Dreamina Design",
-    "zh-CN": "即梦设计"
+    "en": "Dreamina Image & Video · Dreamina Design"
   },
-  "version": "0.8.1",
-  "description": "Create and edit Dreamina images and videos with approval-aware, resumable operations and verified downloads.",
+  "version": "0.7.0",
+  "description": "Dreamina image and video generation with prompt libraries, shot annotation and visual evaluation. Paid runs require explicit approval and tasks are resumable.",
   "description_i18n": {
-    "en": "Dreamina image and video design workflows with runtime CLI discovery and resumable operations.",
-    "zh-CN": "即梦（Dreamina）图片与视频设计工作流：运行时 CLI 发现、断点续跑、Seedance 视频编排与批量出图。"
+    "en": "Dreamina image and video generation with prompt libraries, shot annotation and visual evaluation. Paid runs require explicit approval and tasks are resumable."
   },
   "author": {
     "name": "Full Stack Skills / PartMe.AI",

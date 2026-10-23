@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "dreamina-design",
-  "version": "0.8.1",
-  "description": "Create and edit Dreamina images and videos with approval-aware, resumable operations and verified downloads.",
+  "version": "0.7.0",
+  "description": "Dreamina image and video generation with prompt libraries, shot annotation and visual evaluation. Paid runs require explicit approval and tasks are resumable.",
   "author": {
     "name": "Full Stack Skills / PartMe.AI",
     "url": "https://github.com/partme-ai"
@@ -20,8 +20,8 @@
   "extensions": {
     "com.openai": {
       "interface": {
-        "displayName": "Dreamina Design",
-        "shortDescription": "Create images and videos with Dreamina",
+        "displayName": "Dreamina Image & Video · Dreamina Design",
+        "shortDescription": "Text-to-image, image-to-image and text-to-video with prompt and shot review",
         "longDescription": "Create and edit Dreamina images and videos through current CLI capabilities, explicit generation approval, stable submission identities, resumable queries, and verified downloads.",
         "developerName": "Full Stack Skills / PartMe.AI",
         "category": "Creativity",
@@ -39,10 +39,11 @@
           "Resume my Dreamina task and download verified results"
         ],
         "brandColor": "#EC4899",
-        "composerIcon": "./assets/composer-icon.png",
+        "composerIcon": "./assets/logo-approved.png",
         "logo": "./assets/logo-approved.png",
         "logoDark": "./assets/logo-approved.png",
-        "screenshots": []
+        "screenshots": [],
+        "composerIconDark": "./assets/logo-approved.png"
       }
     },
     "ai.nanoco.nanoclaw": {
