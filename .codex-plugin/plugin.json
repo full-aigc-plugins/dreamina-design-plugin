@@ -19,7 +19,7 @@
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
-    "displayName": "Dreamina Image & Video · Dreamina Design",
+    "displayName": "Dreamina Design · Dreamina Image & Video",
     "shortDescription": "Text-to-image, image-to-image and text-to-video with prompt and shot review",
     "longDescription": "Create and edit Dreamina images and videos through current CLI capabilities, explicit generation approval, stable submission identities, resumable queries, and verified downloads.",
     "developerName": "Full Stack Skills / PartMe.AI",

@@ -1,7 +1,7 @@
 {
   "name": "partme-ai-dreamina-design",
   "interface": {
-    "displayName": "Dreamina Image & Video · Dreamina Design"
+    "displayName": "Dreamina Design · Dreamina Image & Video"
   },
   "plugins": [
     {
@@ -20,7 +20,7 @@
       "description": "Dreamina image and video generation with prompt libraries, shot annotation and visual evaluation. Paid runs require explicit approval and tasks are resumable.",
       "icon": "https://cdn.jsdelivr.net/gh/full-aigc-plugins/dreamina-design-plugin@v0.7.0/assets/logo-approved.png",
       "interface": {
-        "displayName": "Dreamina Image & Video · Dreamina Design",
+        "displayName": "Dreamina Design · Dreamina Image & Video",
         "shortDescription": "Text-to-image, image-to-image and text-to-video with prompt and shot review",
         "logo": "https://cdn.jsdelivr.net/gh/full-aigc-plugins/dreamina-design-plugin@v0.7.0/assets/logo-approved.png"
       }

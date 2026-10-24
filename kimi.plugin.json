@@ -13,7 +13,7 @@
     "seedance"
   ],
   "interface": {
-    "displayName": "Dreamina Image & Video · Dreamina Design",
+    "displayName": "Dreamina Design · Dreamina Image & Video",
     "shortDescription": "Text-to-image, image-to-image and text-to-video with prompt and shot review",
     "longDescription": "Operate Dreamina (即梦) from your coding agent: text2image, image2image, text2video, image2video, Seedance pipeline orchestration with submit-once recovery, and prompt guidance for every mode.",
     "developerName": "Full Stack Skills / PartMe.AI",

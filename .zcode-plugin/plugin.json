@@ -1,8 +1,8 @@
 {
   "name": "dreamina-design",
-  "displayName": "Dreamina Image & Video · Dreamina Design",
+  "displayName": "Dreamina Design · Dreamina Image & Video",
   "displayName_i18n": {
-    "en": "Dreamina Image & Video · Dreamina Design"
+    "en": "Dreamina Design · Dreamina Image & Video"
   },
   "version": "0.7.0",
   "description": "Dreamina image and video generation with prompt libraries, shot annotation and visual evaluation. Paid runs require explicit approval and tasks are resumable.",
