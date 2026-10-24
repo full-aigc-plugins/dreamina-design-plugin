@@ -17,13 +17,14 @@
       },
       "category": "Creativity",
       "version": "0.7.0",
-      "description": "Dreamina image and video generation with prompt libraries, shot annotation and visual evaluation. Paid runs require explicit approval and tasks are resumable.",
+      "description": "即梦图像与视频生成，含提示词库、分镜标注与视觉评审；付费生成前需显式确认，任务可恢复。",
       "icon": "https://cdn.jsdelivr.net/gh/full-aigc-plugins/dreamina-design-plugin@v0.7.0/assets/logo-approved.png",
       "interface": {
-        "displayName": "Dreamina Design · Dreamina Image & Video",
-        "shortDescription": "Text-to-image, image-to-image and text-to-video with prompt and shot review",
+        "displayName": "Dreamina（即梦绘图与视频）",
+        "shortDescription": "文生图、图生图与文生视频，含提示词与镜头评审",
         "logo": "https://cdn.jsdelivr.net/gh/full-aigc-plugins/dreamina-design-plugin@v0.7.0/assets/logo-approved.png"
-      }
+      },
+      "displayName": "Dreamina（即梦绘图与视频）"
     }
   ]
 }

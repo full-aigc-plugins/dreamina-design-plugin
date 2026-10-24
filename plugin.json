@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "dreamina-design",
   "version": "0.7.0",
-  "description": "Dreamina image and video generation with prompt libraries, shot annotation and visual evaluation. Paid runs require explicit approval and tasks are resumable.",
+  "description": "即梦图像与视频生成，含提示词库、分镜标注与视觉评审；付费生成前需显式确认，任务可恢复。",
   "author": {
     "name": "Full Stack Skills / PartMe.AI",
     "url": "https://github.com/partme-ai"
@@ -49,5 +49,12 @@
     "ai.nanoco.nanoclaw": {
       "agentName": "Dreamina Design"
     }
+  },
+  "displayName": "Dreamina（即梦绘图与视频）",
+  "displayName_i18n": {
+    "zh-CN": "Dreamina（即梦绘图与视频）"
+  },
+  "description_i18n": {
+    "zh-CN": "即梦图像与视频生成，含提示词库、分镜标注与视觉评审；付费生成前需显式确认，任务可恢复。"
   }
 }
