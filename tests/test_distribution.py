@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ID = "dreamina-design"
-DISPLAY_NAME = "Dreamina Design"
+DISPLAY_NAME = "Dreamina Design · Dreamina Image & Video"
 REPOSITORY = "https://github.com/full-aigc-plugins/dreamina-design-plugin"
 BRAND_COLOR = "#EC4899"
 
@@ -53,7 +53,7 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(interface["brandColor"], BRAND_COLOR)
         self.assertEqual(interface["logo"], "./assets/logo-approved.png")
         self.assertEqual(interface["logoDark"], "./assets/logo-approved.png")
-        self.assertEqual(interface["composerIcon"], "./assets/composer-icon.png")
+        self.assertEqual(interface["composerIcon"], "./assets/logo-approved.png")
         self.assertLessEqual(len(interface["defaultPrompt"]), 3)
         self.assertTrue(all(len(prompt) <= 128 for prompt in interface["defaultPrompt"]))
         marketplace = load_json(".agents/plugins/marketplace.json")
