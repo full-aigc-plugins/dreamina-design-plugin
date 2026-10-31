@@ -48,6 +48,15 @@
     },
     "ai.nanoco.nanoclaw": {
       "agentName": "Dreamina Design"
+    },
+    "ai.partme": {
+      "displayName": "Dreamina（即梦绘图与视频）",
+      "displayName_i18n": {
+        "zh-CN": "Dreamina（即梦绘图与视频）"
+      },
+      "description_i18n": {
+        "zh-CN": "即梦图像与视频生成，含提示词库、分镜标注与视觉评审；付费生成前需显式确认，任务可恢复。"
+      }
     }
   }
 }
