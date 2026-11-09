@@ -1,7 +1,7 @@
 {
   "name": "partme-ai-dreamina-design",
   "interface": {
-    "displayName": "Dreamina Design · Dreamina Image & Video"
+    "displayName": "Dreamina（即梦绘图与视频）"
   },
   "plugins": [
     {
@@ -9,20 +9,20 @@
       "source": {
         "source": "url",
         "url": "https://github.com/full-aigc-plugins/dreamina-design-plugin.git",
-        "ref": "v0.7.0"
+        "ref": "v0.8.2"
       },
       "policy": {
         "installation": "AVAILABLE",
         "authentication": "ON_USE"
       },
       "category": "Creativity",
-      "version": "0.7.0",
-      "description": "即梦图像与视频生成，含提示词库、分镜标注与视觉评审；付费生成前需显式确认，任务可恢复。",
-      "icon": "https://cdn.jsdelivr.net/gh/full-aigc-plugins/dreamina-design-plugin@v0.7.0/assets/logo-approved.png",
+      "version": "0.8.2",
+      "description": "即梦文生图、图生图和文生视频：提示词、分镜标注与镜头评审走同一条链路。",
+      "icon": "https://cdn.jsdelivr.net/gh/full-aigc-plugins/dreamina-design-plugin@v0.8.2/assets/logo-approved.png",
       "interface": {
         "displayName": "Dreamina（即梦绘图与视频）",
-        "shortDescription": "文生图、图生图与文生视频，含提示词与镜头评审",
-        "logo": "https://cdn.jsdelivr.net/gh/full-aigc-plugins/dreamina-design-plugin@v0.7.0/assets/logo-approved.png"
+        "shortDescription": "即梦文生图、图生图和文生视频：提示词、分镜标注与镜头评审走同一条链路。",
+        "logo": "https://cdn.jsdelivr.net/gh/full-aigc-plugins/dreamina-design-plugin@v0.8.2/assets/logo-approved.png"
       },
       "displayName": "Dreamina（即梦绘图与视频）"
     }
