@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ID = "dreamina-design"
-DISPLAY_NAME = "Dreamina Design · Dreamina Image & Video"
+DISPLAY_NAME = "Dreamina（即梦绘图与视频）"
 REPOSITORY = "https://github.com/full-aigc-plugins/dreamina-design-plugin"
 BRAND_COLOR = "#EC4899"
 
@@ -32,7 +32,7 @@ class DistributionTests(unittest.TestCase):
     def test_manifest_and_marketplace(self) -> None:
         manifest = load_json(".codex-plugin/plugin.json")
         self.assertEqual(manifest["name"], PLUGIN_ID)
-        self.assertEqual(manifest["version"].split("+", 1)[0], "0.7.0")
+        self.assertEqual(manifest["version"].split("+", 1)[0], "0.8.2")
         lock = load_json("skills.lock.json")
         dreamina_source = next(
             source for source in lock["sources"] if source["package"] == "dreamina-skills"
@@ -59,7 +59,7 @@ class DistributionTests(unittest.TestCase):
         marketplace = load_json(".agents/plugins/marketplace.json")
         entries = [entry for entry in marketplace["plugins"] if entry["name"] == PLUGIN_ID]
         self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0]["source"], {"source": "url", "url": REPOSITORY + ".git", "ref": "v0.7.0"})
+        self.assertEqual(entries[0]["source"], {"source": "url", "url": REPOSITORY + ".git", "ref": "v0.8.2"})
         self.assertEqual(entries[0]["policy"], {"installation": "AVAILABLE", "authentication": "ON_USE"})
 
     def test_mcp_python_launcher_is_path_portable(self) -> None:
