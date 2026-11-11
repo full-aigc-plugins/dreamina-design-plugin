@@ -5,7 +5,7 @@
     "en": "Dreamina（即梦绘图与视频）",
     "zh-CN": "Dreamina（即梦绘图与视频）"
   },
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "即梦文生图、图生图和文生视频：提示词、分镜标注与镜头评审走同一条链路。",
   "description_i18n": {
     "en": "Dreamina image and video generation with prompt libraries, shot annotation and visual evaluation. Paid runs require explicit approval and tasks are resumable.",
